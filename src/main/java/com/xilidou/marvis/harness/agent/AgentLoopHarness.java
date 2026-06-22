@@ -197,11 +197,6 @@ public class AgentLoopHarness {
         // 非 Spring 场景：手工实例化 Skill。Spring 场景用 @Component 自动注入。
         com.xilidou.marvis.harness.todo.TodoStore todoStore =
                 new com.xilidou.marvis.harness.todo.TodoStore();
-        SkillRegistry registry = new SkillRegistry(List.of(
-                new BashSkill(),
-                new FileSystemSkill(),
-                new com.xilidou.marvis.harness.skill.impl.TodoSkill(todoStore)
-        ));
 
         // s04 hook：手工注册 PermissionHook + ToolUseLogHook + LargeOutputHook + MetricsHook
         // permissions Pipeline 给 PermissionHook 用，作为 fallback 也保留在 Loop（虽然不再被直接调用）
@@ -216,6 +211,24 @@ public class AgentLoopHarness {
                 .register((com.xilidou.marvis.harness.hook.Hook.OnPostToolUse) metrics)
                 .register(new com.xilidou.marvis.harness.hook.impl.LargeOutputHook());
 
+        // s06: 子 Agent 共享 hooks（permission 也作用于子 Agent，关键安全保证）
+        // 子 Agent 用同一个 SkillRegistry 但通过 excludedTools 过滤掉 task / todo_write
+        // 注意：SkillRegistry 此时还在初始化，TaskSkill 需要 Subagent，Subagent 需要
+        // SkillRegistry —— 用 builder pattern 切断循环：先建 registry（不含 task），
+        // 建 Subagent 持有 registry 引用，再把 TaskSkill 加到 registry
+        com.xilidou.marvis.harness.skill.impl.TodoSkill todoSkill =
+                new com.xilidou.marvis.harness.skill.impl.TodoSkill(todoStore);
+        SkillRegistry registry = new SkillRegistry(List.of(
+                new BashSkill(),
+                new FileSystemSkill(),
+                todoSkill
+        ));
+
+        com.xilidou.marvis.harness.subagent.Subagent subagent =
+                new com.xilidou.marvis.harness.subagent.Subagent(
+                        client, model, registry, JacksonConfig.newMapper(), hooks);
+        registry.load(new com.xilidou.marvis.harness.skill.impl.TaskSkill(subagent));
+
         return new AgentLoopHarness(
                 client,
                 model,
@@ -223,7 +236,7 @@ public class AgentLoopHarness {
                 JacksonConfig.newMapper(),
                 permissions,
                 hooks
-        ).onNewSession(todoStore::clear);   // ← s05 修复：新 query 清空 todo，避免跨任务混合
+        ).onNewSession(todoStore::clear);   // s05 修复：新 query 清空 todo
     }
 
     private static String readEnv(Dotenv dotenv, String key) {
