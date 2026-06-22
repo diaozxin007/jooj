@@ -139,6 +139,27 @@ class PermissionPipelineTest {
         }
 
         @Test
+        @DisplayName("bash 'wc -l' → ALLOW（只读统计不该被拦，曾因误拦被移除）")
+        void allows_wc_l_readonly_stats() {
+            // 历史教训：wc -l 是只读统计，曾被加进 destructive keywords 想拦
+            // "超大文件统计"，但导致合理任务被反复打断（s06 端到端测试中等了 3'30"）。
+            // 已移除——这个测试锁定不会复发。
+            PermissionResult result = gate.check(toolUse("bash", Map.of(
+                    "command", "wc -l README.md"
+            )));
+            assertTrue(result.isAllow(), "wc -l 是只读统计，必须 ALLOW；实际：" + result.getDecision());
+        }
+
+        @Test
+        @DisplayName("bash 'find . | wc -l' → ALLOW（管道里的 wc 也不该被拦）")
+        void allows_pipe_wc_l() {
+            PermissionResult result = gate.check(toolUse("bash", Map.of(
+                    "command", "find . -name '*.java' | wc -l"
+            )));
+            assertTrue(result.isAllow());
+        }
+
+        @Test
         @DisplayName("bash echo hello → ALLOW")
         void allows_safe_bash() {
             PermissionResult result = gate.check(toolUse("bash", Map.of(

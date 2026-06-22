@@ -31,7 +31,20 @@ public class RuleBasedGate implements PermissionGate {
     /** 写工具：path 字段在哪些工具里出现 */
     private static final Set<String> WRITE_TOOLS = Set.of("write_file", "edit_file");
 
-    /** 默认 destructive 关键字（s03 + 常见高危） */
+    /**
+     * 默认 destructive 关键字（s03 + 常见高危）。
+     *
+     * <p>**关键字选择原则**：宁愿放过也不要拦合理操作。
+     * 误报（false positive）的代价是用户每次都被打断审批，远高于偶尔拦不住的代价
+     * （还有 DenyListGate 兜底）。
+     *
+     * <p>**踩过的坑**：
+     * <ul>
+     *   <li>{@code "wc -l"} 曾被加进来想拦"超大文件统计"——但 wc 是纯只读，
+     *       移除（2026-06-22 端到端测试中发现真实任务被误拦了 3 分 30 秒）</li>
+     *   <li>{@code "rm "} 故意带空格，避免误报 {@code "confirm"} / {@code "term"}</li>
+     * </ul>
+     */
     public static final List<String> DEFAULT_DESTRUCTIVE_KEYWORDS = List.of(
             "rm ",
             "rm\t",
@@ -39,8 +52,7 @@ public class RuleBasedGate implements PermissionGate {
             "chmod 777",
             "chmod -R 777",
             "git push --force",
-            "git reset --hard",
-            "wc -l"
+            "git reset --hard"
     );
 
     private final Path workdir;
