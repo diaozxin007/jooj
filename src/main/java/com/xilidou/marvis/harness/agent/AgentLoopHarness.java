@@ -19,6 +19,7 @@ import com.xilidou.marvis.harness.http.dto.ToolDef;
 import com.xilidou.marvis.harness.http.dto.ToolResultBlock;
 import com.xilidou.marvis.harness.http.dto.ToolUseBlock;
 import com.xilidou.marvis.harness.skill.impl.BashSkill;
+import com.xilidou.marvis.harness.skill.impl.FileSystemSkill;
 import io.github.cdimascio.dotenv.Dotenv;
 import lombok.extern.slf4j.Slf4j;
 
@@ -107,7 +108,7 @@ public class AgentLoopHarness {
     // ── 工厂方法 ────────────────────────────────────────────────
 
     /**
-     * 从 .env 装配，自带 BashSkill。CLI 场景用。
+     * 从 .env 装配，注册默认 Skills（BashSkill + FileSystemSkill）。CLI 场景用。
      *
      * <p>等价于：
      * <pre>
@@ -116,6 +117,7 @@ public class AgentLoopHarness {
      *   String model = dotenv.get("MODEL_ID");
      *   SkillRegistry registry = new SkillRegistry();
      *   registry.load(new BashSkill());
+     *   registry.load(new FileSystemSkill());
      *   return new AgentLoopHarness(client, model, registry);
      * </pre>
      */
@@ -126,6 +128,7 @@ public class AgentLoopHarness {
 
         SkillRegistry registry = new SkillRegistry();
         registry.load(new BashSkill());
+        registry.load(new FileSystemSkill());
 
         return new AgentLoopHarness(client, model, registry);
     }
