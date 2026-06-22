@@ -70,10 +70,23 @@ import java.util.Scanner;
 public class AgentLoopHarness {
 
     private static final String SYSTEM_PROMPT =
-            "You are a coding agent at " + System.getProperty("user.dir") +
-                    ". Use bash to solve tasks. Act, don't explain.";
+            "You are a coding agent at " + System.getProperty("user.dir") + ". " +
+                    "Before starting any multi-step task, use todo_write to plan your steps. " +
+                    "Update task status as you go. " +
+                    "Use bash, read_file, write_file, edit_file, glob to execute. " +
+                    "Act, don't explain.";
 
     private static final int MAX_TOKENS = 8000;
+
+    /**
+     * Nag 阈值：连续多少轮 LLM 调用没有 todo_write，就注入 reminder。
+     *
+     * <p>对应 Python s05 的 {@code rounds_since_todo >= 3}。
+     */
+    private static final int NAG_THRESHOLD = 3;
+
+    /** todo 工具名（注入 reminder 时识别用）*/
+    private static final String TODO_TOOL_NAME = "todo_write";
 
     /**
      * 工具结果输出在屏幕上的截断长度（200 chars）。
@@ -171,9 +184,12 @@ public class AgentLoopHarness {
         String model = readEnv(dotenv, "MODEL_ID");
 
         // 非 Spring 场景：手工实例化 Skill。Spring 场景用 @Component 自动注入。
+        com.xilidou.marvis.harness.todo.TodoStore todoStore =
+                new com.xilidou.marvis.harness.todo.TodoStore();
         SkillRegistry registry = new SkillRegistry(List.of(
                 new BashSkill(),
-                new FileSystemSkill()
+                new FileSystemSkill(),
+                new com.xilidou.marvis.harness.skill.impl.TodoSkill(todoStore)
         ));
 
         // s04 hook：手工注册 PermissionHook + ToolUseLogHook + LargeOutputHook + MetricsHook
@@ -236,7 +252,21 @@ public class AgentLoopHarness {
     public void agentLoop(List<MessageParam> messages) {
         List<ToolDef> tools = buildTools();
 
+        // s05: nag 计数器——连续 NAG_THRESHOLD 轮没调 todo_write 就注入提醒
+        // 这是 Loop-级别状态，方法调用结束（一次完整 user 输入处理完）就重置
+        // 多轮 user-assistant 对话间的连续性由调用方（repl）维护
+        int roundsSinceTodo = 0;
+
         while (true) {
+            // s05 nag: 在调 LLM 前注入 reminder（让模型在思考下一步时看到提醒）
+            if (roundsSinceTodo >= NAG_THRESHOLD && !messages.isEmpty()) {
+                messages.add(MessageParam.user(
+                        "<reminder>You haven't updated your todos for " + NAG_THRESHOLD +
+                                " rounds. Use todo_write to update task statuses.</reminder>"));
+                log.info("[Loop] nag reminder injected after {} rounds without todo_write", roundsSinceTodo);
+                roundsSinceTodo = 0;
+            }
+
             // ① 调 LLM
             CreateMessageRequest request = CreateMessageRequest.builder()
                     .model(model)
@@ -263,6 +293,9 @@ public class AgentLoopHarness {
                 return;
             }
 
+            // 这一轮有 tool_use → nag 计数 +1（todo_write 调用后会清零）
+            roundsSinceTodo++;
+
             // ④ 对每个 tool_use：display → PreToolUse hook → exec → PostToolUse hook → collect
             List<ToolResultBlock> toolResults = new ArrayList<>();
             for (ToolUseBlock toolUse : response.toolUses()) {
@@ -287,6 +320,11 @@ public class AgentLoopHarness {
                 // 4d. PostToolUse hook（log 大输出、metric、缓存等）
                 //     当前 hook 都是 observability 性质，不阻止；将来可以扩展（截断输出）
                 hooks.triggerPostToolUse(toolUse, result.getContent().toString());
+
+                // s05: 调了 todo_write 就重置 nag 计数
+                if (TODO_TOOL_NAME.equals(toolUse.getName())) {
+                    roundsSinceTodo = 0;
+                }
 
                 toolResults.add(result);
             }

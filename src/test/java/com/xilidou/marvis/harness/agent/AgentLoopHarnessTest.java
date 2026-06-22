@@ -359,6 +359,74 @@ class AgentLoopHarnessTest {
     }
 
     // ────────────────────────────────────────────────────────────
+    //  测试 8：s05 nag — 连续 3 轮没调 todo_write 就注入 reminder
+    // ────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("loop should inject reminder after NAG_THRESHOLD rounds without todo_write")
+    void loop_should_inject_nag_reminder_after_3_rounds_without_todo() {
+        // 4 轮都调 test_tool（不是 todo_write）→ 第 4 轮前应该看到 nag reminder
+        MockAnthropicClient mock = MockAnthropicClient.ofResponses(
+                ResponseFixtures.toolUse("test_tool", Map.of("arg", "1"), "tu_001"),  // 第 1 轮
+                ResponseFixtures.toolUse("test_tool", Map.of("arg", "2"), "tu_002"),  // 第 2 轮
+                ResponseFixtures.toolUse("test_tool", Map.of("arg", "3"), "tu_003"),  // 第 3 轮 → 触发 nag
+                ResponseFixtures.endTurn("done")                                       // 第 4 轮 end
+        );
+
+        AgentLoopHarness harness = new AgentLoopHarness(mock, "test-model", registry);
+
+        List<MessageParam> messages = new ArrayList<>();
+        messages.add(MessageParam.user("do work"));
+
+        harness.agentLoop(messages);
+
+        // 验证：第 4 轮请求里应该有 reminder 注入
+        // 第 4 轮 messages = [user, asst1, tool_res1, asst2, tool_res2, asst3, tool_res3, REMINDER]
+        // 索引 7 应该是 reminder
+        CreateMessageRequest fourthReq = mock.getRequests().get(3);
+        boolean hasReminder = fourthReq.getMessages().stream()
+                .filter(m -> "user".equals(m.getRole()))
+                .filter(m -> m.getContent() instanceof String)
+                .anyMatch(m -> ((String) m.getContent()).contains("<reminder>"));
+        assertTrue(hasReminder,
+                "第 4 轮请求应该包含 nag reminder（连续 3 轮没调 todo_write）");
+    }
+
+    @Test
+    @DisplayName("loop should NOT inject nag reminder when todo_write is called within threshold")
+    void loop_should_not_nag_when_todo_write_called() {
+        // 每次都调 todo_write → 永远不应该 nag
+        MockAnthropicClient mock = MockAnthropicClient.ofResponses(
+                ResponseFixtures.toolUse("todo_write", Map.of("todos", List.of()), "tu_001"),
+                ResponseFixtures.toolUse("todo_write", Map.of("todos", List.of()), "tu_002"),
+                ResponseFixtures.toolUse("todo_write", Map.of("todos", List.of()), "tu_003"),
+                ResponseFixtures.endTurn("done")
+        );
+
+        // 注册一个 todo_write 工具占位（不必真做事，让 registry 能 dispatch）
+        com.xilidou.marvis.harness.todo.TodoStore store = new com.xilidou.marvis.harness.todo.TodoStore();
+        registry.load(new com.xilidou.marvis.harness.skill.impl.TodoSkill(store));
+
+        AgentLoopHarness harness = new AgentLoopHarness(mock, "test-model", registry);
+
+        List<MessageParam> messages = new ArrayList<>();
+        messages.add(MessageParam.user("plan"));
+
+        harness.agentLoop(messages);
+
+        // 任何一轮请求都不应该有 reminder
+        for (int i = 0; i < mock.getCallCount(); i++) {
+            CreateMessageRequest req = mock.getRequests().get(i);
+            boolean hasReminder = req.getMessages().stream()
+                    .filter(m -> "user".equals(m.getRole()))
+                    .filter(m -> m.getContent() instanceof String)
+                    .anyMatch(m -> ((String) m.getContent()).contains("<reminder>"));
+            assertFalse(hasReminder,
+                    "第 " + (i + 1) + " 轮不该有 reminder（每轮都调了 todo_write）");
+        }
+    }
+
+    // ────────────────────────────────────────────────────────────
     //  测试用 Spy Skill：记录调用次数和参数
     // ────────────────────────────────────────────────────────────
 
