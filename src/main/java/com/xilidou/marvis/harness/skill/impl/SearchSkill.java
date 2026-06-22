@@ -13,6 +13,10 @@ import java.util.Map;
  * SearchSkill - 网页搜索 + 内容提取。
  *
  * <p>⚠️ 当前是 mock，Week 5 RAG 实操时改为真实 Tavily / Serper 调用。
+ *
+ * <p>**注意：本类故意不标 {@code @Component}**。
+ * 如果让 Spring 自动注入，LLM 会看到这些工具但拿到假数据，引发"幻觉链"。
+ * Week 5 改为真实实现后再加 {@code @Component}。
  */
 public class SearchSkill implements Skill {
 

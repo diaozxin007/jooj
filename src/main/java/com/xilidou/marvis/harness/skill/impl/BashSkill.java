@@ -5,6 +5,7 @@ import com.xilidou.marvis.harness.entity.ToolDefinition;
 import com.xilidou.marvis.harness.entity.ToolResult;
 import com.xilidou.marvis.harness.http.dto.InputSchema;
 import com.xilidou.marvis.harness.skill.Skill;
+import org.springframework.stereotype.Component;
 
 import java.util.Arrays;
 import java.util.List;
@@ -14,6 +15,7 @@ import java.util.Map;
  * BashSkill - 对应 Python s01 中的 run_bash 工具
  * 执行 shell 命令并返回输出，含危险命令拦截
  */
+@Component
 public class BashSkill implements Skill {
 
     private static final List<String> DANGEROUS = Arrays.asList(

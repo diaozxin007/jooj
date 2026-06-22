@@ -6,6 +6,7 @@ import com.xilidou.marvis.harness.entity.ToolResult;
 import com.xilidou.marvis.harness.http.dto.InputSchema;
 import com.xilidou.marvis.harness.skill.Skill;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.nio.file.FileSystems;
@@ -46,6 +47,7 @@ import java.util.stream.Stream;
  * </ul>
  */
 @Slf4j
+@Component
 public class FileSystemSkill implements Skill {
 
     private static final int MAX_OUTPUT = 50000;

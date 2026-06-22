@@ -132,21 +132,39 @@ public class AgentLoopHarness {
      *   return new AgentLoopHarness(client, model, registry);
      * </pre>
      */
+    /**
+     * 从 .env 装配，注册默认 Skills（BashSkill + FileSystemSkill）。CLI 场景用。
+     *
+     * <p>等价于：
+     * <pre>
+     *   Dotenv dotenv = Dotenv.configure().ignoreIfMissing().load();
+     *   AnthropicClient client = AnthropicHttpClient.fromEnv(dotenv);
+     *   String model = dotenv.get("MODEL_ID");
+     *   SkillRegistry registry = new SkillRegistry(List.of(new BashSkill(), new FileSystemSkill()));
+     *   return new AgentLoopHarness(client, model, registry, ...);
+     * </pre>
+     *
+     * <p>⚠️ 这个工厂仅供 raw main 入口（如 SmokeTest）使用。
+     * 主入口 {@link com.xilidou.marvis.S01} 已迁移到 Spring CommandLineRunner，
+     * Skill 注册由 Spring 自动完成（通过 {@code @Component}）。
+     */
     public static AgentLoopHarness fromEnv() {
         Dotenv dotenv = Dotenv.configure().ignoreIfMissing().load();
         AnthropicClient client = AnthropicHttpClient.fromEnv(dotenv);
         String model = readEnv(dotenv, "MODEL_ID");
 
-        SkillRegistry registry = new SkillRegistry();
-        registry.load(new BashSkill());
-        registry.load(new FileSystemSkill());
+        // 非 Spring 场景：手工实例化 Skill。Spring 场景用 @Component 自动注入。
+        SkillRegistry registry = new SkillRegistry(List.of(
+                new BashSkill(),
+                new FileSystemSkill()
+        ));
 
         return new AgentLoopHarness(
                 client,
                 model,
                 registry,
                 JacksonConfig.newMapper(),
-                PermissionPipeline.defaultCli()    // ← s03：CLI 阻塞式审批
+                PermissionPipeline.defaultCli()
         );
     }
 

@@ -4,17 +4,59 @@ import com.xilidou.marvis.harness.entity.ToolDefinition;
 import com.xilidou.marvis.harness.entity.ToolResult;
 import com.xilidou.marvis.harness.skill.Skill;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * Skill 注册表。
+ *
+ * <p>Spring 化设计：
+ * <ul>
+ *   <li>本类是 {@code @Component}，由 Spring 容器管理生命周期</li>
+ *   <li>构造器接收 {@code List<Skill>}，Spring 自动注入所有标记 {@code @Component} 的 Skill 实现</li>
+ *   <li>**加新 Skill 不需要改这个类**：新写一个 Skill 加 {@code @Component} 就行</li>
+ * </ul>
+ *
+ * <p>非 Spring 场景（测试 / 独立 main）：
+ * <ul>
+ *   <li>用无参构造器创建空 Registry，再手工 {@link #load(Skill)}</li>
+ *   <li>或直接传 {@code List.of(skill1, skill2)} 给构造器</li>
+ * </ul>
+ *
+ * <p>关键技术点：{@code @Autowired} 显式标注 Spring 应该用的构造器。
+ * 没这个标注时，Spring 默认选**无参**构造器（"最少参数"原则），
+ * 会导致 Skill List 不被注入。
+ */
+@Component
 @Slf4j
 public class SkillRegistry {
 
     private final Map<String, Skill> loadedSkills = new LinkedHashMap<>();
     private final Map<String, Skill> allTools = new LinkedHashMap<>(); // toolName -> Skill
+
+    /**
+     * Spring 友好构造器：自动注入所有 {@code @Component} 标记的 Skill。
+     *
+     * <p>Spring 启动时会找到 {@link Skill} 的所有实现 Bean，按 Bean 顺序传进来。
+     */
+    @Autowired
+    public SkillRegistry(List<Skill> skills) {
+        if (skills != null) {
+            skills.forEach(this::load);
+        }
+    }
+
+    /**
+     * 测试 / 独立 main 用：空 Registry，需要手工 {@link #load} 注册。
+     */
+    public SkillRegistry() {
+        this(List.of());
+    }
 
     /**
      * 加载一个 Skill

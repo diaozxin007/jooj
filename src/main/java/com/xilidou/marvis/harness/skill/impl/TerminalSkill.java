@@ -14,6 +14,9 @@ import java.util.Map;
  *
  * <p>⚠️ 注意：和 {@link BashSkill} 功能重叠，但 BashSkill 是真实实现。
  * 这个类的 execute 是 mock。Week 4 决策：保留 BashSkill，删除或重写这个。
+ *
+ * <p>**故意不标 {@code @Component}**：避免 LLM 同时看到 bash 和 terminal 两个语义重复的工具，
+ * 而且 terminal 还是 mock。等明确决策后再处理。
  */
 public class TerminalSkill implements Skill {
 
