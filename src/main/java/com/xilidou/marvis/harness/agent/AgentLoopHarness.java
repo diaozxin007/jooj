@@ -18,6 +18,8 @@ import com.xilidou.marvis.harness.http.dto.TextBlock;
 import com.xilidou.marvis.harness.http.dto.ToolDef;
 import com.xilidou.marvis.harness.http.dto.ToolResultBlock;
 import com.xilidou.marvis.harness.http.dto.ToolUseBlock;
+import com.xilidou.marvis.harness.permission.PermissionPipeline;
+import com.xilidou.marvis.harness.permission.PermissionResult;
 import com.xilidou.marvis.harness.skill.impl.BashSkill;
 import com.xilidou.marvis.harness.skill.impl.FileSystemSkill;
 import io.github.cdimascio.dotenv.Dotenv;
@@ -82,27 +84,36 @@ public class AgentLoopHarness {
     private final String model;
     private final SkillRegistry registry;
     private final ObjectMapper json;
+    private final PermissionPipeline permissions;
 
     /**
-     * 全参构造器（DI 友好）。
+     * 简化构造器：使用默认 ObjectMapper + 不做权限检查（所有工具直接执行）。
+     * 用于测试场景或无权限需求的简单场景。
      *
      * @param client   LLM 客户端（生产用 {@link AnthropicHttpClient}，测试用 Mock）
      * @param model    模型 ID，如 {@code claude-sonnet-4-6}
      * @param registry 工具池
      */
     public AgentLoopHarness(AnthropicClient client, String model, SkillRegistry registry) {
-        this(client, model, registry, JacksonConfig.newMapper());
+        this(client, model, registry, JacksonConfig.newMapper(), PermissionPipeline.alwaysAllow());
     }
 
     /**
-     * 完全自定义构造器（可注入自己的 ObjectMapper）。
+     * 完全自定义构造器。
+     *
+     * @param client      LLM 客户端
+     * @param model       模型 ID
+     * @param registry    工具池
+     * @param json        Jackson ObjectMapper
+     * @param permissions 权限 Pipeline（s03 三道闸门）
      */
     public AgentLoopHarness(AnthropicClient client, String model, SkillRegistry registry,
-                            ObjectMapper json) {
+                            ObjectMapper json, PermissionPipeline permissions) {
         this.client = Objects.requireNonNull(client, "client");
         this.model = Objects.requireNonNull(model, "model");
         this.registry = Objects.requireNonNull(registry, "registry");
         this.json = Objects.requireNonNull(json, "json");
+        this.permissions = Objects.requireNonNull(permissions, "permissions");
     }
 
     // ── 工厂方法 ────────────────────────────────────────────────
@@ -130,7 +141,13 @@ public class AgentLoopHarness {
         registry.load(new BashSkill());
         registry.load(new FileSystemSkill());
 
-        return new AgentLoopHarness(client, model, registry);
+        return new AgentLoopHarness(
+                client,
+                model,
+                registry,
+                JacksonConfig.newMapper(),
+                PermissionPipeline.defaultCli()    // ← s03：CLI 阻塞式审批
+        );
     }
 
     private static String readEnv(Dotenv dotenv, String key) {
@@ -211,6 +228,9 @@ public class AgentLoopHarness {
      *
      * <p>每个 tool_use 都 try-catch 隔离：单个工具失败不会让整个 loop 崩溃，
      * 而是把错误以 {@code tool_result} 形式回传给 LLM，让它决定怎么处理。
+     *
+     * <p>s03 集成：在执行前过 {@link PermissionPipeline}，DENY 时不执行，
+     * 把拒绝原因作为 tool_result 回传给 LLM（让模型知道为什么失败）。
      */
     private List<ToolResultBlock> executeToolUses(List<ToolUseBlock> toolUses) {
         List<ToolResultBlock> results = new ArrayList<>();
@@ -222,6 +242,15 @@ public class AgentLoopHarness {
             Object cmd = args.get("command");
             String display = cmd != null ? cmd.toString() : args.toString();
             System.out.println("\033[33m$ " + display + "\033[0m");
+
+            // s03：权限检查
+            PermissionResult permission = permissions.check(toolUse);
+            if (permission.isDeny()) {
+                String denyMsg = "Permission denied: " + permission.getReason();
+                System.out.println("\033[31m⛔ " + denyMsg + "\033[0m");
+                results.add(ToolResultBlock.ofText(toolUse.getId(), denyMsg));
+                continue;
+            }
 
             // 执行
             ToolResult result = registry.execute(new ToolCall(toolName, args));
