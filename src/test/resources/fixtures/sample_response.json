@@ -1,0 +1,26 @@
+{
+  "id": "msg_01ABC",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "text",
+      "text": "I'll list the files first."
+    },
+    {
+      "type": "tool_use",
+      "id": "toolu_01XYZ",
+      "name": "bash",
+      "input": {
+        "command": "ls -la"
+      }
+    }
+  ],
+  "model": "claude-sonnet-4-6",
+  "stop_reason": "tool_use",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 142,
+    "output_tokens": 47
+  }
+}
