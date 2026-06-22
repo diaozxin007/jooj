@@ -253,6 +253,64 @@ class AgentLoopHarnessTest {
     }
 
     // ────────────────────────────────────────────────────────────
+    //  测试 6：Permission DENY 时不执行工具，把原因回传 LLM
+    //  （重构后的关键路径：permission 在 loop 层，executeOneTool 是纯执行）
+    // ────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("loop should skip tool execution when permission denies, but feed reason back to LLM")
+    void loop_should_skip_tool_on_permission_deny() {
+        // 自定义 pipeline：所有 check 都返回 DENY（模拟 Gate 1 命中或自定义策略）
+        com.xilidou.marvis.harness.permission.PermissionPipeline blockAll =
+                new com.xilidou.marvis.harness.permission.PermissionPipeline(
+                        List.of(toolUse -> com.xilidou.marvis.harness.permission.PermissionResult.deny("blocked by test")),
+                        new com.xilidou.marvis.harness.permission.UserApprovalGate(
+                                com.xilidou.marvis.harness.permission.UserApprover.ALWAYS_ALLOW
+                        )
+                );
+
+        MockAnthropicClient mock = MockAnthropicClient.ofResponses(
+                ResponseFixtures.toolUse("test_tool", Map.of("arg", "value"), "tu_001"),
+                ResponseFixtures.endTurn("OK, will try something else")
+        );
+
+        AgentLoopHarness harness = new AgentLoopHarness(
+                mock, "test-model", registry,
+                com.xilidou.marvis.harness.JacksonConfig.newMapper(),
+                blockAll
+        );
+
+        List<MessageParam> messages = new ArrayList<>();
+        messages.add(MessageParam.user("Run test_tool"));
+
+        // When
+        harness.agentLoop(messages);
+
+        // Then：
+        // 1. spySkill 不应被执行（permission 拦截在前）
+        assertEquals(0, spySkill.getExecutionCount(),
+                "Permission DENY 时 executeOneTool 不应被调用");
+
+        // 2. loop 继续跑完（2 轮 LLM 调用：第一轮 tool_use，第二轮 end_turn）
+        //    DENY 不应让 loop 提前退出，应该把原因反馈回 LLM 让其继续
+        assertEquals(2, mock.getCallCount(),
+                "loop 应该把 deny 反馈回 LLM 让其继续，不是直接返回");
+
+        // 3. 第二轮请求里应该包含 deny 原因的 tool_result
+        CreateMessageRequest secondReq = mock.getRequests().get(1);
+        @SuppressWarnings("unchecked")
+        List<ContentBlock> toolResults = (List<ContentBlock>) secondReq.getMessages().get(2).getContent();
+        ToolResultBlock denyResult = (ToolResultBlock) toolResults.get(0);
+        assertEquals("tu_001", denyResult.getToolUseId(),
+                "tool_use_id 必须匹配，否则 LLM 不知道是哪个工具被拒");
+        String content = denyResult.getContent().toString();
+        assertTrue(content.contains("Permission denied"),
+                "tool_result 应该明确说明是权限拒绝，实际：" + content);
+        assertTrue(content.contains("blocked by test"),
+                "tool_result 应该带原因，实际：" + content);
+    }
+
+    // ────────────────────────────────────────────────────────────
     //  测试用 Spy Skill：记录调用次数和参数
     // ────────────────────────────────────────────────────────────
 

@@ -189,9 +189,16 @@ public class AgentLoopHarness {
      *   <li>调 LLM</li>
      *   <li>把 assistant 回复**完整**追加到 messages（坑 4：必须原样回传）</li>
      *   <li>如果 stop_reason != tool_use，退出</li>
-     *   <li>执行所有 tool_use，收集结果</li>
+     *   <li>对每个 tool_use：屏幕显示 → 权限检查 → 执行 → 收集结果</li>
      *   <li>把 tool_results 包在 user 消息里追加到 messages（坑 3：role 是 user）</li>
      * </ol>
+     *
+     * <p>设计原则：工具调用的完整生命周期（display → permission → exec）
+     * 全部展开在 loop 层，**单一职责的步骤一目了然**。这也对应 Python s03 的写法
+     * （没有 executeToolUses 这种封装，所有逻辑都在 for 循环里）。
+     *
+     * <p>s04 切到 Hooks 时只需替换 {@code permissions.check} 那一行为
+     * {@code hooks.trigger(PRE_TOOL_USE)}，其他位置不变。
      *
      * @param messages 对话历史，方法会原地修改
      */
@@ -218,8 +225,27 @@ public class AgentLoopHarness {
                 return;
             }
 
-            // ④ 执行所有 tool_use
-            List<ToolResultBlock> toolResults = executeToolUses(response.toolUses());
+            // ④ 对每个 tool_use：display → permission → exec → collect
+            List<ToolResultBlock> toolResults = new ArrayList<>();
+            for (ToolUseBlock toolUse : response.toolUses()) {
+                Map<String, Object> args = parseToolInput(toolUse);
+
+                // 4a. 屏幕显示（对应 Python 黄色输出）
+                printToolHeader(toolUse, args);
+
+                // 4b. 权限检查（s03 三道闸门；s04 后会替换为 hooks.trigger(PRE_TOOL_USE)）
+                PermissionResult permission = permissions.check(toolUse);
+                if (permission.isDeny()) {
+                    String denyMsg = "Permission denied: " + permission.getReason();
+                    System.out.println("\033[31m⛔ " + denyMsg + "\033[0m");
+                    toolResults.add(ToolResultBlock.ofText(toolUse.getId(), denyMsg));
+                    continue;
+                }
+
+                // 4c. 纯执行（不关心权限）
+                ToolResultBlock result = executeOneTool(toolUse, args);
+                toolResults.add(result);
+            }
 
             // ⑤ 把 tool_results 包成 user 消息（坑 3）
             messages.add(MessageParam.toolResults(toolResults));
@@ -242,46 +268,38 @@ public class AgentLoopHarness {
     }
 
     /**
-     * 执行一组 tool_use，返回对应的 tool_result。
+     * 在屏幕上打印一行黄色的工具调用头（对应 Python 的 {@code $ command} 风格）。
      *
-     * <p>每个 tool_use 都 try-catch 隔离：单个工具失败不会让整个 loop 崩溃，
-     * 而是把错误以 {@code tool_result} 形式回传给 LLM，让它决定怎么处理。
-     *
-     * <p>s03 集成：在执行前过 {@link PermissionPipeline}，DENY 时不执行，
-     * 把拒绝原因作为 tool_result 回传给 LLM（让模型知道为什么失败）。
+     * <p>纯 UI 输出，不影响业务逻辑。
      */
-    private List<ToolResultBlock> executeToolUses(List<ToolUseBlock> toolUses) {
-        List<ToolResultBlock> results = new ArrayList<>();
-        for (ToolUseBlock toolUse : toolUses) {
-            String toolName = toolUse.getName();
-            Map<String, Object> args = parseToolInput(toolUse);
+    private void printToolHeader(ToolUseBlock toolUse, Map<String, Object> args) {
+        Object cmd = args.get("command");
+        String display = cmd != null ? cmd.toString() : args.toString();
+        System.out.println("\033[33m$ " + display + "\033[0m");
+    }
 
-            // 屏幕显示（对应 Python 黄色输出）
-            Object cmd = args.get("command");
-            String display = cmd != null ? cmd.toString() : args.toString();
-            System.out.println("\033[33m$ " + display + "\033[0m");
+    /**
+     * 纯执行一个工具调用——不做权限检查，不做屏幕显示装饰。
+     *
+     * <p>职责：
+     * <ol>
+     *   <li>派发到对应 Skill 的 execute</li>
+     *   <li>把输出截断后打印到屏幕（200 字预览）</li>
+     *   <li>包装成 {@link ToolResultBlock} 返回</li>
+     * </ol>
+     *
+     * <p>权限和 UI header 由调用方（{@link #agentLoop}）负责，本方法只关心执行。
+     */
+    private ToolResultBlock executeOneTool(ToolUseBlock toolUse, Map<String, Object> args) {
+        ToolResult result = registry.execute(new ToolCall(toolUse.getName(), args));
+        String output = result.getOutput();
 
-            // s03：权限检查
-            PermissionResult permission = permissions.check(toolUse);
-            if (permission.isDeny()) {
-                String denyMsg = "Permission denied: " + permission.getReason();
-                System.out.println("\033[31m⛔ " + denyMsg + "\033[0m");
-                results.add(ToolResultBlock.ofText(toolUse.getId(), denyMsg));
-                continue;
-            }
+        // 屏幕预览（200 字截断）
+        System.out.println(output.length() > CONSOLE_PREVIEW_LIMIT
+                ? output.substring(0, CONSOLE_PREVIEW_LIMIT) + "..."
+                : output);
 
-            // 执行
-            ToolResult result = registry.execute(new ToolCall(toolName, args));
-            String output = result.getOutput();
-
-            // 屏幕预览（200 字截断）
-            System.out.println(output.length() > CONSOLE_PREVIEW_LIMIT
-                    ? output.substring(0, CONSOLE_PREVIEW_LIMIT) + "..."
-                    : output);
-
-            results.add(ToolResultBlock.ofText(toolUse.getId(), output));
-        }
-        return results;
+        return ToolResultBlock.ofText(toolUse.getId(), output);
     }
 
     /**
