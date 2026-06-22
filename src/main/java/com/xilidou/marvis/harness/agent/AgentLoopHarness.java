@@ -18,6 +18,7 @@ import com.xilidou.marvis.harness.http.dto.TextBlock;
 import com.xilidou.marvis.harness.http.dto.ToolDef;
 import com.xilidou.marvis.harness.http.dto.ToolResultBlock;
 import com.xilidou.marvis.harness.http.dto.ToolUseBlock;
+import com.xilidou.marvis.harness.hook.HookManager;
 import com.xilidou.marvis.harness.permission.PermissionPipeline;
 import com.xilidou.marvis.harness.permission.PermissionResult;
 import com.xilidou.marvis.harness.skill.impl.BashSkill;
@@ -31,6 +32,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Scanner;
 
 /**
@@ -85,9 +87,10 @@ public class AgentLoopHarness {
     private final SkillRegistry registry;
     private final ObjectMapper json;
     private final PermissionPipeline permissions;
+    private final HookManager hooks;
 
     /**
-     * 简化构造器：使用默认 ObjectMapper + 不做权限检查（所有工具直接执行）。
+     * 简化构造器：使用默认 ObjectMapper + 不做权限检查（所有工具直接执行）+ 空 hooks。
      * 用于测试场景或无权限需求的简单场景。
      *
      * @param client   LLM 客户端（生产用 {@link AnthropicHttpClient}，测试用 Mock）
@@ -95,25 +98,39 @@ public class AgentLoopHarness {
      * @param registry 工具池
      */
     public AgentLoopHarness(AnthropicClient client, String model, SkillRegistry registry) {
-        this(client, model, registry, JacksonConfig.newMapper(), PermissionPipeline.alwaysAllow());
+        this(client, model, registry,
+                JacksonConfig.newMapper(),
+                PermissionPipeline.alwaysAllow(),
+                new HookManager());
     }
 
     /**
-     * 完全自定义构造器。
+     * 5 参构造器（测试场景常用：注入特定 PermissionPipeline）。
+     * hooks 默认空，permission 走旧路径（直接调 pipeline）。
+     */
+    public AgentLoopHarness(AnthropicClient client, String model, SkillRegistry registry,
+                            ObjectMapper json, PermissionPipeline permissions) {
+        this(client, model, registry, json, permissions, new HookManager());
+    }
+
+    /**
+     * 完全自定义构造器（s04 完整版）。
      *
      * @param client      LLM 客户端
      * @param model       模型 ID
      * @param registry    工具池
      * @param json        Jackson ObjectMapper
-     * @param permissions 权限 Pipeline（s03 三道闸门）
+     * @param permissions 权限 Pipeline（s03 三道闸门，作为 fallback）
+     * @param hooks       Hook 管理器（s04，PreToolUse 等事件分发）
      */
     public AgentLoopHarness(AnthropicClient client, String model, SkillRegistry registry,
-                            ObjectMapper json, PermissionPipeline permissions) {
+                            ObjectMapper json, PermissionPipeline permissions, HookManager hooks) {
         this.client = Objects.requireNonNull(client, "client");
         this.model = Objects.requireNonNull(model, "model");
         this.registry = Objects.requireNonNull(registry, "registry");
         this.json = Objects.requireNonNull(json, "json");
         this.permissions = Objects.requireNonNull(permissions, "permissions");
+        this.hooks = Objects.requireNonNull(hooks, "hooks");
     }
 
     // ── 工厂方法 ────────────────────────────────────────────────
@@ -159,12 +176,21 @@ public class AgentLoopHarness {
                 new FileSystemSkill()
         ));
 
+        // s04 hook：手工注册 PermissionHook + ToolUseLogHook + LargeOutputHook
+        // permissions Pipeline 给 PermissionHook 用，作为 fallback 也保留在 Loop（虽然不再被直接调用）
+        PermissionPipeline permissions = PermissionPipeline.defaultCli();
+        HookManager hooks = new HookManager()
+                .register(new com.xilidou.marvis.harness.hook.impl.PermissionHook(permissions))
+                .register(new com.xilidou.marvis.harness.hook.impl.ToolUseLogHook())
+                .register(new com.xilidou.marvis.harness.hook.impl.LargeOutputHook());
+
         return new AgentLoopHarness(
                 client,
                 model,
                 registry,
                 JacksonConfig.newMapper(),
-                PermissionPipeline.defaultCli()
+                permissions,
+                hooks
         );
     }
 
@@ -220,12 +246,19 @@ public class AgentLoopHarness {
             // ② 把 assistant 回复**完整**追加（坑 4）
             messages.add(MessageParam.assistant(response.getContent()));
 
-            // ③ stop_reason != tool_use → 退出
+            // ③ stop_reason != tool_use → 触发 Stop hook → 退出（或强制再来一轮）
             if (!response.needsToolExecution()) {
+                Optional<String> forceContinue = hooks.triggerStop(messages);
+                if (forceContinue.isPresent()) {
+                    // Stop hook 返回非空 = "loop 再来一轮"语义
+                    // 把 hook 给的内容作为 user 消息追加，模型会基于此继续思考
+                    messages.add(MessageParam.user(forceContinue.get()));
+                    continue;
+                }
                 return;
             }
 
-            // ④ 对每个 tool_use：display → permission → exec → collect
+            // ④ 对每个 tool_use：display → PreToolUse hook → exec → PostToolUse hook → collect
             List<ToolResultBlock> toolResults = new ArrayList<>();
             for (ToolUseBlock toolUse : response.toolUses()) {
                 Map<String, Object> args = parseToolInput(toolUse);
@@ -233,17 +266,23 @@ public class AgentLoopHarness {
                 // 4a. 屏幕显示（对应 Python 黄色输出）
                 printToolHeader(toolUse, args);
 
-                // 4b. 权限检查（s03 三道闸门；s04 后会替换为 hooks.trigger(PRE_TOOL_USE)）
-                PermissionResult permission = permissions.check(toolUse);
-                if (permission.isDeny()) {
-                    String denyMsg = "Permission denied: " + permission.getReason();
-                    System.out.println("\033[31m⛔ " + denyMsg + "\033[0m");
-                    toolResults.add(ToolResultBlock.ofText(toolUse.getId(), denyMsg));
+                // 4b. PreToolUse hook（s04 替代 s03 的 permissions.check）
+                //     PermissionHook 会跑 permission pipeline；其他 hook（log/metric）也在这里
+                //     第一个返回非空 Optional 的 hook 短路，其值作为 deny 原因
+                Optional<String> blocked = hooks.triggerPreToolUse(toolUse);
+                if (blocked.isPresent()) {
+                    System.out.println("\033[31m⛔ " + blocked.get() + "\033[0m");
+                    toolResults.add(ToolResultBlock.ofText(toolUse.getId(), blocked.get()));
                     continue;
                 }
 
-                // 4c. 纯执行（不关心权限）
+                // 4c. 纯执行（不关心权限和 hook）
                 ToolResultBlock result = executeOneTool(toolUse, args);
+
+                // 4d. PostToolUse hook（log 大输出、metric、缓存等）
+                //     当前 hook 都是 observability 性质，不阻止；将来可以扩展（截断输出）
+                hooks.triggerPostToolUse(toolUse, result.getContent().toString());
+
                 toolResults.add(result);
             }
 
@@ -339,6 +378,15 @@ public class AgentLoopHarness {
                 if (query.equalsIgnoreCase("q")
                         || query.equalsIgnoreCase("exit")
                         || query.isEmpty()) break;
+
+                // s04: UserPromptSubmit hook（在发给 LLM 之前）
+                // 当前 hook 都是 observability 性质（log）；
+                // 将来可扩展：返回非空 Optional 阻止 query 进入 loop（敏感词过滤等）
+                Optional<String> blocked = hooks.triggerUserPrompt(query);
+                if (blocked.isPresent()) {
+                    System.out.println("\033[31m⛔ Prompt blocked: " + blocked.get() + "\033[0m");
+                    continue;
+                }
 
                 history.add(MessageParam.user(query));
 

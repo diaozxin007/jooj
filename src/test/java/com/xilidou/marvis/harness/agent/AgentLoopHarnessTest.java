@@ -253,21 +253,17 @@ class AgentLoopHarnessTest {
     }
 
     // ────────────────────────────────────────────────────────────
-    //  测试 6：Permission DENY 时不执行工具，把原因回传 LLM
-    //  （重构后的关键路径：permission 在 loop 层，executeOneTool 是纯执行）
+    //  测试 6：PreToolUse hook 阻止时不执行工具，把原因回传 LLM
+    //  （s04 重构后：Loop 通过 hooks.triggerPreToolUse 而不是直接调 permission）
     // ────────────────────────────────────────────────────────────
 
     @Test
-    @DisplayName("loop should skip tool execution when permission denies, but feed reason back to LLM")
-    void loop_should_skip_tool_on_permission_deny() {
-        // 自定义 pipeline：所有 check 都返回 DENY（模拟 Gate 1 命中或自定义策略）
-        com.xilidou.marvis.harness.permission.PermissionPipeline blockAll =
-                new com.xilidou.marvis.harness.permission.PermissionPipeline(
-                        List.of(toolUse -> com.xilidou.marvis.harness.permission.PermissionResult.deny("blocked by test")),
-                        new com.xilidou.marvis.harness.permission.UserApprovalGate(
-                                com.xilidou.marvis.harness.permission.UserApprover.ALWAYS_ALLOW
-                        )
-                );
+    @DisplayName("loop should skip tool execution when PreToolUse hook blocks, feed reason back to LLM")
+    void loop_should_skip_tool_on_pre_tool_hook_block() {
+        // 自定义 PreToolUse hook：永远返回非空 Optional（= 阻止）
+        com.xilidou.marvis.harness.hook.HookManager hooks = new com.xilidou.marvis.harness.hook.HookManager()
+                .register((com.xilidou.marvis.harness.hook.Hook.OnPreToolUse) toolUse ->
+                        java.util.Optional.of("blocked by test hook"));
 
         MockAnthropicClient mock = MockAnthropicClient.ofResponses(
                 ResponseFixtures.toolUse("test_tool", Map.of("arg", "value"), "tu_001"),
@@ -277,7 +273,8 @@ class AgentLoopHarnessTest {
         AgentLoopHarness harness = new AgentLoopHarness(
                 mock, "test-model", registry,
                 com.xilidou.marvis.harness.JacksonConfig.newMapper(),
-                blockAll
+                com.xilidou.marvis.harness.permission.PermissionPipeline.alwaysAllow(),
+                hooks
         );
 
         List<MessageParam> messages = new ArrayList<>();
@@ -287,16 +284,16 @@ class AgentLoopHarnessTest {
         harness.agentLoop(messages);
 
         // Then：
-        // 1. spySkill 不应被执行（permission 拦截在前）
+        // 1. spySkill 不应被执行（hook 拦截在前）
         assertEquals(0, spySkill.getExecutionCount(),
-                "Permission DENY 时 executeOneTool 不应被调用");
+                "PreToolUse hook 阻止时 executeOneTool 不应被调用");
 
         // 2. loop 继续跑完（2 轮 LLM 调用：第一轮 tool_use，第二轮 end_turn）
-        //    DENY 不应让 loop 提前退出，应该把原因反馈回 LLM 让其继续
+        //    block 不应让 loop 提前退出，应该把原因反馈回 LLM 让其继续
         assertEquals(2, mock.getCallCount(),
-                "loop 应该把 deny 反馈回 LLM 让其继续，不是直接返回");
+                "loop 应该把 hook 阻止反馈回 LLM 让其继续，不是直接返回");
 
-        // 3. 第二轮请求里应该包含 deny 原因的 tool_result
+        // 3. 第二轮请求里应该包含 hook 阻止原因的 tool_result
         CreateMessageRequest secondReq = mock.getRequests().get(1);
         @SuppressWarnings("unchecked")
         List<ContentBlock> toolResults = (List<ContentBlock>) secondReq.getMessages().get(2).getContent();
@@ -304,10 +301,61 @@ class AgentLoopHarnessTest {
         assertEquals("tu_001", denyResult.getToolUseId(),
                 "tool_use_id 必须匹配，否则 LLM 不知道是哪个工具被拒");
         String content = denyResult.getContent().toString();
+        assertEquals("blocked by test hook", content,
+                "tool_result 内容应该是 hook 返回的字符串原文");
+    }
+
+    // ────────────────────────────────────────────────────────────
+    //  测试 7：PermissionHook 集成 — 验证 s03 → s04 行为等价
+    //  PermissionPipeline 通过 PermissionHook 包装后，依然能正确拦截工具
+    // ────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("PermissionHook should bridge PermissionPipeline DENY into PreToolUse hook block")
+    void permission_hook_should_bridge_pipeline_to_hook() {
+        // 用一个永远 deny 的 pipeline
+        com.xilidou.marvis.harness.permission.PermissionPipeline blockAll =
+                new com.xilidou.marvis.harness.permission.PermissionPipeline(
+                        List.of(toolUse -> com.xilidou.marvis.harness.permission.PermissionResult.deny("Gate 1 hit")),
+                        new com.xilidou.marvis.harness.permission.UserApprovalGate(
+                                com.xilidou.marvis.harness.permission.UserApprover.ALWAYS_ALLOW
+                        )
+                );
+
+        // 把 pipeline 包成 PermissionHook，注册到 HookManager
+        com.xilidou.marvis.harness.hook.HookManager hooks = new com.xilidou.marvis.harness.hook.HookManager()
+                .register(new com.xilidou.marvis.harness.hook.impl.PermissionHook(blockAll));
+
+        MockAnthropicClient mock = MockAnthropicClient.ofResponses(
+                ResponseFixtures.toolUse("test_tool", Map.of("arg", "value"), "tu_001"),
+                ResponseFixtures.endTurn("OK")
+        );
+
+        AgentLoopHarness harness = new AgentLoopHarness(
+                mock, "test-model", registry,
+                com.xilidou.marvis.harness.JacksonConfig.newMapper(),
+                blockAll,
+                hooks
+        );
+
+        List<MessageParam> messages = new ArrayList<>();
+        messages.add(MessageParam.user("Run test_tool"));
+
+        // When
+        harness.agentLoop(messages);
+
+        // Then
+        assertEquals(0, spySkill.getExecutionCount(),
+                "PermissionHook 应该通过 hook 总线拦截工具");
+
+        CreateMessageRequest secondReq = mock.getRequests().get(1);
+        @SuppressWarnings("unchecked")
+        List<ContentBlock> toolResults = (List<ContentBlock>) secondReq.getMessages().get(2).getContent();
+        String content = ((ToolResultBlock) toolResults.get(0)).getContent().toString();
         assertTrue(content.contains("Permission denied"),
-                "tool_result 应该明确说明是权限拒绝，实际：" + content);
-        assertTrue(content.contains("blocked by test"),
-                "tool_result 应该带原因，实际：" + content);
+                "PermissionHook 返回的内容应该带 'Permission denied' 前缀");
+        assertTrue(content.contains("Gate 1 hit"),
+                "PermissionHook 应该把 Pipeline 的 reason 透传出来");
     }
 
     // ────────────────────────────────────────────────────────────

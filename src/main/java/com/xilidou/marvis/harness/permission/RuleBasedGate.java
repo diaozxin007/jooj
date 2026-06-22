@@ -39,7 +39,8 @@ public class RuleBasedGate implements PermissionGate {
             "chmod 777",
             "chmod -R 777",
             "git push --force",
-            "git reset --hard"
+            "git reset --hard",
+            "wc -l"
     );
 
     private final Path workdir;
