@@ -103,6 +103,17 @@ public class AgentLoopHarness {
     private final HookManager hooks;
 
     /**
+     * 新会话回调列表。{@link #repl} 接到新 user 输入时会依次执行。
+     *
+     * <p>典型用途：清空 {@link com.xilidou.marvis.harness.todo.TodoStore}（避免上一次任务的
+     * todo 串到下一次）、重置 {@link com.xilidou.marvis.harness.hook.impl.MetricsHook} metric 等。
+     *
+     * <p>用 {@code List<Runnable>} 而非具体类型，是为了让 Loop 不耦合具体业务——
+     * 谁需要"新会话清理"自己注册回调即可。
+     */
+    private final List<Runnable> onNewSessionListeners = new ArrayList<>();
+
+    /**
      * 简化构造器：使用默认 ObjectMapper + 不做权限检查（所有工具直接执行）+ 空 hooks。
      * 用于测试场景或无权限需求的简单场景。
      *
@@ -212,7 +223,7 @@ public class AgentLoopHarness {
                 JacksonConfig.newMapper(),
                 permissions,
                 hooks
-        );
+        ).onNewSession(todoStore::clear);   // ← s05 修复：新 query 清空 todo，避免跨任务混合
     }
 
     private static String readEnv(Dotenv dotenv, String key) {
@@ -349,6 +360,45 @@ public class AgentLoopHarness {
         return tools;
     }
 
+    // ── 新会话生命周期 ──────────────────────────────────────────
+
+    /**
+     * 注册"新会话开始时"要执行的回调。
+     *
+     * <p>用法（从 {@link #fromEnv} 看）：
+     * <pre>
+     *   harness.onNewSession(todoStore::clear);    // 清空 todo
+     *   harness.onNewSession(metricsHook::reset);  // 重置 metric（如需）
+     * </pre>
+     *
+     * <p>**为什么需要这个机制**：LLM 看到 messages 历史里有上一轮的 todo_write 记录时，
+     * 容易把"已完成的旧 todo"和"新任务的 todo"混合输出。在新 user query 时显式清空
+     * TodoStore 让系统状态与"新会话"语义对齐。
+     *
+     * @return this，支持链式调用
+     */
+    public AgentLoopHarness onNewSession(Runnable callback) {
+        if (callback != null) {
+            onNewSessionListeners.add(callback);
+        }
+        return this;
+    }
+
+    /**
+     * 触发所有"新会话"回调。{@link #repl} 在每次接到新 user 输入后调用。
+     *
+     * <p>单个回调抛异常**不应**让其他回调失败——所有回调都尽量执行。
+     */
+    private void fireOnNewSession() {
+        for (Runnable callback : onNewSessionListeners) {
+            try {
+                callback.run();
+            } catch (Exception e) {
+                log.warn("[Loop] onNewSession callback failed: {}", e.getMessage());
+            }
+        }
+    }
+
     /**
      * 在屏幕上打印一行黄色的工具调用头（对应 Python 的 {@code $ command} 风格）。
      *
@@ -430,6 +480,11 @@ public class AgentLoopHarness {
                     System.out.println("\033[31m⛔ Prompt blocked: " + blocked.get() + "\033[0m");
                     continue;
                 }
+
+                // s05+: 触发"新会话开始"回调。
+                // 典型用途：清空 TodoStore 避免上一次任务的 todo 串到下一次。
+                // 见 fromEnv() 里 todoStore::clear 的注册。
+                fireOnNewSession();
 
                 history.add(MessageParam.user(query));
 

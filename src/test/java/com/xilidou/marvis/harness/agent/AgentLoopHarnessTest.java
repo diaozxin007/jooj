@@ -427,6 +427,70 @@ class AgentLoopHarnessTest {
     }
 
     // ────────────────────────────────────────────────────────────
+    //  测试 9：onNewSession 回调（s05 bug 修复 — TodoStore 跨任务清理）
+    // ────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("onNewSession 注册的回调应在 agentLoop 调用时不被触发")
+    void onNewSession_should_not_fire_during_agent_loop() {
+        // agentLoop 是单任务执行，不该触发 onNewSession（那是 repl 的职责）
+        java.util.concurrent.atomic.AtomicInteger callbackFiredCount =
+                new java.util.concurrent.atomic.AtomicInteger();
+
+        MockAnthropicClient mock = MockAnthropicClient.ofResponses(
+                ResponseFixtures.endTurn("hi")
+        );
+        AgentLoopHarness harness = new AgentLoopHarness(mock, "test-model", registry)
+                .onNewSession(callbackFiredCount::incrementAndGet);
+
+        harness.agentLoop(new ArrayList<>(List.of(MessageParam.user("hello"))));
+
+        assertEquals(0, callbackFiredCount.get(),
+                "agentLoop 是子任务执行入口，不该触发 onNewSession（那是 repl 的语义）");
+    }
+
+    @Test
+    @DisplayName("onNewSession 支持注册多个回调；单个失败不影响其他")
+    void onNewSession_supports_multiple_callbacks_and_fault_isolation() {
+        java.util.concurrent.atomic.AtomicInteger fired = new java.util.concurrent.atomic.AtomicInteger();
+
+        MockAnthropicClient mock = MockAnthropicClient.ofResponses(
+                ResponseFixtures.endTurn("hi")
+        );
+        AgentLoopHarness harness = new AgentLoopHarness(mock, "test-model", registry)
+                .onNewSession(fired::incrementAndGet)
+                .onNewSession(() -> { throw new RuntimeException("intentional"); })
+                .onNewSession(fired::incrementAndGet);
+
+        // 反射调 fireOnNewSession 私有方法（这是为了测试隔离性）
+        try {
+            var method = AgentLoopHarness.class.getDeclaredMethod("fireOnNewSession");
+            method.setAccessible(true);
+            method.invoke(harness);
+        } catch (Exception e) {
+            fail("反射失败: " + e);
+        }
+
+        // 即使中间那个抛异常，前后两个都应该被执行
+        assertEquals(2, fired.get(), "中间回调抛异常不应影响其他回调执行");
+    }
+
+    @Test
+    @DisplayName("onNewSession 链式 API 返回 this，支持流畅注册")
+    void onNewSession_returns_this_for_chaining() {
+        MockAnthropicClient mock = MockAnthropicClient.ofResponses(ResponseFixtures.endTurn("hi"));
+        AgentLoopHarness harness = new AgentLoopHarness(mock, "test-model", registry);
+
+        // 链式调用应当不抛异常
+        AgentLoopHarness returned = harness
+                .onNewSession(() -> {})
+                .onNewSession(() -> {})
+                .onNewSession(null);   // null 应被忽略（不崩）
+
+        assertSame(harness, returned, "onNewSession 应返回 this");
+    }
+
+    // ────────────────────────────────────────────────────────────
     //  测试用 Spy Skill：记录调用次数和参数
     // ────────────────────────────────────────────────────────────
 
