@@ -21,6 +21,7 @@ import com.xilidou.marvis.harness.http.dto.ToolUseBlock;
 import com.xilidou.marvis.harness.hook.HookManager;
 import com.xilidou.marvis.harness.permission.PermissionPipeline;
 import com.xilidou.marvis.harness.permission.PermissionResult;
+import com.xilidou.marvis.harness.skill.SkillRegistry;
 import com.xilidou.marvis.harness.tool.impl.BashTool;
 import com.xilidou.marvis.harness.tool.impl.FileSystemTool;
 import io.github.cdimascio.dotenv.Dotenv;
@@ -69,7 +70,7 @@ import java.util.Scanner;
 @Slf4j
 public class AgentLoopHarness {
 
-    private static final String SYSTEM_PROMPT =
+    private static final String SYSTEM_PROMPT_BASE =
             "You are a coding agent at " + System.getProperty("user.dir") + ". " +
                     "Before starting any multi-step task, use todo_write to plan your steps. " +
                     "Update task status as you go. " +
@@ -101,6 +102,14 @@ public class AgentLoopHarness {
     private final ObjectMapper json;
     private final PermissionPipeline permissions;
     private final HookManager hooks;
+
+    /**
+     * 完整 SYSTEM prompt（含 base + skill catalog 注入）。s07 启动时构造。
+     *
+     * <p>不可变：catalog 只在启动时扫描一次，运行中不重扫。
+     * 这是 Layer 1（廉价），成本是每次 LLM 调用多 100 token/skill。
+     */
+    private final String systemPrompt;
 
     /**
      * 新会话回调列表。{@link #repl} 接到新 user 输入时会依次执行。
@@ -155,6 +164,39 @@ public class AgentLoopHarness {
         this.json = Objects.requireNonNull(json, "json");
         this.permissions = Objects.requireNonNull(permissions, "permissions");
         this.hooks = Objects.requireNonNull(hooks, "hooks");
+        this.systemPrompt = SYSTEM_PROMPT_BASE;   // ← 默认无 catalog；用 withSkillCatalog 注入
+    }
+
+    /**
+     * 7 参构造器（s07 完整版）：可注入自定义 SYSTEM prompt（含 skill catalog）。
+     *
+     * <p>调用方负责拼装 catalog 字符串（通常通过 {@link SkillRegistry#catalog()}）。
+     */
+    public AgentLoopHarness(AnthropicClient client, String model, ToolRegistry registry,
+                            ObjectMapper json, PermissionPipeline permissions, HookManager hooks,
+                            String systemPrompt) {
+        this.client = Objects.requireNonNull(client, "client");
+        this.model = Objects.requireNonNull(model, "model");
+        this.registry = Objects.requireNonNull(registry, "registry");
+        this.json = Objects.requireNonNull(json, "json");
+        this.permissions = Objects.requireNonNull(permissions, "permissions");
+        this.hooks = Objects.requireNonNull(hooks, "hooks");
+        this.systemPrompt = systemPrompt != null ? systemPrompt : SYSTEM_PROMPT_BASE;
+    }
+
+    /**
+     * 把 SYSTEM_PROMPT_BASE 和 skill catalog 拼成完整 SYSTEM prompt。
+     *
+     * <p>给 {@link #fromEnv} 等装配代码用。
+     *
+     * @param skillCatalog SkillRegistry.catalog() 的输出，可为空（无 skill 时）
+     * @return 完整 SYSTEM prompt
+     */
+    public static String composeSystemPrompt(String skillCatalog) {
+        if (skillCatalog == null || skillCatalog.isBlank()) {
+            return SYSTEM_PROMPT_BASE;
+        }
+        return SYSTEM_PROMPT_BASE + "\n\nSkills available (use load_skill to get full content):\n" + skillCatalog;
     }
 
     // ── 工厂方法 ────────────────────────────────────────────────
@@ -229,14 +271,22 @@ public class AgentLoopHarness {
                         client, model, registry, JacksonConfig.newMapper(), hooks);
         registry.load(new com.xilidou.marvis.harness.tool.impl.TaskTool(subagent));
 
+        // s07: 扫描 skills/ 目录构建 catalog，注册 LoadSkillTool
+        SkillRegistry skillRegistry = new SkillRegistry(java.nio.file.Paths.get("skills"));
+        registry.load(new com.xilidou.marvis.harness.tool.impl.LoadSkillTool(skillRegistry));
+
+        // s07: SYSTEM prompt 注入 skill catalog（Layer 1，廉价）
+        String systemPrompt = composeSystemPrompt(skillRegistry.catalog());
+
         return new AgentLoopHarness(
                 client,
                 model,
                 registry,
                 JacksonConfig.newMapper(),
                 permissions,
-                hooks
-        ).onNewSession(todoStore::clear);   // s05 修复：新 query 清空 todo
+                hooks,
+                systemPrompt
+        ).onNewSession(todoStore::clear);
     }
 
     private static String readEnv(Dotenv dotenv, String key) {
@@ -294,7 +344,7 @@ public class AgentLoopHarness {
             // ① 调 LLM
             CreateMessageRequest request = CreateMessageRequest.builder()
                     .model(model)
-                    .system(SYSTEM_PROMPT)
+                    .system(systemPrompt)
                     .messages(messages)
                     .tools(tools)
                     .maxTokens(MAX_TOKENS)
