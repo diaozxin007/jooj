@@ -1,10 +1,10 @@
-package com.xilidou.marvis.harness.skill.impl;
+package com.xilidou.marvis.harness.tool.impl;
 
 import com.xilidou.marvis.harness.base.ToolCall;
 import com.xilidou.marvis.harness.entity.ToolDefinition;
 import com.xilidou.marvis.harness.entity.ToolResult;
 import com.xilidou.marvis.harness.http.dto.InputSchema;
-import com.xilidou.marvis.harness.skill.Skill;
+import com.xilidou.marvis.harness.tool.Tool;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -21,7 +21,7 @@ import java.util.Map;
 import java.util.stream.Stream;
 
 /**
- * FileSystemSkill - 真实文件系统操作（s02-s03 完整实现）。
+ * FileSystemTool - 真实文件系统操作（s02-s03 完整实现）。
  *
  * <p>提供 4 个工具：
  * <ul>
@@ -48,7 +48,7 @@ import java.util.stream.Stream;
  */
 @Slf4j
 @Component
-public class FileSystemSkill implements Skill {
+public class FileSystemTool implements Tool {
 
     private static final int MAX_OUTPUT = 50000;
 
@@ -61,14 +61,14 @@ public class FileSystemSkill implements Skill {
      * 默认构造器：用当前工作目录（{@code System.getProperty("user.dir")}）。
      * 用于 CLI 场景。
      */
-    public FileSystemSkill() {
+    public FileSystemTool() {
         this(Paths.get(System.getProperty("user.dir")).toAbsolutePath().normalize());
     }
 
     /**
      * 显式指定工作目录（测试场景）。
      */
-    public FileSystemSkill(Path workdir) {
+    public FileSystemTool(Path workdir) {
         this.workdir = workdir.toAbsolutePath().normalize();
     }
 

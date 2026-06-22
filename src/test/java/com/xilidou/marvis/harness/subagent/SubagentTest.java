@@ -2,7 +2,7 @@ package com.xilidou.marvis.harness.subagent;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xilidou.marvis.harness.JacksonConfig;
-import com.xilidou.marvis.harness.base.SkillRegistry;
+import com.xilidou.marvis.harness.base.ToolRegistry;
 import com.xilidou.marvis.harness.base.ToolCall;
 import com.xilidou.marvis.harness.entity.ToolDefinition;
 import com.xilidou.marvis.harness.entity.ToolResult;
@@ -13,7 +13,7 @@ import com.xilidou.marvis.harness.http.dto.CreateMessageRequest;
 import com.xilidou.marvis.harness.http.dto.InputSchema;
 import com.xilidou.marvis.harness.http.dto.MessageParam;
 import com.xilidou.marvis.harness.http.dto.ToolDef;
-import com.xilidou.marvis.harness.skill.Skill;
+import com.xilidou.marvis.harness.tool.Tool;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -39,7 +39,7 @@ class SubagentTest {
 
     private static final ObjectMapper JSON = JacksonConfig.newMapper();
 
-    private SkillRegistry registry;
+    private ToolRegistry registry;
     private HookManager hooks;
     private SpyTool spyTool;
 
@@ -47,7 +47,7 @@ class SubagentTest {
     void setUp() {
         spyTool = new SpyTool();
         // 模拟父 Agent 拥有的工具集：task + todo_write 应被 excludedTools 过滤
-        registry = new SkillRegistry();
+        registry = new ToolRegistry();
         registry.load(spyTool);
         registry.load(new FakeNamedSkill("task"));        // 子 Agent 应该看不到
         registry.load(new FakeNamedSkill("todo_write"));  // 子 Agent 应该看不到
@@ -197,7 +197,7 @@ class SubagentTest {
     // ── helper Skills ──────────────────────────────────────────
 
     /** 真实工具：记录调用次数，返回 ok */
-    private static class SpyTool implements Skill {
+    private static class SpyTool implements Tool {
         final AtomicInteger executionCount = new AtomicInteger();
 
         @Override public String getName() { return "spy"; }
@@ -219,8 +219,8 @@ class SubagentTest {
         }
     }
 
-    /** 假名字 Skill：用来验证 excludedTools 过滤 */
-    private static class FakeNamedSkill implements Skill {
+    /** 假名字 Tool：用来验证 excludedTools 过滤 */
+    private static class FakeNamedSkill implements Tool {
         private final String name;
         FakeNamedSkill(String name) { this.name = name; }
 

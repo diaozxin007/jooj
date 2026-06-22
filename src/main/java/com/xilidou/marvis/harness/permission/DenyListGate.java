@@ -11,7 +11,7 @@ import java.util.List;
  * 命中后**立即 DENY**，不给用户做选择的机会（用户也不应该 yes 这些命令）。
  *
  * <p>当前只检查 bash 工具的 command 参数。其他工具（read/write/edit）的硬规则
- * 由各自的 {@code safePath()} 在 Skill 层做（path traversal 防御）。
+ * 由各自的 {@code safePath()} 在 Tool 层做（path traversal 防御）。
  *
  * <p>黑名单匹配：子串包含。简单粗暴但够用。绕过方式（如 {@code rm  -rf  /}
  * 多空格）由 Gate 2 的 destructive keyword 兜底。

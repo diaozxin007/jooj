@@ -1,4 +1,4 @@
-package com.xilidou.marvis.harness.skill.impl;
+package com.xilidou.marvis.harness.tool.impl;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -7,7 +7,7 @@ import com.xilidou.marvis.harness.base.ToolCall;
 import com.xilidou.marvis.harness.entity.ToolDefinition;
 import com.xilidou.marvis.harness.entity.ToolResult;
 import com.xilidou.marvis.harness.http.dto.InputSchema;
-import com.xilidou.marvis.harness.skill.Skill;
+import com.xilidou.marvis.harness.tool.Tool;
 import com.xilidou.marvis.harness.todo.TodoItem;
 import com.xilidou.marvis.harness.todo.TodoStatus;
 import com.xilidou.marvis.harness.todo.TodoStore;
@@ -19,7 +19,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * TodoSkill - 让 LLM 能"写"待办列表的工具（s05 核心）。
+ * TodoTool - 让 LLM 能"写"待办列表的工具（s05 核心）。
  *
  * <p>对应 Python s05 第 144 行的 {@code run_todo_write(todos)}。
  *
@@ -50,7 +50,7 @@ import java.util.Map;
  */
 @Component
 @Slf4j
-public class TodoSkill implements Skill {
+public class TodoTool implements Tool {
 
     private static final String YELLOW = "\033[33m";
     private static final String CYAN = "\033[36m";
@@ -65,17 +65,17 @@ public class TodoSkill implements Skill {
      *
      * <p>{@code @Autowired} 显式标注是必要的——本类有 2 个构造器，
      * 不加注解 Spring 默认找无参的（不存在）会报 NoSuchMethodException。
-     * 这是 Week 4 SkillRegistry 已经踩过的坑。
+     * 这是 Week 4 ToolRegistry 已经踩过的坑。
      */
     @Autowired
-    public TodoSkill(TodoStore store) {
+    public TodoTool(TodoStore store) {
         this(store, JacksonConfig.newMapper());
     }
 
     /**
      * 测试构造器：可注入自己的 ObjectMapper。
      */
-    public TodoSkill(TodoStore store, ObjectMapper json) {
+    public TodoTool(TodoStore store, ObjectMapper json) {
         this.store = store;
         this.json = json;
     }

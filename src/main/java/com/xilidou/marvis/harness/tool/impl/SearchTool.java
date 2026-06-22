@@ -1,16 +1,16 @@
-package com.xilidou.marvis.harness.skill.impl;
+package com.xilidou.marvis.harness.tool.impl;
 
 import com.xilidou.marvis.harness.base.ToolCall;
 import com.xilidou.marvis.harness.entity.ToolDefinition;
 import com.xilidou.marvis.harness.entity.ToolResult;
 import com.xilidou.marvis.harness.http.dto.InputSchema;
-import com.xilidou.marvis.harness.skill.Skill;
+import com.xilidou.marvis.harness.tool.Tool;
 
 import java.util.List;
 import java.util.Map;
 
 /**
- * SearchSkill - 网页搜索 + 内容提取。
+ * SearchTool - 网页搜索 + 内容提取。
  *
  * <p>⚠️ 当前是 mock，Week 5 RAG 实操时改为真实 Tavily / Serper 调用。
  *
@@ -18,7 +18,7 @@ import java.util.Map;
  * 如果让 Spring 自动注入，LLM 会看到这些工具但拿到假数据，引发"幻觉链"。
  * Week 5 改为真实实现后再加 {@code @Component}。
  */
-public class SearchSkill implements Skill {
+public class SearchTool implements Tool {
 
     @Override
     public String getName() {

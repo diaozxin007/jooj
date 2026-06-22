@@ -16,7 +16,7 @@ import java.util.Set;
  * <p>当前内置 2 条规则（与 Python 版对齐）：
  * <ul>
  *   <li>{@code write_file} / {@code edit_file} 写到 workspace **外** → ASK
- *       <br>注意：Skill 层的 {@code safePath()} 会直接 throw 拒绝。这里这条规则
+ *       <br>注意：Tool 层的 {@code safePath()} 会直接 throw 拒绝。这里这条规则
  *       理论上不会被触发（safePath 比这先一步），但保留是因为有些场景可能允许
  *       写到外部（用户明确同意）。</li>
  *   <li>{@code bash} 命令含 destructive 关键字（{@code rm }, {@code > /etc/},

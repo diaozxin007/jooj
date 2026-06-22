@@ -1,6 +1,6 @@
 package com.xilidou.marvis.harness.agent;
 
-import com.xilidou.marvis.harness.base.SkillRegistry;
+import com.xilidou.marvis.harness.base.ToolRegistry;
 import com.xilidou.marvis.harness.base.ToolCall;
 import com.xilidou.marvis.harness.entity.ToolDefinition;
 import com.xilidou.marvis.harness.entity.ToolResult;
@@ -15,7 +15,7 @@ import com.xilidou.marvis.harness.http.dto.TextBlock;
 import com.xilidou.marvis.harness.http.dto.ThinkingBlock;
 import com.xilidou.marvis.harness.http.dto.ToolResultBlock;
 import com.xilidou.marvis.harness.http.dto.ToolUseBlock;
-import com.xilidou.marvis.harness.skill.Skill;
+import com.xilidou.marvis.harness.tool.Tool;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -45,14 +45,14 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 class AgentLoopHarnessTest {
 
-    private SkillRegistry registry;
-    private SpyTestSkill spySkill;
+    private ToolRegistry registry;
+    private SpyTestTool spyTool;
 
     @BeforeEach
     void setUp() {
-        spySkill = new SpyTestSkill();
-        registry = new SkillRegistry();
-        registry.load(spySkill);
+        spyTool = new SpyTestTool();
+        registry = new ToolRegistry();
+        registry.load(spyTool);
     }
 
     // ────────────────────────────────────────────────────────────
@@ -75,7 +75,7 @@ class AgentLoopHarnessTest {
 
         // Then：
         assertEquals(1, mock.getCallCount(), "应该只调用一次 LLM");
-        assertEquals(0, spySkill.getExecutionCount(), "end_turn 不应该执行任何工具");
+        assertEquals(0, spyTool.getExecutionCount(), "end_turn 不应该执行任何工具");
 
         // messages 应该是 [user, assistant(end_turn)]
         assertEquals(2, messages.size());
@@ -105,10 +105,10 @@ class AgentLoopHarnessTest {
 
         // Then：LLM 调了 2 次，工具执行了 1 次
         assertEquals(2, mock.getCallCount(), "应该调用 2 次 LLM（tool_use + end_turn）");
-        assertEquals(1, spySkill.getExecutionCount(), "test_tool 应该执行 1 次");
+        assertEquals(1, spyTool.getExecutionCount(), "test_tool 应该执行 1 次");
 
         // 验证工具收到的参数正确（input.arg = "value1"）
-        ToolCall lastCall = spySkill.getLastCall();
+        ToolCall lastCall = spyTool.getLastCall();
         assertEquals("test_tool", lastCall.getToolName());
         assertEquals("value1", lastCall.getArguments().get("arg"));
 
@@ -156,7 +156,7 @@ class AgentLoopHarnessTest {
         harness.agentLoop(messages);
 
         // Then：3 个工具都被执行
-        assertEquals(3, spySkill.getExecutionCount(), "3 个 tool_use 都应该被执行");
+        assertEquals(3, spyTool.getExecutionCount(), "3 个 tool_use 都应该被执行");
 
         // 第二轮请求里应该包含 3 个 tool_result
         CreateMessageRequest secondReq = mock.getRequests().get(1);
@@ -237,7 +237,7 @@ class AgentLoopHarnessTest {
         assertDoesNotThrow(() -> harness.agentLoop(messages));
 
         // Then：unknown_tool 没被执行，但 loop 完成了
-        assertEquals(0, spySkill.getExecutionCount());
+        assertEquals(0, spyTool.getExecutionCount());
         assertEquals(2, mock.getCallCount(), "loop 应该完整跑完 2 轮");
 
         // 第二轮请求里应该有一个 tool_result，内容是错误信息
@@ -284,8 +284,8 @@ class AgentLoopHarnessTest {
         harness.agentLoop(messages);
 
         // Then：
-        // 1. spySkill 不应被执行（hook 拦截在前）
-        assertEquals(0, spySkill.getExecutionCount(),
+        // 1. spyTool 不应被执行（hook 拦截在前）
+        assertEquals(0, spyTool.getExecutionCount(),
                 "PreToolUse hook 阻止时 executeOneTool 不应被调用");
 
         // 2. loop 继续跑完（2 轮 LLM 调用：第一轮 tool_use，第二轮 end_turn）
@@ -345,7 +345,7 @@ class AgentLoopHarnessTest {
         harness.agentLoop(messages);
 
         // Then
-        assertEquals(0, spySkill.getExecutionCount(),
+        assertEquals(0, spyTool.getExecutionCount(),
                 "PermissionHook 应该通过 hook 总线拦截工具");
 
         CreateMessageRequest secondReq = mock.getRequests().get(1);
@@ -405,7 +405,7 @@ class AgentLoopHarnessTest {
 
         // 注册一个 todo_write 工具占位（不必真做事，让 registry 能 dispatch）
         com.xilidou.marvis.harness.todo.TodoStore store = new com.xilidou.marvis.harness.todo.TodoStore();
-        registry.load(new com.xilidou.marvis.harness.skill.impl.TodoSkill(store));
+        registry.load(new com.xilidou.marvis.harness.tool.impl.TodoTool(store));
 
         AgentLoopHarness harness = new AgentLoopHarness(mock, "test-model", registry);
 
@@ -491,14 +491,14 @@ class AgentLoopHarnessTest {
     }
 
     // ────────────────────────────────────────────────────────────
-    //  测试用 Spy Skill：记录调用次数和参数
+    //  测试用 Spy Tool：记录调用次数和参数
     // ────────────────────────────────────────────────────────────
 
     /**
-     * 一个简单的 Skill 实现，注册一个名为 "test_tool" 的工具。
+     * 一个简单的 Tool 实现，注册一个名为 "test_tool" 的工具。
      * 每次执行都记录调用次数和最后的 ToolCall，方便测试断言。
      */
-    private static class SpyTestSkill implements Skill {
+    private static class SpyTestTool implements Tool {
         private final AtomicInteger executionCount = new AtomicInteger(0);
         private ToolCall lastCall;
 

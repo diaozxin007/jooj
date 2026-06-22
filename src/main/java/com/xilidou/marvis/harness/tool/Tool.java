@@ -1,4 +1,4 @@
-package com.xilidou.marvis.harness.skill;
+package com.xilidou.marvis.harness.tool;
 
 import com.xilidou.marvis.harness.base.ToolCall;
 import com.xilidou.marvis.harness.entity.ToolDefinition;
@@ -6,7 +6,7 @@ import com.xilidou.marvis.harness.entity.ToolResult;
 
 import java.util.List;
 
-public interface Skill {
+public interface Tool {
     String getName();
     String getDescription();
     List<ToolDefinition> getTools();

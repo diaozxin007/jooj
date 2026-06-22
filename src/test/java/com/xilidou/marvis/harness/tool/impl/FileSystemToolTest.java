@@ -1,4 +1,4 @@
-package com.xilidou.marvis.harness.skill.impl;
+package com.xilidou.marvis.harness.tool.impl;
 
 import com.xilidou.marvis.harness.base.ToolCall;
 import com.xilidou.marvis.harness.entity.ToolResult;
@@ -16,7 +16,7 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * 锁定 {@link FileSystemSkill} 的核心行为。
+ * 锁定 {@link FileSystemTool} 的核心行为。
  *
  * <p>测试组织：
  * <ul>
@@ -29,16 +29,16 @@ import static org.junit.jupiter.api.Assertions.*;
  *
  * <p>用 {@code @TempDir} 让每个测试有独立 workspace，跑完自动清理。
  */
-class FileSystemSkillTest {
+class FileSystemToolTest {
 
     @TempDir
     Path workdir;
 
-    private FileSystemSkill skill;
+    private FileSystemTool skill;
 
     @BeforeEach
     void setUp() {
-        skill = new FileSystemSkill(workdir);
+        skill = new FileSystemTool(workdir);
     }
 
     // ────────────────────────────────────────────────────────────

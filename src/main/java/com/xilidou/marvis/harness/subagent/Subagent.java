@@ -2,7 +2,7 @@ package com.xilidou.marvis.harness.subagent;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xilidou.marvis.harness.base.SkillRegistry;
+import com.xilidou.marvis.harness.base.ToolRegistry;
 import com.xilidou.marvis.harness.base.ToolCall;
 import com.xilidou.marvis.harness.entity.ToolDefinition;
 import com.xilidou.marvis.harness.entity.ToolResult;
@@ -86,7 +86,7 @@ public class Subagent {
     // ── 依赖 ────────────────────────────────────────────────────
     private final AnthropicClient client;
     private final String model;
-    private final SkillRegistry registry;
+    private final ToolRegistry registry;
     private final ObjectMapper json;
     private final HookManager hooks;
     private final Set<String> excludedTools;
@@ -94,7 +94,7 @@ public class Subagent {
     /**
      * 默认构造器：排除 task / todo_write。
      */
-    public Subagent(AnthropicClient client, String model, SkillRegistry registry,
+    public Subagent(AnthropicClient client, String model, ToolRegistry registry,
                     ObjectMapper json, HookManager hooks) {
         this(client, model, registry, json, hooks, DEFAULT_EXCLUDED_TOOLS);
     }
@@ -102,7 +102,7 @@ public class Subagent {
     /**
      * 完全自定义：可指定哪些工具子 Agent 不能用。
      */
-    public Subagent(AnthropicClient client, String model, SkillRegistry registry,
+    public Subagent(AnthropicClient client, String model, ToolRegistry registry,
                     ObjectMapper json, HookManager hooks, Set<String> excludedTools) {
         this.client = Objects.requireNonNull(client, "client");
         this.model = Objects.requireNonNull(model, "model");
@@ -190,7 +190,7 @@ public class Subagent {
     }
 
     /**
-     * 把 SkillRegistry 里的工具转成 ToolDef 列表，过滤掉黑名单。
+     * 把 ToolRegistry 里的工具转成 ToolDef 列表，过滤掉黑名单。
      *
      * <p>这与 {@link com.xilidou.marvis.harness.agent.AgentLoopHarness#buildTools} 几乎一样，
      * 唯一区别是过滤——这个小重复是值得的（避免 Agent / Subagent 互相引用代码）。

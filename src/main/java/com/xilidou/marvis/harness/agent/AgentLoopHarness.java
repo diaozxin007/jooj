@@ -3,7 +3,7 @@ package com.xilidou.marvis.harness.agent;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xilidou.marvis.harness.JacksonConfig;
-import com.xilidou.marvis.harness.base.SkillRegistry;
+import com.xilidou.marvis.harness.base.ToolRegistry;
 import com.xilidou.marvis.harness.base.ToolCall;
 import com.xilidou.marvis.harness.entity.ToolDefinition;
 import com.xilidou.marvis.harness.entity.ToolResult;
@@ -21,8 +21,8 @@ import com.xilidou.marvis.harness.http.dto.ToolUseBlock;
 import com.xilidou.marvis.harness.hook.HookManager;
 import com.xilidou.marvis.harness.permission.PermissionPipeline;
 import com.xilidou.marvis.harness.permission.PermissionResult;
-import com.xilidou.marvis.harness.skill.impl.BashSkill;
-import com.xilidou.marvis.harness.skill.impl.FileSystemSkill;
+import com.xilidou.marvis.harness.tool.impl.BashTool;
+import com.xilidou.marvis.harness.tool.impl.FileSystemTool;
 import io.github.cdimascio.dotenv.Dotenv;
 import lombok.extern.slf4j.Slf4j;
 
@@ -90,14 +90,14 @@ public class AgentLoopHarness {
 
     /**
      * 工具结果输出在屏幕上的截断长度（200 chars）。
-     * 注意：这只影响打印，模型收到的是完整 50000 chars（由 BashSkill 控制）。
+     * 注意：这只影响打印，模型收到的是完整 50000 chars（由 BashTool 控制）。
      */
     private static final int CONSOLE_PREVIEW_LIMIT = 200;
 
     // ── 依赖（构造器注入）──────────────────────────────────────
     private final AnthropicClient client;
     private final String model;
-    private final SkillRegistry registry;
+    private final ToolRegistry registry;
     private final ObjectMapper json;
     private final PermissionPipeline permissions;
     private final HookManager hooks;
@@ -121,7 +121,7 @@ public class AgentLoopHarness {
      * @param model    模型 ID，如 {@code claude-sonnet-4-6}
      * @param registry 工具池
      */
-    public AgentLoopHarness(AnthropicClient client, String model, SkillRegistry registry) {
+    public AgentLoopHarness(AnthropicClient client, String model, ToolRegistry registry) {
         this(client, model, registry,
                 JacksonConfig.newMapper(),
                 PermissionPipeline.alwaysAllow(),
@@ -132,7 +132,7 @@ public class AgentLoopHarness {
      * 5 参构造器（测试场景常用：注入特定 PermissionPipeline）。
      * hooks 默认空，permission 走旧路径（直接调 pipeline）。
      */
-    public AgentLoopHarness(AnthropicClient client, String model, SkillRegistry registry,
+    public AgentLoopHarness(AnthropicClient client, String model, ToolRegistry registry,
                             ObjectMapper json, PermissionPipeline permissions) {
         this(client, model, registry, json, permissions, new HookManager());
     }
@@ -147,7 +147,7 @@ public class AgentLoopHarness {
      * @param permissions 权限 Pipeline（s03 三道闸门，作为 fallback）
      * @param hooks       Hook 管理器（s04，PreToolUse 等事件分发）
      */
-    public AgentLoopHarness(AnthropicClient client, String model, SkillRegistry registry,
+    public AgentLoopHarness(AnthropicClient client, String model, ToolRegistry registry,
                             ObjectMapper json, PermissionPipeline permissions, HookManager hooks) {
         this.client = Objects.requireNonNull(client, "client");
         this.model = Objects.requireNonNull(model, "model");
@@ -160,41 +160,41 @@ public class AgentLoopHarness {
     // ── 工厂方法 ────────────────────────────────────────────────
 
     /**
-     * 从 .env 装配，注册默认 Skills（BashSkill + FileSystemSkill）。CLI 场景用。
+     * 从 .env 装配，注册默认 Skills（BashTool + FileSystemTool）。CLI 场景用。
      *
      * <p>等价于：
      * <pre>
      *   Dotenv dotenv = Dotenv.configure().ignoreIfMissing().load();
      *   AnthropicClient client = AnthropicHttpClient.fromEnv(dotenv);
      *   String model = dotenv.get("MODEL_ID");
-     *   SkillRegistry registry = new SkillRegistry();
-     *   registry.load(new BashSkill());
-     *   registry.load(new FileSystemSkill());
+     *   ToolRegistry registry = new ToolRegistry();
+     *   registry.load(new BashTool());
+     *   registry.load(new FileSystemTool());
      *   return new AgentLoopHarness(client, model, registry);
      * </pre>
      */
     /**
-     * 从 .env 装配，注册默认 Skills（BashSkill + FileSystemSkill）。CLI 场景用。
+     * 从 .env 装配，注册默认 Skills（BashTool + FileSystemTool）。CLI 场景用。
      *
      * <p>等价于：
      * <pre>
      *   Dotenv dotenv = Dotenv.configure().ignoreIfMissing().load();
      *   AnthropicClient client = AnthropicHttpClient.fromEnv(dotenv);
      *   String model = dotenv.get("MODEL_ID");
-     *   SkillRegistry registry = new SkillRegistry(List.of(new BashSkill(), new FileSystemSkill()));
+     *   ToolRegistry registry = new ToolRegistry(List.of(new BashTool(), new FileSystemTool()));
      *   return new AgentLoopHarness(client, model, registry, ...);
      * </pre>
      *
      * <p>⚠️ 这个工厂仅供 raw main 入口（如 SmokeTest）使用。
      * 主入口 {@link com.xilidou.marvis.S01} 已迁移到 Spring CommandLineRunner，
-     * Skill 注册由 Spring 自动完成（通过 {@code @Component}）。
+     * Tool 注册由 Spring 自动完成（通过 {@code @Component}）。
      */
     public static AgentLoopHarness fromEnv() {
         Dotenv dotenv = Dotenv.configure().ignoreIfMissing().load();
         AnthropicClient client = AnthropicHttpClient.fromEnv(dotenv);
         String model = readEnv(dotenv, "MODEL_ID");
 
-        // 非 Spring 场景：手工实例化 Skill。Spring 场景用 @Component 自动注入。
+        // 非 Spring 场景：手工实例化 Tool。Spring 场景用 @Component 自动注入。
         com.xilidou.marvis.harness.todo.TodoStore todoStore =
                 new com.xilidou.marvis.harness.todo.TodoStore();
 
@@ -212,22 +212,22 @@ public class AgentLoopHarness {
                 .register(new com.xilidou.marvis.harness.hook.impl.LargeOutputHook());
 
         // s06: 子 Agent 共享 hooks（permission 也作用于子 Agent，关键安全保证）
-        // 子 Agent 用同一个 SkillRegistry 但通过 excludedTools 过滤掉 task / todo_write
-        // 注意：SkillRegistry 此时还在初始化，TaskSkill 需要 Subagent，Subagent 需要
-        // SkillRegistry —— 用 builder pattern 切断循环：先建 registry（不含 task），
-        // 建 Subagent 持有 registry 引用，再把 TaskSkill 加到 registry
-        com.xilidou.marvis.harness.skill.impl.TodoSkill todoSkill =
-                new com.xilidou.marvis.harness.skill.impl.TodoSkill(todoStore);
-        SkillRegistry registry = new SkillRegistry(List.of(
-                new BashSkill(),
-                new FileSystemSkill(),
+        // 子 Agent 用同一个 ToolRegistry 但通过 excludedTools 过滤掉 task / todo_write
+        // 注意：ToolRegistry 此时还在初始化，TaskTool 需要 Subagent，Subagent 需要
+        // ToolRegistry —— 用 builder pattern 切断循环：先建 registry（不含 task），
+        // 建 Subagent 持有 registry 引用，再把 TaskTool 加到 registry
+        com.xilidou.marvis.harness.tool.impl.TodoTool todoSkill =
+                new com.xilidou.marvis.harness.tool.impl.TodoTool(todoStore);
+        ToolRegistry registry = new ToolRegistry(List.of(
+                new BashTool(),
+                new FileSystemTool(),
                 todoSkill
         ));
 
         com.xilidou.marvis.harness.subagent.Subagent subagent =
                 new com.xilidou.marvis.harness.subagent.Subagent(
                         client, model, registry, JacksonConfig.newMapper(), hooks);
-        registry.load(new com.xilidou.marvis.harness.skill.impl.TaskSkill(subagent));
+        registry.load(new com.xilidou.marvis.harness.tool.impl.TaskTool(subagent));
 
         return new AgentLoopHarness(
                 client,
@@ -359,9 +359,9 @@ public class AgentLoopHarness {
     }
 
     /**
-     * 把 SkillRegistry 里的工具转成 Anthropic 协议的 ToolDef 列表。
+     * 把 ToolRegistry 里的工具转成 Anthropic 协议的 ToolDef 列表。
      *
-     * <p>这是 SkillRegistry（内部抽象）和 Anthropic 协议（外部协议）之间的适配层。
+     * <p>这是 ToolRegistry（内部抽象）和 Anthropic 协议（外部协议）之间的适配层。
      * 因为 {@link ToolDefinition} 已经持有结构化的 {@link InputSchema}，
      * 适配是 1:1 的字段拷贝。将来切 OpenAI 时，只需改这个方法的目标类型。
      */
@@ -428,7 +428,7 @@ public class AgentLoopHarness {
      *
      * <p>职责：
      * <ol>
-     *   <li>派发到对应 Skill 的 execute</li>
+     *   <li>派发到对应 Tool 的 execute</li>
      *   <li>把输出截断后打印到屏幕（200 字预览）</li>
      *   <li>包装成 {@link ToolResultBlock} 返回</li>
      * </ol>

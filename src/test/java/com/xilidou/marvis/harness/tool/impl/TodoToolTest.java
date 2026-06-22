@@ -1,4 +1,4 @@
-package com.xilidou.marvis.harness.skill.impl;
+package com.xilidou.marvis.harness.tool.impl;
 
 import com.xilidou.marvis.harness.base.ToolCall;
 import com.xilidou.marvis.harness.entity.ToolResult;
@@ -14,22 +14,22 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * 锁定 TodoSkill 的核心行为：
+ * 锁定 TodoTool 的核心行为：
  * <ul>
  *   <li>正常的 todos 列表能被解析并存入 TodoStore</li>
  *   <li>非法 status / 缺 content / 错类型 → 友好错误，不污染 store</li>
  *   <li>多次调用是整体替换（不是追加）</li>
  * </ul>
  */
-class TodoSkillTest {
+class TodoToolTest {
 
     private TodoStore store;
-    private TodoSkill skill;
+    private TodoTool skill;
 
     @BeforeEach
     void setUp() {
         store = new TodoStore();
-        skill = new TodoSkill(store);
+        skill = new TodoTool(store);
     }
 
     private ToolResult call(Object todosArg) {

@@ -7,9 +7,9 @@ import java.util.Map;
 
 public class McpAdapter {
 
-    private final SkillRegistry registry;
+    private final ToolRegistry registry;
 
-    public McpAdapter(SkillRegistry registry) {
+    public McpAdapter(ToolRegistry registry) {
         this.registry = registry;
     }
 

@@ -39,8 +39,8 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * <h3>失败的判定</h3>
  *
- * <p>当前判定为"output 以 Error 开头"——这是 BashSkill / FileSystemSkill 的约定：
- * 失败时返回 {@code "Error: ..."}。如果 Skill 不遵循这个约定，metric 会偏低。
+ * <p>当前判定为"output 以 Error 开头"——这是 BashTool / FileSystemTool 的约定：
+ * 失败时返回 {@code "Error: ..."}。如果 Tool 不遵循这个约定，metric 会偏低。
  *
  * <p>**更准确的做法**：让 {@link com.xilidou.marvis.harness.entity.ToolResult} 的
  * {@code success} 字段进入 PostToolUse 参数。这需要改 Hook 接口，留给将来。
@@ -96,7 +96,7 @@ public class MetricsHook implements Hook.OnPreToolUse, Hook.OnPostToolUse {
         metric.addLatencyNanos(elapsedNanos);
 
         // 简单的失败判定：output 以 "Error" 开头
-        // 这是 BashSkill/FileSystemSkill 的约定（PermissionHook 也用 "Permission denied:" 前缀）
+        // 这是 BashTool/FileSystemTool 的约定（PermissionHook 也用 "Permission denied:" 前缀）
         boolean failed = output != null && (output.startsWith("Error") || output.startsWith("Permission denied"));
         if (failed) {
             metric.incrementFailure();

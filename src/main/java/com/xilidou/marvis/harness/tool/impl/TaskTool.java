@@ -1,10 +1,10 @@
-package com.xilidou.marvis.harness.skill.impl;
+package com.xilidou.marvis.harness.tool.impl;
 
 import com.xilidou.marvis.harness.base.ToolCall;
 import com.xilidou.marvis.harness.entity.ToolDefinition;
 import com.xilidou.marvis.harness.entity.ToolResult;
 import com.xilidou.marvis.harness.http.dto.InputSchema;
-import com.xilidou.marvis.harness.skill.Skill;
+import com.xilidou.marvis.harness.tool.Tool;
 import com.xilidou.marvis.harness.subagent.Subagent;
 import lombok.extern.slf4j.Slf4j;
 
@@ -12,7 +12,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * TaskSkill - "task" 工具的实现，让父 Agent 派子 Agent 干活。
+ * TaskTool - "task" 工具的实现，让父 Agent 派子 Agent 干活。
  *
  * <p>对应 Python s06 的：
  * <pre>
@@ -26,19 +26,19 @@ import java.util.Map;
  *
  * <h3>关键设计：循环依赖切断</h3>
  *
- * <p>TaskSkill 持有 Subagent 引用；Subagent 持有 SkillRegistry；SkillRegistry 持有 TaskSkill。
- * 这是一个**潜在的循环依赖**。Spring 启动时如果 TaskSkill 也 @Component，
- * 会被 SkillRegistry 注入 → SkillRegistry 又是 Subagent 的依赖 → ...
+ * <p>TaskTool 持有 Subagent 引用；Subagent 持有 ToolRegistry；ToolRegistry 持有 TaskTool。
+ * 这是一个**潜在的循环依赖**。Spring 启动时如果 TaskTool 也 @Component，
+ * 会被 ToolRegistry 注入 → ToolRegistry 又是 Subagent 的依赖 → ...
  *
- * <p>**当前不加 @Component**——TaskSkill 走 fromEnv 手工装配，避免循环。
+ * <p>**当前不加 @Component**——TaskTool 走 fromEnv 手工装配，避免循环。
  * Spring 化 Step 2/3 完成后再考虑用 @Lazy 或 setter 注入解决。
  */
 @Slf4j
-public class TaskSkill implements Skill {
+public class TaskTool implements Tool {
 
     private final Subagent subagent;
 
-    public TaskSkill(Subagent subagent) {
+    public TaskTool(Subagent subagent) {
         this.subagent = subagent;
     }
 

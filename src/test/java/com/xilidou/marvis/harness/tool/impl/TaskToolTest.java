@@ -1,6 +1,6 @@
-package com.xilidou.marvis.harness.skill.impl;
+package com.xilidou.marvis.harness.tool.impl;
 
-import com.xilidou.marvis.harness.base.SkillRegistry;
+import com.xilidou.marvis.harness.base.ToolRegistry;
 import com.xilidou.marvis.harness.base.ToolCall;
 import com.xilidou.marvis.harness.entity.ToolResult;
 import com.xilidou.marvis.harness.hook.HookManager;
@@ -15,7 +15,7 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * 锁定 TaskSkill 的核心行为：
+ * 锁定 TaskTool 的核心行为：
  * <ul>
  *   <li>正常任务 → 调 Subagent.spawn → 返回 summary</li>
  *   <li>缺 description / 空白 description → 友好错误</li>
@@ -31,10 +31,10 @@ class TaskSkillTest {
                 ResponseFixtures.endTurn("subagent summary text")
         );
         Subagent subagent = new Subagent(
-                mock, "test-model", new SkillRegistry(),
+                mock, "test-model", new ToolRegistry(),
                 JacksonConfig.newMapper(), new HookManager());
 
-        TaskSkill task = new TaskSkill(subagent);
+        TaskTool task = new TaskTool(subagent);
         ToolResult result = task.execute(new ToolCall("task",
                 Map.of("description", "do this work")));
 
@@ -45,7 +45,7 @@ class TaskSkillTest {
     @Test
     void missing_description_returns_error() {
         Subagent subagent = neverCalledSubagent();
-        TaskSkill task = new TaskSkill(subagent);
+        TaskTool task = new TaskTool(subagent);
         ToolResult result = task.execute(new ToolCall("task", Map.of()));
 
         assertFalse(result.isSuccess());
@@ -55,7 +55,7 @@ class TaskSkillTest {
     @Test
     void blank_description_returns_error() {
         Subagent subagent = neverCalledSubagent();
-        TaskSkill task = new TaskSkill(subagent);
+        TaskTool task = new TaskTool(subagent);
         ToolResult result = task.execute(new ToolCall("task", Map.of("description", "   ")));
 
         assertFalse(result.isSuccess());
@@ -67,10 +67,10 @@ class TaskSkillTest {
         MockAnthropicClient mock = MockAnthropicClient.throwing(
                 new RuntimeException("network down"));
         Subagent subagent = new Subagent(
-                mock, "test-model", new SkillRegistry(),
+                mock, "test-model", new ToolRegistry(),
                 JacksonConfig.newMapper(), new HookManager());
 
-        TaskSkill task = new TaskSkill(subagent);
+        TaskTool task = new TaskTool(subagent);
         // 不该让父 Agent 崩，应该返回 ToolResult(false, ...)
         ToolResult result = task.execute(new ToolCall("task",
                 Map.of("description", "do work")));
@@ -82,7 +82,7 @@ class TaskSkillTest {
     @Test
     void wrong_tool_name_returns_error() {
         Subagent subagent = neverCalledSubagent();
-        TaskSkill task = new TaskSkill(subagent);
+        TaskTool task = new TaskTool(subagent);
         ToolResult result = task.execute(new ToolCall("not_task", Map.of("description", "x")));
 
         assertFalse(result.isSuccess());
@@ -92,7 +92,7 @@ class TaskSkillTest {
     @Test
     void tool_definition_has_required_field() {
         Subagent subagent = neverCalledSubagent();
-        TaskSkill task = new TaskSkill(subagent);
+        TaskTool task = new TaskTool(subagent);
         var tools = task.getTools();
 
         assertEquals(1, tools.size());
@@ -103,7 +103,7 @@ class TaskSkillTest {
     private Subagent neverCalledSubagent() {
         return new Subagent(
                 MockAnthropicClient.throwing(new RuntimeException("should not be called")),
-                "test-model", new SkillRegistry(),
+                "test-model", new ToolRegistry(),
                 JacksonConfig.newMapper(), new HookManager());
     }
 }

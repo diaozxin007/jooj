@@ -26,7 +26,7 @@ import java.util.Optional;
 @Slf4j
 public class LargeOutputHook implements Hook.OnPostToolUse {
 
-    /** 输出超过这个字符数时告警（与 BashSkill 的 50000 截断一致，作为提醒阈值）*/
+    /** 输出超过这个字符数时告警（与 BashTool 的 50000 截断一致，作为提醒阈值）*/
     private static final int LARGE_OUTPUT_THRESHOLD = 10000;
 
     @Override

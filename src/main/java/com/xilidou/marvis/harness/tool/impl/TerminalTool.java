@@ -1,24 +1,24 @@
-package com.xilidou.marvis.harness.skill.impl;
+package com.xilidou.marvis.harness.tool.impl;
 
 import com.xilidou.marvis.harness.base.ToolCall;
 import com.xilidou.marvis.harness.entity.ToolDefinition;
 import com.xilidou.marvis.harness.entity.ToolResult;
 import com.xilidou.marvis.harness.http.dto.InputSchema;
-import com.xilidou.marvis.harness.skill.Skill;
+import com.xilidou.marvis.harness.tool.Tool;
 
 import java.util.List;
 import java.util.Map;
 
 /**
- * TerminalSkill - 通用 shell 执行。
+ * TerminalTool - 通用 shell 执行。
  *
- * <p>⚠️ 注意：和 {@link BashSkill} 功能重叠，但 BashSkill 是真实实现。
- * 这个类的 execute 是 mock。Week 4 决策：保留 BashSkill，删除或重写这个。
+ * <p>⚠️ 注意：和 {@link BashTool} 功能重叠，但 BashTool 是真实实现。
+ * 这个类的 execute 是 mock。Week 4 决策：保留 BashTool，删除或重写这个。
  *
  * <p>**故意不标 {@code @Component}**：避免 LLM 同时看到 bash 和 terminal 两个语义重复的工具，
  * 而且 terminal 还是 mock。等明确决策后再处理。
  */
-public class TerminalSkill implements Skill {
+public class TerminalTool implements Tool {
 
     @Override
     public String getName() {
