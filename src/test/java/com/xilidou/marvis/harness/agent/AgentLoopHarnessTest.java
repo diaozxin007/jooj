@@ -381,13 +381,26 @@ class AgentLoopHarnessTest {
         harness.agentLoop(messages);
 
         // 验证：第 4 轮请求里应该有 reminder 注入
-        // 第 4 轮 messages = [user, asst1, tool_res1, asst2, tool_res2, asst3, tool_res3, REMINDER]
-        // 索引 7 应该是 reminder
+        // s07 review Bug 1 修复后：reminder 揉进上一条 user(tool_results) 里的 TextBlock，
+        // 不再以独立 user 消息存在（避免 user→user 连续）。所以同时检查两种形态：
+        //   - String content 含 "<reminder>"（极端兜底路径）
+        //   - List<ContentBlock> 里某个 TextBlock 含 "<reminder>"（常规修复路径）
         CreateMessageRequest fourthReq = mock.getRequests().get(3);
         boolean hasReminder = fourthReq.getMessages().stream()
                 .filter(m -> "user".equals(m.getRole()))
-                .filter(m -> m.getContent() instanceof String)
-                .anyMatch(m -> ((String) m.getContent()).contains("<reminder>"));
+                .anyMatch(m -> {
+                    Object c = m.getContent();
+                    if (c instanceof String s) {
+                        return s.contains("<reminder>");
+                    }
+                    if (c instanceof List<?> blocks) {
+                        return blocks.stream()
+                                .filter(b -> b instanceof TextBlock)
+                                .map(b -> ((TextBlock) b).getText())
+                                .anyMatch(t -> t.contains("<reminder>"));
+                    }
+                    return false;
+                });
         assertTrue(hasReminder,
                 "第 4 轮请求应该包含 nag reminder（连续 3 轮没调 todo_write）");
     }
@@ -488,6 +501,134 @@ class AgentLoopHarnessTest {
                 .onNewSession(null);   // null 应被忽略（不崩）
 
         assertSame(harness, returned, "onNewSession 应返回 this");
+    }
+
+    // ────────────────────────────────────────────────────────────
+    //  s07 review Bug 1：nag 注入不能造成 user 消息连续
+    // ────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("nag 注入不能造成 user 消息连续（必须揉进上一条 user 而非新增）")
+    void nag_should_not_create_consecutive_user_messages() {
+        // 4 轮：连续 3 个非 todo 的 tool_use → 第 4 轮 end_turn
+        // 第 4 轮请求构造前应该触发 nag——但**不能**插一条独立 user(reminder)，
+        // 必须把 reminder 揉进上一条 user (tool_results) 里，保持 user/assistant 严格交替。
+        MockAnthropicClient mock = MockAnthropicClient.ofResponses(
+                ResponseFixtures.toolUse("test_tool", Map.of("arg", "1"), "tu_001"),
+                ResponseFixtures.toolUse("test_tool", Map.of("arg", "2"), "tu_002"),
+                ResponseFixtures.toolUse("test_tool", Map.of("arg", "3"), "tu_003"),
+                ResponseFixtures.endTurn("done")
+        );
+
+        AgentLoopHarness harness = new AgentLoopHarness(mock, "test-model", registry);
+
+        List<MessageParam> messages = new ArrayList<>();
+        messages.add(MessageParam.user("do work"));
+
+        harness.agentLoop(messages);
+
+        // 验证 1：第 4 轮请求里 user/assistant 严格交替
+        CreateMessageRequest fourthReq = mock.getRequests().get(3);
+        List<MessageParam> seq = fourthReq.getMessages();
+        for (int i = 0; i < seq.size() - 1; i++) {
+            String currentRole = seq.get(i).getRole();
+            String nextRole = seq.get(i + 1).getRole();
+            assertNotEquals(currentRole, nextRole,
+                    "messages[" + i + "] 和 messages[" + (i + 1) + "] 都是 " + currentRole +
+                            " — 违反 Anthropic Messages API 严格交替约束");
+        }
+
+        // 验证 2：reminder 文本必须出现在最后一条 user 消息（tool_results 那条）的内容里
+        MessageParam lastUserBeforeAssistant = null;
+        for (MessageParam m : seq) {
+            if ("user".equals(m.getRole())) lastUserBeforeAssistant = m;
+        }
+        assertNotNull(lastUserBeforeAssistant);
+
+        // 这条 user 的 content 应该是 List<ContentBlock>（tool_results + 追加的 TextBlock(reminder)）
+        Object content = lastUserBeforeAssistant.getContent();
+        assertInstanceOf(List.class, content,
+                "tool_results 那条 user 的 content 应该是 List；reminder 以 TextBlock 形式追加");
+
+        @SuppressWarnings("unchecked")
+        List<ContentBlock> blocks = (List<ContentBlock>) content;
+        boolean hasReminder = blocks.stream()
+                .filter(b -> b instanceof TextBlock)
+                .map(b -> ((TextBlock) b).getText())
+                .anyMatch(t -> t.contains("<reminder>"));
+        assertTrue(hasReminder,
+                "reminder 文本必须以 TextBlock 形式追加在 tool_results 末尾，实际 blocks=" + blocks);
+    }
+
+    // ────────────────────────────────────────────────────────────
+    //  s07 review Bug 2：注册 onNewSession(::clearHistory) 时新会话应清空 history
+    // ────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("注册 onNewSession(::clearHistory) 后，新 query 应清空跨会话 history")
+    void new_session_should_clear_history_when_registered() {
+        // 模拟 repl 跑两次 query：每次都 end_turn
+        // query1 跑完后 history 应该非空
+        // 触发新会话（fireOnNewSession 经回调 clearHistory）→ history 清空
+        // query2 进来时只看到自己一条 user
+        MockAnthropicClient mock = MockAnthropicClient.ofResponses(
+                ResponseFixtures.endTurn("answer 1"),
+                ResponseFixtures.endTurn("answer 2")
+        );
+
+        AgentLoopHarness harness = new AgentLoopHarness(mock, "test-model", registry);
+        // 关键：注册 history 清理回调（生产里由 fromEnv 注册）
+        harness.onNewSession(harness::clearHistory);
+
+        // query 1
+        harness.processOneQuery("question 1");
+        assertEquals(2, harness.getHistory().size(),
+                "query1 跑完后 history = [user1, assistant1]");
+
+        // 模拟 repl 收到 query2 之前触发新会话
+        // 用反射调 fireOnNewSession（私有），这是测试 onNewSession 集成的标准做法
+        try {
+            var method = AgentLoopHarness.class.getDeclaredMethod("fireOnNewSession");
+            method.setAccessible(true);
+            method.invoke(harness);
+        } catch (Exception e) {
+            fail("反射 fireOnNewSession 失败: " + e);
+        }
+
+        assertEquals(0, harness.getHistory().size(),
+                "fireOnNewSession 触发 clearHistory 后，history 应被清空");
+
+        // query 2
+        harness.processOneQuery("question 2");
+
+        // 第 2 次 LLM 调用收到的 messages 只应有 1 条（query2 自己），不带 query1
+        CreateMessageRequest secondReq = mock.getRequests().get(1);
+        assertEquals(1, secondReq.getMessages().size(),
+                "query2 的请求 messages 应该只有 1 条（onNewSession 清空了 query1 的对话）");
+        assertEquals("user", secondReq.getMessages().get(0).getRole());
+        assertEquals("question 2", secondReq.getMessages().get(0).getContent());
+    }
+
+    @Test
+    @DisplayName("不注册 clearHistory 时，history 跨 query 累积（保留扩展空间的反向验证）")
+    void without_clear_history_callback_history_accumulates() {
+        // 这测试对应 plan 里"清不清 history 是可注册行为而非硬编码"——
+        // 不注册回调时，processOneQuery 跨调用 history 累积，留作未来"多轮对话连续性"用。
+        MockAnthropicClient mock = MockAnthropicClient.ofResponses(
+                ResponseFixtures.endTurn("answer 1"),
+                ResponseFixtures.endTurn("answer 2")
+        );
+
+        AgentLoopHarness harness = new AgentLoopHarness(mock, "test-model", registry);
+        // 不注册 clearHistory 回调
+
+        harness.processOneQuery("question 1");
+        harness.processOneQuery("question 2");
+
+        // 第 2 次请求应该看到 query1 的全部对话历史
+        CreateMessageRequest secondReq = mock.getRequests().get(1);
+        assertEquals(3, secondReq.getMessages().size(),
+                "未注册 clearHistory 时，query2 应看到 [user1, assistant1, user2] 累积历史");
     }
 
     // ────────────────────────────────────────────────────────────

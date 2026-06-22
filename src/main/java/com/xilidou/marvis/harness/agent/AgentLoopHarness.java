@@ -123,6 +123,19 @@ public class AgentLoopHarness {
     private final List<Runnable> onNewSessionListeners = new ArrayList<>();
 
     /**
+     * REPL 多轮 history。s07 review 发现的 Bug 2：原代码把 history 作为 repl() 局部变量，
+     * fireOnNewSession() 只清了 todoStore，没清 history——LLM 在处理 query2 时仍能看到
+     * query1 的全部对话，违反 SYSTEM_PROMPT "每个 query 视为独立 task" 的语义，
+     * 还会线性烧 token。
+     *
+     * <p>提升为实例字段后，fromEnv() 显式注册 {@code onNewSession(this::clearHistory)}，
+     * 与 {@code todoStore::clear} 一起补齐"新会话边界"的两半。
+     *
+     * <p>**清不清** history 是可注册行为而非硬编码——保留未来支持"多轮对话连续性"的扩展空间。
+     */
+    private final List<MessageParam> history = new ArrayList<>();
+
+    /**
      * 简化构造器：使用默认 ObjectMapper + 不做权限检查（所有工具直接执行）+ 空 hooks。
      * 用于测试场景或无权限需求的简单场景。
      *
@@ -278,7 +291,7 @@ public class AgentLoopHarness {
         // s07: SYSTEM prompt 注入 skill catalog（Layer 1，廉价）
         String systemPrompt = composeSystemPrompt(skillRegistry.catalog());
 
-        return new AgentLoopHarness(
+        AgentLoopHarness harness = new AgentLoopHarness(
                 client,
                 model,
                 registry,
@@ -286,7 +299,13 @@ public class AgentLoopHarness {
                 permissions,
                 hooks,
                 systemPrompt
-        ).onNewSession(todoStore::clear);
+        );
+        harness.onNewSession(todoStore::clear);
+        // s07 review 发现的 Bug 2：清空跨会话 history。
+        // 与上一行 todoStore::clear 一起，把"新会话边界"的两半补齐。
+        // 写成可注册回调而非硬编码，保留未来"多轮对话连续性"的扩展空间。
+        harness.onNewSession(harness::clearHistory);
+        return harness;
     }
 
     private static String readEnv(Dotenv dotenv, String key) {
@@ -333,10 +352,15 @@ public class AgentLoopHarness {
 
         while (true) {
             // s05 nag: 在调 LLM 前注入 reminder（让模型在思考下一步时看到提醒）
+            // ⚠️ 关键：必须**揉进上一条 user 消息**，不能 add 一条独立的 user。
+            // 原因：上一轮循环最后 messages.add(MessageParam.toolResults(...))，role 也是 user
+            //       （Anthropic 协议把 tool_result 包在 user 里）。
+            //       连续两条 role=user 违反 Messages API"严格交替"约束，部分供应商直接 400。
+            // s07 review 发现的 Bug 1：原代码 messages.add(MessageParam.user(...)) 会触发 user→user。
             if (roundsSinceTodo >= NAG_THRESHOLD && !messages.isEmpty()) {
-                messages.add(MessageParam.user(
-                        "<reminder>You haven't updated your todos for " + NAG_THRESHOLD +
-                                " rounds. Use todo_write to update task statuses.</reminder>"));
+                String nagText = "<reminder>You haven't updated your todos for " + NAG_THRESHOLD +
+                        " rounds. Use todo_write to update task statuses.</reminder>";
+                appendNagToLastUserMessage(messages, nagText);
                 log.info("[Loop] nag reminder injected after {} rounds without todo_write", roundsSinceTodo);
                 roundsSinceTodo = 0;
             }
@@ -409,6 +433,54 @@ public class AgentLoopHarness {
     }
 
     /**
+     * 把 nag reminder 揉进 messages 末尾那条 user 消息，避免 user→user 连续。
+     *
+     * <p>背景：上一轮循环结束时刚 add(MessageParam.toolResults(...))，role 也是 user
+     * （tool_result 必须包在 user 里）。如果直接 add 一条新的 user(reminder)，messages
+     * 里就出现两条连续的 role=user，违反 Anthropic Messages API "严格交替" 约束。
+     *
+     * <p>策略（按上一条 user 的 content 形态分支）：
+     * <ul>
+     *   <li>String → 拼接：{@code oldText + "\n\n" + nag}</li>
+     *   <li>List 含 ToolResultBlock → 在 list 末尾追加一个 TextBlock(nag)</li>
+     *   <li>极端兜底（末尾不是 user / 内容形态未知）→ 退回原有 add(user) 行为</li>
+     * </ul>
+     *
+     * <p>⚠️ 不能原地 mutate 旧 MessageParam：MockAnthropicClient.snapshot() 浅拷贝
+     * messages 列表，单条 MessageParam 是同一引用——原地改会污染历史 request 断言。
+     * 这里用 {@code messages.set(idx, new MessageParam(...))} 替换，老对象保持不变。
+     */
+    @SuppressWarnings("unchecked")
+    private void appendNagToLastUserMessage(List<MessageParam> messages, String nag) {
+        int lastIdx = messages.size() - 1;
+        MessageParam last = messages.get(lastIdx);
+
+        if (!"user".equals(last.getRole())) {
+            // 极少见：loop 入口前最后一条不是 user（例如直接传入 assistant 收尾的历史）
+            // 此时无 user→user 风险，维持原行为
+            messages.add(MessageParam.user(nag));
+            return;
+        }
+
+        Object content = last.getContent();
+        MessageParam merged;
+        if (content instanceof String oldText) {
+            merged = MessageParam.user(oldText + "\n\n" + nag);
+        } else if (content instanceof List<?> blocks) {
+            // 复制 list 后追加 TextBlock；不修改原 list（保护历史 snapshot）
+            List<ContentBlock> newBlocks = new ArrayList<>((List<ContentBlock>) blocks);
+            newBlocks.add(new TextBlock(nag));
+            merged = new MessageParam("user", newBlocks);
+        } else {
+            // 兜底：未知 content 形态，退回独立 user 消息（虽然会触发 user→user，
+            // 但好过丢失 reminder——这种情况理论上不会出现）
+            messages.add(MessageParam.user(nag));
+            return;
+        }
+        messages.set(lastIdx, merged);
+    }
+
+    /**
      * 把 ToolRegistry 里的工具转成 Anthropic 协议的 ToolDef 列表。
      *
      * <p>这是 ToolRegistry（内部抽象）和 Anthropic 协议（外部协议）之间的适配层。
@@ -460,6 +532,40 @@ public class AgentLoopHarness {
                 log.warn("[Loop] onNewSession callback failed: {}", e.getMessage());
             }
         }
+    }
+
+    /**
+     * 清空 REPL 多轮 history。s07 review 发现的 Bug 2 修复用：
+     * 在 {@link #fromEnv} 里通过 {@code onNewSession(this::clearHistory)} 注册，
+     * 让 LLM 处理新 user query 时不再看到上一轮对话——避免跨会话 token 累积污染。
+     *
+     * <p>公开访问是为了：
+     * <ol>
+     *   <li>{@code onNewSession} 回调注册（method reference）</li>
+     *   <li>测试可直接调用验证清理生效</li>
+     * </ol>
+     */
+    public void clearHistory() {
+        history.clear();
+    }
+
+    /**
+     * 暴露 history 引用给测试和（未来的）扩展。**只读用途**——直接 mutate 会绕过
+     * {@link #onNewSession} 的清理逻辑。
+     */
+    public List<MessageParam> getHistory() {
+        return history;
+    }
+
+    /**
+     * 处理一次完整的 user query：注入到 history → 跑 agentLoop。
+     *
+     * <p>从 {@link #repl} 抽出来让测试可注入 query 不走 Scanner。
+     * 调用方负责在调用前后做"新会话"和"打印回复"等 UI 处理。
+     */
+    public void processOneQuery(String query) {
+        history.add(MessageParam.user(query));
+        agentLoop(history);
     }
 
     /**
@@ -523,8 +629,6 @@ public class AgentLoopHarness {
         System.out.println("s01: Agent Loop (Java)");
         System.out.println("输入问题，回车发送。输入 q 退出。\n");
 
-        List<MessageParam> history = new ArrayList<>();
-
         try (Scanner scanner = new Scanner(System.in, StandardCharsets.UTF_8)) {
             while (true) {
                 System.out.print("\033[36ms01 >> \033[0m");
@@ -545,13 +649,11 @@ public class AgentLoopHarness {
                 }
 
                 // s05+: 触发"新会话开始"回调。
-                // 典型用途：清空 TodoStore 避免上一次任务的 todo 串到下一次。
-                // 见 fromEnv() 里 todoStore::clear 的注册。
+                // 典型用途：清空 TodoStore + history（见 fromEnv 的注册）。
+                // 注意：必须在 history.add 之前触发，否则 query 自身会被清掉。
                 fireOnNewSession();
 
-                history.add(MessageParam.user(query));
-
-                agentLoop(history);
+                processOneQuery(query);
 
                 // 打印模型最终文本回复（loop 结束时最后一条 assistant message）
                 printLastAssistantText(history);
