@@ -196,7 +196,7 @@ java -cp "$CP" com.xilidou.marvis.harness.http.HttpClientSmokeTest
 |------|------|------|
 | Java | JDK | 17 |
 | 框架 | Spring Boot | 4.1（仅作启动占位）|
-| HTTP | OkHttp | 4.12.0（不用 5.x，5.x 是 Kotlin Multiplatform）|
+| HTTP | OkHttp | 5.4.0（用 `okhttp-jvm` artifact，避开 KMP 主 jar 空陷阱）|
 | JSON | Jackson | 2.18.2（显式锁定，不用 Spring 的 3.x）|
 | 日志 | SLF4J + Logback | Spring Boot 默认 |
 | 工具 | Lombok | Spring Boot 默认 |
@@ -218,9 +218,26 @@ sed -i 's/old/new/' file
 sed -i '' 's/old/new/' file
 ```
 
-### 坑 2: OkHttp 5.x 主 jar 是空的
+### 坑 2: OkHttp 5.x 主 jar 是空的（Kotlin Multiplatform 陷阱）
 
-OkHttp 5.x 重构成 Kotlin Multiplatform，主 jar 只有 META-INF。需要额外引 `okhttp-jvm`。**学习项目用 4.12.0 单 jar 最简单**。
+OkHttp 5.x 重构成 Kotlin Multiplatform，**主 artifact `okhttp` 只有 META-INF**。
+
+```xml
+<!-- ❌ 编译报 "程序包 okhttp3 不存在" -->
+<artifactId>okhttp</artifactId>
+<version>5.4.0</version>
+
+<!-- ✅ 用 JVM 平台 artifact -->
+<artifactId>okhttp-jvm</artifactId>
+<version>5.4.0</version>
+
+<!-- ✅ 或退回 4.12.0 单 jar -->
+<artifactId>okhttp</artifactId>
+<version>4.12.0</version>
+```
+
+`okhttp-jvm` 才是 KMP 时代的"JVM 实现"，含完整 class 文件。
+本项目最终选择 `okhttp-jvm:5.4.0` 享受新特性（Java 21 优化等）。
 
 ### 坑 3: Spring Boot 4.x 默认 Jackson 3.x（包名变了）
 

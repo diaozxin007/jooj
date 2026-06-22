@@ -1,5 +1,6 @@
 package com.xilidou.marvis.harness.agent;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xilidou.marvis.harness.JacksonConfig;
 import com.xilidou.marvis.harness.base.SkillRegistry;
@@ -241,8 +242,8 @@ public class AgentLoopHarness {
      */
     private Map<String, Object> parseToolInput(ToolUseBlock toolUse) {
         try {
-            @SuppressWarnings("unchecked")
-            Map<String, Object> converted = json.convertValue(toolUse.getInput(), Map.class);
+            Map<String, Object> converted = json.convertValue(toolUse.getInput(), new TypeReference<>() {
+            });
             return converted != null ? converted : new HashMap<>();
         } catch (Exception e) {
             log.error("Failed to parse tool input for {}: {}", toolUse.getName(), e.getMessage());
@@ -285,7 +286,6 @@ public class AgentLoopHarness {
     /**
      * 从 history 末尾找最后一条 assistant message，打印其中的 text blocks。
      */
-    @SuppressWarnings("unchecked")
     private void printLastAssistantText(List<MessageParam> history) {
         if (history.isEmpty()) return;
         MessageParam last = history.get(history.size() - 1);
