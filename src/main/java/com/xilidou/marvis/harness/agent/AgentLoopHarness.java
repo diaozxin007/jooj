@@ -176,12 +176,17 @@ public class AgentLoopHarness {
                 new FileSystemSkill()
         ));
 
-        // s04 hook：手工注册 PermissionHook + ToolUseLogHook + LargeOutputHook
+        // s04 hook：手工注册 PermissionHook + ToolUseLogHook + LargeOutputHook + MetricsHook
         // permissions Pipeline 给 PermissionHook 用，作为 fallback 也保留在 Loop（虽然不再被直接调用）
         PermissionPipeline permissions = PermissionPipeline.defaultCli();
+        com.xilidou.marvis.harness.hook.impl.MetricsHook metrics =
+                new com.xilidou.marvis.harness.hook.impl.MetricsHook();
         HookManager hooks = new HookManager()
                 .register(new com.xilidou.marvis.harness.hook.impl.PermissionHook(permissions))
                 .register(new com.xilidou.marvis.harness.hook.impl.ToolUseLogHook())
+                // metrics 同时实现 OnPreToolUse 和 OnPostToolUse，要分别注册（手工场景）
+                .register((com.xilidou.marvis.harness.hook.Hook.OnPreToolUse) metrics)
+                .register((com.xilidou.marvis.harness.hook.Hook.OnPostToolUse) metrics)
                 .register(new com.xilidou.marvis.harness.hook.impl.LargeOutputHook());
 
         return new AgentLoopHarness(
