@@ -48,6 +48,24 @@ public class AnthropicException extends RuntimeException {
                 || (statusCode >= 500 && statusCode < 600);
     }
 
+    /**
+     * 是否是 "prompt too long" 错误(messages 总 token 超过 context window)。
+     *
+     * <p>Anthropic API 在 messages 超长时返回 400, body 类似:
+     * <pre>
+     *   {"type":"error","error":{"type":"invalid_request_error",
+     *    "message":"prompt is too long: 250000 tokens > 200000 maximum"}}
+     * </pre>
+     *
+     * <p>判定:statusCode=400 且 body 包含 "prompt is too long" 或 "prompt_too_long"。
+     * 这是 L4 reactive_compact 的触发信号。
+     */
+    public boolean isPromptTooLong() {
+        if (statusCode != 400 || responseBody == null) return false;
+        String body = responseBody.toLowerCase();
+        return body.contains("prompt is too long") || body.contains("prompt_too_long");
+    }
+
     private static String buildMessage(int statusCode, String responseBody) {
         if (statusCode == 0) {
             return "Anthropic API IO error: " + responseBody;

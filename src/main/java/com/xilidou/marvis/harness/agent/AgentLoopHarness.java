@@ -5,9 +5,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xilidou.marvis.harness.JacksonConfig;
 import com.xilidou.marvis.harness.base.ToolRegistry;
 import com.xilidou.marvis.harness.base.ToolCall;
+import com.xilidou.marvis.harness.compact.CompactConfig;
+import com.xilidou.marvis.harness.compact.CompactPipeline;
 import com.xilidou.marvis.harness.entity.ToolDefinition;
 import com.xilidou.marvis.harness.entity.ToolResult;
 import com.xilidou.marvis.harness.http.AnthropicClient;
+import com.xilidou.marvis.harness.http.AnthropicException;
 import com.xilidou.marvis.harness.http.AnthropicHttpClient;
 import com.xilidou.marvis.harness.http.dto.ContentBlock;
 import com.xilidou.marvis.harness.http.dto.CreateMessageRequest;
@@ -19,11 +22,13 @@ import com.xilidou.marvis.harness.http.dto.ToolDef;
 import com.xilidou.marvis.harness.http.dto.ToolResultBlock;
 import com.xilidou.marvis.harness.http.dto.ToolUseBlock;
 import com.xilidou.marvis.harness.hook.HookManager;
+import com.xilidou.marvis.harness.memory.MemoryConfig;
+import com.xilidou.marvis.harness.memory.MemoryService;
 import com.xilidou.marvis.harness.permission.PermissionPipeline;
 import com.xilidou.marvis.harness.permission.PermissionResult;
 import com.xilidou.marvis.harness.skill.SkillRegistry;
-import com.xilidou.marvis.harness.tool.impl.BashTool;
-import com.xilidou.marvis.harness.tool.impl.FileSystemTool;
+import com.xilidou.marvis.harness.subagent.Subagent;
+import com.xilidou.marvis.harness.tool.impl.*;
 import io.github.cdimascio.dotenv.Dotenv;
 import lombok.extern.slf4j.Slf4j;
 
@@ -104,6 +109,31 @@ public class AgentLoopHarness {
     private final HookManager hooks;
 
     /**
+     * s08: 上下文压缩流水线。null = 跳过压缩(向后兼容现有 3/5/6/7 参构造器调用方)。
+     *
+     * <p>每轮 LLM 调用前调用 {@link CompactPipeline#apply(List)} 在 messages 列表上
+     * 原地裁剪/占位,避免长会话爆 context window。
+     *
+     * <p>不通过 hook 实现的原因:hook 4 个事件(UserPromptSubmit/PreToolUse/
+     * PostToolUse/Stop)都不在"LLM 调用前"这个时机点;强行复用要新增事件,
+     * 污染 hook 的"以工具为中心"语义。直接在 AgentLoop 调用更干净。
+     */
+    private final CompactPipeline compactPipeline;
+
+    /**
+     * s09: Memory 系统 facade。null = 跳过 memory(向后兼容,测试默认不启用)。
+     *
+     * <p>三个介入点:
+     * <ul>
+     *   <li>repl() 收到 user query 时:{@link MemoryService#loadRelevant} 注入相关 memory</li>
+     *   <li>agentLoop 自然停顿点(stop_reason != tool_use):
+     *       {@link MemoryService#onTurnEnd} 触发 extract + consolidate</li>
+     *   <li>fromEnv 启动时:{@link MemoryService#catalog} 注入 SYSTEM prompt</li>
+     * </ul>
+     */
+    private final MemoryService memoryService;
+
+    /**
      * 完整 SYSTEM prompt（含 base + skill catalog 注入）。s07 启动时构造。
      *
      * <p>不可变：catalog 只在启动时扫描一次，运行中不重扫。
@@ -139,6 +169,8 @@ public class AgentLoopHarness {
      * 简化构造器：使用默认 ObjectMapper + 不做权限检查（所有工具直接执行）+ 空 hooks。
      * 用于测试场景或无权限需求的简单场景。
      *
+     * <p>s08：CompactPipeline=null,跳过压缩(测试默认不需要)。
+     *
      * @param client   LLM 客户端（生产用 {@link AnthropicHttpClient}，测试用 Mock）
      * @param model    模型 ID，如 {@code claude-sonnet-4-6}
      * @param registry 工具池
@@ -153,6 +185,8 @@ public class AgentLoopHarness {
     /**
      * 5 参构造器（测试场景常用：注入特定 PermissionPipeline）。
      * hooks 默认空，permission 走旧路径（直接调 pipeline）。
+     *
+     * <p>s08：CompactPipeline=null,跳过压缩。
      */
     public AgentLoopHarness(AnthropicClient client, String model, ToolRegistry registry,
                             ObjectMapper json, PermissionPipeline permissions) {
@@ -161,6 +195,8 @@ public class AgentLoopHarness {
 
     /**
      * 完全自定义构造器（s04 完整版）。
+     *
+     * <p>s08：委托给 7 参,再委托到 8 参,CompactPipeline=null。
      *
      * @param client      LLM 客户端
      * @param model       模型 ID
@@ -171,23 +207,65 @@ public class AgentLoopHarness {
      */
     public AgentLoopHarness(AnthropicClient client, String model, ToolRegistry registry,
                             ObjectMapper json, PermissionPipeline permissions, HookManager hooks) {
-        this.client = Objects.requireNonNull(client, "client");
-        this.model = Objects.requireNonNull(model, "model");
-        this.registry = Objects.requireNonNull(registry, "registry");
-        this.json = Objects.requireNonNull(json, "json");
-        this.permissions = Objects.requireNonNull(permissions, "permissions");
-        this.hooks = Objects.requireNonNull(hooks, "hooks");
-        this.systemPrompt = SYSTEM_PROMPT_BASE;   // ← 默认无 catalog；用 withSkillCatalog 注入
+        this(client, model, registry, json, permissions, hooks, null);
     }
 
     /**
      * 7 参构造器（s07 完整版）：可注入自定义 SYSTEM prompt（含 skill catalog）。
      *
      * <p>调用方负责拼装 catalog 字符串（通常通过 {@link SkillRegistry#catalog()}）。
+     *
+     * <p>s08：委托给 8 参,CompactPipeline=null(向后兼容)。
      */
     public AgentLoopHarness(AnthropicClient client, String model, ToolRegistry registry,
                             ObjectMapper json, PermissionPipeline permissions, HookManager hooks,
                             String systemPrompt) {
+        this(client, model, registry, json, permissions, hooks, systemPrompt, null);
+    }
+
+    /**
+     * 8 参构造器（s08 完整版）：注入 {@link CompactPipeline}。
+     *
+     * <p>{@code compactPipeline} 允许为 null —— 测试和向后兼容路径不强制要求。
+     * 生产路径(见 {@link #fromEnv()})总是注入一个 {@code new CompactPipeline()}
+     * 实例,启用 L1+L2 压缩。
+     *
+     * @param client          LLM 客户端
+     * @param model           模型 ID
+     * @param registry        工具池
+     * @param json            Jackson ObjectMapper
+     * @param permissions     权限 Pipeline
+     * @param hooks           Hook 管理器
+     * @param systemPrompt    自定义 SYSTEM prompt(为 null 时用 SYSTEM_PROMPT_BASE)
+     * @param compactPipeline 上下文压缩流水线(为 null 时跳过压缩)
+     */
+    public AgentLoopHarness(AnthropicClient client, String model, ToolRegistry registry,
+                            ObjectMapper json, PermissionPipeline permissions, HookManager hooks,
+                            String systemPrompt, CompactPipeline compactPipeline) {
+        this(client, model, registry, json, permissions, hooks, systemPrompt, compactPipeline, null);
+    }
+
+    /**
+     * 9 参构造器(s09 完整版):注入 {@link MemoryService}。
+     *
+     * <p>{@code memoryService} 允许为 null —— 测试和向后兼容路径不强制要求。
+     * 生产路径(见 {@link #fromEnv()})总是注入一个 MemoryService 实例,
+     * 启用 4 层 Memory 系统(Storage / Selection / Extraction / Consolidation)。
+     *
+     * @param client          LLM 客户端
+     * @param model           模型 ID
+     * @param registry        工具池
+     * @param json            Jackson ObjectMapper
+     * @param permissions     权限 Pipeline
+     * @param hooks           Hook 管理器
+     * @param systemPrompt    自定义 SYSTEM prompt(为 null 时用 SYSTEM_PROMPT_BASE)
+     * @param compactPipeline 上下文压缩流水线(为 null 时跳过压缩)
+     * @param memoryService   Memory 系统 facade(为 null 时跳过 memory)
+     */
+    public AgentLoopHarness(AnthropicClient client, String model, ToolRegistry registry,
+                            ObjectMapper json, PermissionPipeline permissions, HookManager hooks,
+                            String systemPrompt, CompactPipeline compactPipeline,
+                            MemoryService memoryService) {
         this.client = Objects.requireNonNull(client, "client");
         this.model = Objects.requireNonNull(model, "model");
         this.registry = Objects.requireNonNull(registry, "registry");
@@ -195,6 +273,8 @@ public class AgentLoopHarness {
         this.permissions = Objects.requireNonNull(permissions, "permissions");
         this.hooks = Objects.requireNonNull(hooks, "hooks");
         this.systemPrompt = systemPrompt != null ? systemPrompt : SYSTEM_PROMPT_BASE;
+        this.compactPipeline = compactPipeline;  // 允许 null:跳过压缩
+        this.memoryService = memoryService;       // 允许 null:跳过 memory
     }
 
     /**
@@ -206,10 +286,29 @@ public class AgentLoopHarness {
      * @return 完整 SYSTEM prompt
      */
     public static String composeSystemPrompt(String skillCatalog) {
-        if (skillCatalog == null || skillCatalog.isBlank()) {
-            return SYSTEM_PROMPT_BASE;
+        return composeSystemPrompt(skillCatalog, null);
+    }
+
+    /**
+     * s09 重载:在 SYSTEM prompt 中同时注入 skill catalog + memory catalog。
+     *
+     * <p>memory catalog(MEMORY.md 内容)给模型一个 catalog 视角:
+     * 即使具体 body 没注入到 user message, 模型从 SYSTEM 也能知道
+     * ".memory/ 里有哪些条目存在", 必要时主动调 load_skill / 提示用户它知道某事。
+     *
+     * @param skillCatalog  SkillRegistry catalog
+     * @param memoryCatalog MemoryService.catalog() 的输出, 可为空
+     * @return 完整 SYSTEM prompt
+     */
+    public static String composeSystemPrompt(String skillCatalog, String memoryCatalog) {
+        StringBuilder sb = new StringBuilder(SYSTEM_PROMPT_BASE);
+        if (skillCatalog != null && !skillCatalog.isBlank()) {
+            sb.append("\n\nSkills available (use load_skill to get full content):\n").append(skillCatalog);
         }
-        return SYSTEM_PROMPT_BASE + "\n\nSkills available (use load_skill to get full content):\n" + skillCatalog;
+        if (memoryCatalog != null && !memoryCatalog.isBlank()) {
+            sb.append("\n\nMemory index (long-term knowledge from past sessions):\n").append(memoryCatalog);
+        }
+        return sb.toString();
     }
 
     // ── 工厂方法 ────────────────────────────────────────────────
@@ -271,25 +370,32 @@ public class AgentLoopHarness {
         // 注意：ToolRegistry 此时还在初始化，TaskTool 需要 Subagent，Subagent 需要
         // ToolRegistry —— 用 builder pattern 切断循环：先建 registry（不含 task），
         // 建 Subagent 持有 registry 引用，再把 TaskTool 加到 registry
-        com.xilidou.marvis.harness.tool.impl.TodoTool todoSkill =
-                new com.xilidou.marvis.harness.tool.impl.TodoTool(todoStore);
+        TodoTool todoSkill =
+                new TodoTool(todoStore);
         ToolRegistry registry = new ToolRegistry(List.of(
                 new BashTool(),
                 new FileSystemTool(),
                 todoSkill
         ));
 
-        com.xilidou.marvis.harness.subagent.Subagent subagent =
-                new com.xilidou.marvis.harness.subagent.Subagent(
+        Subagent subagent =
+                new Subagent(
                         client, model, registry, JacksonConfig.newMapper(), hooks);
-        registry.load(new com.xilidou.marvis.harness.tool.impl.TaskTool(subagent));
+        registry.load(new TaskTool(subagent));
 
         // s07: 扫描 skills/ 目录构建 catalog，注册 LoadSkillTool
         SkillRegistry skillRegistry = new SkillRegistry(java.nio.file.Paths.get("skills"));
-        registry.load(new com.xilidou.marvis.harness.tool.impl.LoadSkillTool(skillRegistry));
+        registry.load(new LoadSkillTool(skillRegistry));
 
-        // s07: SYSTEM prompt 注入 skill catalog（Layer 1，廉价）
-        String systemPrompt = composeSystemPrompt(skillRegistry.catalog());
+        // s09: Memory 系统(Storage / Selection / Extraction / Consolidation)
+        // 默认配置:.memory/ 在 cwd, 阈值 10 触发 consolidate
+        MemoryService memoryService = new MemoryService(new MemoryConfig(), client, model);
+
+        // s07 + s09: SYSTEM prompt 注入 skill catalog + memory catalog
+        String systemPrompt = composeSystemPrompt(skillRegistry.catalog(), memoryService.catalog());
+
+        // s08: 上下文压缩流水线(L1+L2+L3 proactive + L4 reactive,生产用默认阈值)
+        CompactPipeline compactPipeline = new CompactPipeline(new CompactConfig(), client, model);
 
         AgentLoopHarness harness = new AgentLoopHarness(
                 client,
@@ -298,7 +404,9 @@ public class AgentLoopHarness {
                 JacksonConfig.newMapper(),
                 permissions,
                 hooks,
-                systemPrompt
+                systemPrompt,
+                compactPipeline,
+                memoryService
         );
         harness.onNewSession(todoStore::clear);
         // s07 review 发现的 Bug 2：清空跨会话 history。
@@ -365,7 +473,15 @@ public class AgentLoopHarness {
                 roundsSinceTodo = 0;
             }
 
-            // ① 调 LLM
+            // s08: 上下文压缩(每轮 LLM 调用前)。
+            // 时机选在 nag 之后:nag 改的是 messages 末尾,Compact 跑在它之后能看到改后
+            // 的 messages,无副作用。
+            // pipeline=null 时跳过(向后兼容旧构造器路径,如测试和 6 参/7 参调用方)。
+            if (compactPipeline != null) {
+                compactPipeline.apply(messages);
+            }
+
+            // ① 调 LLM(带 L4 reactive_compact 兜底)
             CreateMessageRequest request = CreateMessageRequest.builder()
                     .model(model)
                     .system(systemPrompt)
@@ -374,7 +490,32 @@ public class AgentLoopHarness {
                     .maxTokens(MAX_TOKENS)
                     .build();
 
-            CreateMessageResponse response = client.createMessage(request);
+            CreateMessageResponse response;
+            try {
+                response = client.createMessage(request);
+            } catch (AnthropicException e) {
+                // s08 L4: prompt_too_long 时跑 reactive_compact 后重试一次
+                if (e.isPromptTooLong() && compactPipeline != null
+                        && compactPipeline.hasReactiveSupport()) {
+                    log.warn("[Loop] prompt_too_long detected, triggering L4 reactive compact");
+                    boolean ok = compactPipeline.reactiveCompact(messages);
+                    if (!ok) {
+                        log.error("[Loop] L4 reactive compact failed, re-throwing");
+                        throw e;
+                    }
+                    // 重建 request(messages 已被原地修改),重试一次
+                    CreateMessageRequest retry = CreateMessageRequest.builder()
+                            .model(model)
+                            .system(systemPrompt)
+                            .messages(messages)
+                            .tools(tools)
+                            .maxTokens(MAX_TOKENS)
+                            .build();
+                    response = client.createMessage(retry);
+                } else {
+                    throw e;
+                }
+            }
 
             // ② 把 assistant 回复**完整**追加（坑 4）
             messages.add(MessageParam.assistant(response.getContent()));
@@ -558,14 +699,33 @@ public class AgentLoopHarness {
     }
 
     /**
-     * 处理一次完整的 user query：注入到 history → 跑 agentLoop。
+     * 处理一次完整的 user query:注入到 history → 跑 agentLoop。
      *
      * <p>从 {@link #repl} 抽出来让测试可注入 query 不走 Scanner。
      * 调用方负责在调用前后做"新会话"和"打印回复"等 UI 处理。
+     *
+     * <p>s09 介入点 1:把相关 memory 拼到 user query 之前,作为单条 user message
+     * 一起塞进 history。这样 memory body 只占用一次 token,后续轮次直接看 history
+     * 里这条 user message,不重复注入。
      */
     public void processOneQuery(String query) {
-        history.add(MessageParam.user(query));
+        // s09: 在 query 进入 history 之前,先注入相关 memory
+        String enriched = query;
+        if (memoryService != null) {
+            String injection = memoryService.loadRelevant(history);
+            if (injection != null && !injection.isBlank()) {
+                enriched = injection + "\n\n" + query;
+                log.info("[Memory] injected {} chars of relevant memories", injection.length());
+            }
+        }
+        history.add(MessageParam.user(enriched));
         agentLoop(history);
+
+        // s09 介入点 2:turn 结束后(此时 stop_reason 已经 != tool_use),
+        // 触发 extract + consolidate
+        if (memoryService != null) {
+            memoryService.onTurnEnd(history);
+        }
     }
 
     /**
