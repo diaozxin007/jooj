@@ -35,3 +35,17 @@ marvis:
     identity: "Test identity. Act, don't explain."
     tools: "Available tools: test stub."
     memory-header: "Memory:"
+
+  # s11 测试场景:激进默认让 backoff 测试在 < 100ms 完成。
+  # max-retries=2 + base-delay-ms=10 → 即使重试满都几十毫秒。
+  # fallback-model 留空,需要测 fallback 切换的测试用例自己 override。
+  recovery:
+    max-retries: 2
+    base-delay-ms: 10
+    max-delay-ms: 50
+    max-consecutive529: 2
+    fallback-model: ""
+    default-max-tokens: 8000
+    escalated-max-tokens: 64000
+    max-recovery-retries: 3
+    continuation-prompt: "Continue."

@@ -142,6 +142,16 @@ public class AgentLoopHarness {
      */
     private final SystemPromptAssembler promptAssembler;
 
+    /**
+     * 错误恢复协调器(s11)。三条路径:
+     * Path 1 max_tokens 升级、Path 2 prompt_too_long 触发 reactive compact、
+     * Path 3 429/529 退避 + fallback model 切换。
+     */
+    private final RecoveryCoordinator recoveryCoordinator;
+
+    /** 错误恢复配置(s11)。{@link #agentLoop} 用 {@code defaultMaxTokens} 初始化 RecoveryState。 */
+    private final MarvisProperties.Recovery recoveryCfg;
+
     /** 新会话回调列表。{@link #repl} 接到新 user 输入时会依次执行。 */
     private final List<Runnable> onNewSessionListeners = new ArrayList<>();
 
@@ -164,6 +174,7 @@ public class AgentLoopHarness {
                             TodoStore todoStore,
                             Subagent subagent,
                             SystemPromptAssembler promptAssembler,
+                            RecoveryCoordinator recoveryCoordinator,
                             MarvisProperties props) {
         this.client = client;
         this.model = props.getAnthropic().getModel();
@@ -176,6 +187,8 @@ public class AgentLoopHarness {
         this.todoStore = todoStore;
         this.subagent = subagent;
         this.promptAssembler = promptAssembler;
+        this.recoveryCoordinator = recoveryCoordinator;
+        this.recoveryCfg = props.getRecovery();
     }
 
     /**
@@ -196,6 +209,11 @@ public class AgentLoopHarness {
     public void agentLoop(List<MessageParam> messages) {
         List<ToolDef> tools = buildTools();
         int roundsSinceTodo = 0;
+
+        // s11: per-loop 错误恢复状态机。跨 agentLoop 调用不污染。
+        // 初始 model = 配置里的默认 model;初始 max_tokens = recovery.defaultMaxTokens
+        // (Path 1 触发时 currentMaxTokens 会被升级到 escalatedMaxTokens)。
+        var recoveryState = new RecoveryState(model, recoveryCfg.getDefaultMaxTokens());
 
         while (true) {
             if (roundsSinceTodo >= NAG_THRESHOLD && !messages.isEmpty()) {
@@ -219,36 +237,42 @@ public class AgentLoopHarness {
             // 详见 SystemPromptAssembler.assembleBlocks 的 javadoc。
             var system = promptAssembler.assembleBlocks(promptAssembler.currentContext());
 
-            CreateMessageRequest request = CreateMessageRequest.builder()
-                    .model(model)
-                    .system(system)
-                    .messages(messages)
-                    .tools(tools)
-                    .maxTokens(MAX_TOKENS)
-                    .build();
-
-            CreateMessageResponse response;
-            try {
-                response = client.createMessage(request);
-            } catch (AnthropicException e) {
-                if (e.isPromptTooLong() && compactPipeline.hasReactiveSupport()) {
-                    log.warn("[Loop] prompt_too_long detected, triggering L4 reactive compact");
-                    boolean ok = compactPipeline.reactiveCompact(messages);
-                    if (!ok) {
-                        log.error("[Loop] L4 reactive compact failed, re-throwing");
-                        throw e;
-                    }
-                    CreateMessageRequest retry = CreateMessageRequest.builder()
-                            .model(model)
+            // s11: 调 LLM + 三条恢复路径(429/529 退避 + max_tokens 升级 +
+            // prompt_too_long reactive compact),封装在 RecoveryCoordinator 里。
+            // requestBuilder 是 lambda,因为 retry 中 state.currentModel /
+            // state.currentMaxTokens 可能被 mutate,request 必须每次用最新 state 重建。
+            RecoveryResult recoveryResult = recoveryCoordinator.call(
+                    client,
+                    state -> CreateMessageRequest.builder()
+                            .model(state.getCurrentModel())
                             .system(system)
                             .messages(messages)
                             .tools(tools)
-                            .maxTokens(MAX_TOKENS)
-                            .build();
-                    response = client.createMessage(retry);
-                } else {
-                    throw e;
-                }
+                            .maxTokens(state.getCurrentMaxTokens())
+                            .build(),
+                    messages,
+                    recoveryState
+            );
+
+            CreateMessageResponse response;
+            if (recoveryResult instanceof RecoveryResult.Done d) {
+                response = d.response();
+            } else if (recoveryResult instanceof RecoveryResult.EscalateAndRetry) {
+                // Path 1 第一次升级 / Path 2 reactive compact 后,直接重新跑循环
+                continue;
+            } else if (recoveryResult instanceof RecoveryResult.AppendContinuation ac) {
+                // Path 1 已升级仍截断 → append 截断输出 + continuation user message
+                messages.add(MessageParam.assistant(ac.response().getContent()));
+                messages.add(MessageParam.user(ac.continuation()));
+                continue;
+            } else if (recoveryResult instanceof RecoveryResult.Fatal f) {
+                // 不可恢复:把错误说明追加到对话,让 REPL 打出来给用户看
+                messages.add(MessageParam.assistant(List.of(
+                        new TextBlock("[Error] " + f.reason()))));
+                return;
+            } else {
+                // sealed interface 4 个分支已穷尽,理论不可达;留个兜底
+                throw new IllegalStateException("Unhandled RecoveryResult: " + recoveryResult);
             }
 
             messages.add(MessageParam.assistant(response.getContent()));

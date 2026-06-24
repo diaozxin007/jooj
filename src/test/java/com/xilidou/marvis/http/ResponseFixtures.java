@@ -90,6 +90,14 @@ public final class ResponseFixtures {
         return new ToolUseBlock(id, name, inputNode);
     }
 
+    /**
+     * 构造一个 {@code stop_reason: "max_tokens"} 响应(s11 测试 Path 1 用)。
+     * 模拟模型输出未结束就被 max_tokens 截断的场景。
+     */
+    public static CreateMessageResponse maxTokensTruncated(String partialText) {
+        return baseResponse(List.of(new TextBlock(partialText)), "max_tokens");
+    }
+
     // ── 内部：构造响应骨架 ──────────────────────────────────────
     private static CreateMessageResponse baseResponse(List<ContentBlock> content, String stopReason) {
         Usage usage = new Usage(100, 50, null, null);

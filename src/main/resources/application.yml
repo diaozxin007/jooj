@@ -47,3 +47,19 @@ marvis:
       Available tools: bash, read_file, write_file, edit_file, glob,
       todo_write, load_skill, task.
     memory-header: "Memory index (long-term knowledge from past sessions):"
+
+  # s11 错误恢复阈值。RecoveryCoordinator 处理三条路径:
+  #   Path 1: max_tokens 截断 → 8K → 64K 升级 → 不行就 continuation prompt(maxRecoveryRetries 次)
+  #   Path 2: prompt_too_long → reactive compact 一次
+  #   Path 3: 429/529 → 指数退避(base × 2^attempt + 抖动)+ 连续 529 切 fallback
+  # 生产场景默认值即可,fallback-model 留空表示不切换。
+  recovery:
+    max-retries: 10
+    base-delay-ms: 500
+    max-delay-ms: 32000
+    max-consecutive529: 3
+    fallback-model: ${FALLBACK_MODEL_ID:}
+    default-max-tokens: 8000
+    escalated-max-tokens: 64000
+    max-recovery-retries: 3
+    continuation-prompt: "Your previous response was cut off. Continue from where you left off."
