@@ -1,0 +1,37 @@
+# 测试 profile:每个 @SpringBootTest 都通过 @ActiveProfiles("test") 加载这份配置,
+# 装配过程不依赖真实 ANTHROPIC_API_KEY/MODEL_ID 系统环境变量,跑测试不需要任何外部条件。
+# AnthropicClient 在测试里通过 MarvisTestConfig 的 @Primary mock 注入,本文件里的
+# api-key/model 仅用于让容器装配通过(HttpAuth Bean 校验非空时不抛)。
+spring:
+  application:
+    name: marvis-test
+
+marvis:
+  anthropic:
+    base-url: https://api.anthropic.com
+    api-key: test-fake-key
+    auth-token: ""
+    model: test-model
+  compact:
+    max-messages: 50
+    snip-head-keep: 3
+    keep-recent: 3
+    min-placeholder-len: 120
+    max-tool-result-bytes: 10000
+    summary-head-keep: 3
+    summary-tail-keep: 10
+    summary-max-chars: 500
+  memory:
+    memory-dir: .memory
+    index-filename: MEMORY.md
+    max-body-bytes: 4096
+    consolidate-threshold: 10
+  permission:
+    mode: always-allow
+  skills:
+    dir: skills
+  # s10 测试场景:用最短的 prompt,保持测试断言简单
+  prompt:
+    identity: "Test identity. Act, don't explain."
+    tools: "Available tools: test stub."
+    memory-header: "Memory:"

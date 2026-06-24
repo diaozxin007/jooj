@@ -68,15 +68,22 @@
             <version>5.4.0</version>
         </dependency>
 
-        <dependency>
-            <groupId>io.github.cdimascio</groupId>
-            <artifactId>dotenv-java</artifactId>
-            <version>3.2.0</version>
-        </dependency>
+        <!-- 切片 C 之后:dotenv-java 已删除。
+             配置走 application.yml + Spring Boot 4 的
+             spring.config.import=optional:file:.env[.properties] 内置支持。
+             用户原有的 .env 改成 KEY=value(无 quotes) 仍能被读取。 -->
 
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- mockito-core 已通过 spring-boot-starter-test 传递引入,显式声明仅作可见性提示。
+             切片 C-step6 把 MockAnthropicClient 退役为 @MockBean + Mockito.when(...)。 -->
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-core</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>

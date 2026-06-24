@@ -1,0 +1,49 @@
+spring:
+  application:
+    name: marvis
+  # 兼容老用户的 .env 文件:Spring Boot 4 内置 spring.config.import 支持 dotenv-style 文件,
+  # 写成 KEY=value 即可被自动绑定。optional: 让 .env 缺失时不报错,纯环境变量场景仍可启动。
+  # 注意:.env 文件需要重命名为 .env.properties 或保持 KEY=value(无 quotes)。
+  config:
+    import: optional:file:.env[.properties]
+
+# Marvis 自定义配置(对应 MarvisProperties)。
+# 所有占位符 ${ENV:default} 都先看环境变量,再回落到 default。
+# 用户可在 ./application.local.yml 或 ~/.claude/marvis/application.yml 里 override。
+marvis:
+  anthropic:
+    base-url: ${ANTHROPIC_BASE_URL:https://api.anthropic.com}
+    # ANTHROPIC_API_KEY 和 ANTHROPIC_AUTH_TOKEN 二选一(HttpClientConfig 的 httpAuth Bean 会校验)
+    api-key: ${ANTHROPIC_API_KEY:}
+    auth-token: ${ANTHROPIC_AUTH_TOKEN:}
+    model: ${MODEL_ID:}
+  compact:
+    max-messages: 50
+    snip-head-keep: 3
+    keep-recent: 3
+    min-placeholder-len: 120
+    max-tool-result-bytes: 10000
+    summary-head-keep: 3
+    summary-tail-keep: 10
+    summary-max-chars: 500
+  memory:
+    memory-dir: .memory
+    index-filename: MEMORY.md
+    max-body-bytes: 4096
+    consolidate-threshold: 10
+  permission:
+    mode: cli   # cli | always-allow | always-deny
+  skills:
+    dir: skills
+
+  # s10 SYSTEM prompt 片段模板。Assembler 运行期按 context 选段拼接。
+  # workspace 不在这里 — 自动从 user.dir 读;memory 正文从 MemoryService 取。
+  prompt:
+    identity: >
+      You are a coding agent.
+      Before starting any multi-step task, use todo_write to plan your steps.
+      Update task status as you go. Act, don't explain.
+    tools: >
+      Available tools: bash, read_file, write_file, edit_file, glob,
+      todo_write, load_skill, task.
+    memory-header: "Memory index (long-term knowledge from past sessions):"

@@ -10,7 +10,7 @@
 ✅ **s01 完成**：Agent Loop（一个 loop + 一个 bash 工具，能完成多轮 self-correction）
 
 ```
-$ printf "数一下当前目录有多少个 .java 文件\nq\n" | ./mvnw -q exec:java -Dexec.mainClass="com.xilidou.marvis.S01"
+$ printf "数一下当前目录有多少个 .java 文件\nq\n" | ./mvnw -q exec:java -Dexec.mainClass="com.xilidou.marvis.MarvisApplication"
 
 18:32:26 INFO  [SkillRegistry] Loaded skill: bash (1 tools)
 s01: Agent Loop (Java)
@@ -29,7 +29,7 @@ s01 >>
 
 ```
 com.xilidou.marvis/
-├── S01.java                     ← s01 Agent Loop 入口
+├── S01.java                     ← s01 Agent Loop 入口(R1 重构后已删,统一走 MarvisApplication)
 ├── MarvisApplication.java       ← Spring Boot 启动占位（暂未启用 IoC）
 ├── JacksonConfig.java           ← 全局 ObjectMapper 工厂
 └── harness/
@@ -47,7 +47,7 @@ com.xilidou.marvis/
     │
     ├── base/                        ← Harness 基础设施
     │   ├── SkillRegistry.java           ← Skill 池（s07 雏形：loadOnDemand）
-    │   ├── McpAdapter.java              ← MCP 桥接（s19 占位）
+    │   ├── McpAdapter.java              ← MCP 桥接（R1 重构后已删,占位代码不留）
     │   └── ToolCall.java
     │
     ├── entity/                      ← Skill 层数据模型
@@ -116,11 +116,11 @@ MODEL_ID=claude-sonnet-4-6
 
 ```bash
 # 交互式 REPL
-./mvnw -q exec:java -Dexec.mainClass="com.xilidou.marvis.S01"
+./mvnw -q exec:java -Dexec.mainClass="com.xilidou.marvis.MarvisApplication"
 
 # 或用 raw java（启动更快，无 maven 噪音）
 ./mvnw -q dependency:build-classpath -Dmdep.outputFile=/tmp/cp.txt
-java -cp "$(cat /tmp/cp.txt):target/classes" com.xilidou.marvis.S01
+java -cp "$(cat /tmp/cp.txt):target/classes" com.xilidou.marvis.MarvisApplication
 ```
 
 ### 4. 跑测试
@@ -133,7 +133,7 @@ java -cp "$(cat /tmp/cp.txt):target/classes" com.xilidou.marvis.S01
 ### 5. 调试 HTTP 请求
 
 ```bash
-java -Dmarvis.log.http=DEBUG -cp ... com.xilidou.marvis.S01
+java -Dmarvis.log.http=DEBUG -cp ... com.xilidou.marvis.MarvisApplication
 # 输出会包含完整的 Anthropic 请求体
 ```
 
@@ -185,7 +185,7 @@ java -cp "$CP" com.xilidou.marvis.harness.http.HttpClientSmokeTest
 | s16 Team Protocols | ⏳ Week 9 | - |
 | s17 Autonomous Agents | ⏳ Week 9 | - |
 | s18 Worktree Isolation | ⏳ Week 9 | - |
-| s19 MCP Plugin | 🚧 占位（McpAdapter）| - |
+| s19 MCP Plugin | 🚧 未开始（R1 删除占位 McpAdapter）| - |
 | s20 Comprehensive | ⏳ Week 12 | - |
 
 ---
