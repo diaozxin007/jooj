@@ -47,10 +47,8 @@ import java.util.Set;
  * <p>本类只暴露 <b>一个</b> 构造器,完全由 Spring 容器装配。
  *
  * <p>历史循环 {@code TaskTool → Subagent → ToolRegistry → List<Tool> ⊃ TaskTool}
- * 已被**结构性消除** —— {@code TaskTool} 类被删除,{@code task} 工具定义和
- * 分发逻辑直接内联到 {@link com.xilidou.marvis.agent.AgentLoopHarness}。
- * 现在 Subagent 直接依赖 {@link ToolRegistry},无 @Lazy / ObjectProvider 等
- * "让循环能被装配"的辅助手段,纯净的单向依赖。
+ * 由 {@link com.xilidou.marvis.tool.impl.TaskTool} 端用 {@code @Lazy} 打破 ——
+ * Subagent 这边直接依赖 {@link ToolRegistry} 即可,无需任何 lazy 装配技巧。
  *
  * <p>测试不再 {@code new Subagent(...)},走 {@code @SpringBootTest + @Import(MarvisTestConfig.class)}
  * 让 Spring 测试框架接管装配。
@@ -62,7 +60,10 @@ import java.util.Set;
  *   <li>没有 nag 计数器、todo_write、UserPromptSubmit / Stop hook</li>
  *   <li>有 PreToolUse / PostToolUse hook —— **permission 必须作用于子 Agent**</li>
  *   <li>用独立 SYSTEM prompt({@link #SUB_SYSTEM_PROMPT})</li>
- *   <li>过滤掉黑名单工具(默认排除 task 防递归 + todo_write 防污染父 store)</li>
+ *   <li>**显式白名单**(s12 Stage 3): 只暴露 {@link #DEFAULT_INCLUDED_TOOLS},严格对齐
+ *       上游 s06 {@code SUB_TOOLS = [bash, read_file, write_file, edit_file, glob]}。
+ *       这样默认安全 —— 加新工具(比如 s12 的 5 个 task 系列)默认不暴露给子 Agent,
+ *       要明确加进白名单才行。</li>
  *   <li>max {@link #MAX_TURNS} 轮强制退出(防 infinite loop)</li>
  * </ul>
  */
@@ -70,8 +71,25 @@ import java.util.Set;
 @Component
 public class Subagent {
 
-    /** 子 Agent 默认排除的工具:task(防递归)+ todo_write(防污染父 store)。 */
-    public static final Set<String> DEFAULT_EXCLUDED_TOOLS = Set.of("task", "todo_write");
+    /**
+     * 子 Agent 可见的工具白名单 —— **跟上游 s06 {@code SUB_TOOLS} 严格一致**。
+     *
+     * <p>为什么不把整个 ToolRegistry 暴露给子 Agent:
+     * <ul>
+     *   <li>{@code task} 暴露给子 Agent 会导致递归 spawn,炸栈</li>
+     *   <li>{@code todo_write} 暴露会污染父 Agent 的 TodoStore(子 Agent 写父的 todo 太离奇)</li>
+     *   <li>s12 的 5 个 task 系列工具暴露给子 Agent 也不合适 —— task 状态管理是父 Agent
+     *       的职责,子 Agent 只负责完成被派给的任务</li>
+     *   <li>未来加任何工具(比如 git_commit / send_email)默认都应该不暴露给子 Agent,
+     *       要明确审视过才能加进白名单 —— 白名单语义比黑名单安全得多</li>
+     * </ul>
+     *
+     * <p><b>历史</b>:s12 Stage 3 之前是 {@code DEFAULT_EXCLUDED_TOOLS}(黑名单)。
+     * 黑名单语义"不在名单里就放行"在加新工具时容易漏改;白名单"不在名单里就拒绝"是
+     * fail-safe 默认。
+     */
+    public static final Set<String> DEFAULT_INCLUDED_TOOLS = Set.of(
+            "bash", "read_file", "write_file", "edit_file", "glob");
 
     /** 子 Agent 最大轮数(防 infinite loop)。 */
     public static final int MAX_TURNS = 30;
@@ -93,13 +111,14 @@ public class Subagent {
     private final ToolRegistry registry;
     private final ObjectMapper json;
     private final HookManager hooks;
-    private final Set<String> excludedTools;
+    private final Set<String> includedTools;
 
     /**
      * 唯一构造器 —— Spring 容器装配。
      *
-     * <p>{@link ToolRegistry} 直接依赖,无 {@code @Lazy} —— 三方循环已被结构性消除
-     * (TaskTool 类删除,task 工具内联到 AgentLoopHarness),不再需要 lazy 装配技巧。
+     * <p>{@link ToolRegistry} 直接依赖,无 {@code @Lazy} —— 三方循环由
+     * {@link com.xilidou.marvis.tool.impl.TaskTool} 端用 @Lazy 打破,
+     * Subagent 这边不需要任何 lazy 装配技巧。
      */
     public Subagent(AnthropicClient client,
                     ToolRegistry registry,
@@ -111,7 +130,7 @@ public class Subagent {
         this.registry = registry;
         this.json = json;
         this.hooks = hooks;
-        this.excludedTools = DEFAULT_EXCLUDED_TOOLS;
+        this.includedTools = DEFAULT_INCLUDED_TOOLS;
     }
 
     /**
@@ -185,7 +204,9 @@ public class Subagent {
     private List<ToolDef> buildSubTools() {
         List<ToolDef> tools = new ArrayList<>();
         for (ToolDefinition def : registry.getAllTools()) {
-            if (excludedTools.contains(def.getName())) continue;
+            // **白名单过滤**(s12 Stage 3):只暴露 includedTools 里的工具,
+            // 默认安全 —— 加新工具不进白名单就拿不到子 Agent 的访问权。
+            if (!includedTools.contains(def.getName())) continue;
             tools.add(new ToolDef(def.getName(), def.getDescription(), def.getInputSchema()));
         }
         return tools;

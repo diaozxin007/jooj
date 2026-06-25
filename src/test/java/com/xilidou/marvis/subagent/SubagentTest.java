@@ -32,7 +32,8 @@ import static org.junit.jupiter.api.Assertions.*;
  * <ul>
  *   <li>fresh context:messages 从 task description 开始,没有父 Agent 历史</li>
  *   <li>独立 SYSTEM prompt(不含 task 工具,防递归)</li>
- *   <li>excludedTools 过滤生效:task / todo_write 不传给子 Agent</li>
+ *   <li>**显式白名单过滤生效**(s12 Stage 3):只暴露 SUB_TOOLS 集合,task / todo_write
+ *       / spy_tool 这些不在白名单的工具不传给子 Agent</li>
  *   <li>只返回最后 assistant text,中间过程丢弃</li>
  *   <li>max turns 安全限制</li>
  *   <li>permission hook 也作用于子 Agent</li>
@@ -71,8 +72,8 @@ class SubagentTest {
     }
 
     @Test
-    @DisplayName("excludedTools 过滤:task / todo_write 不出现在子 Agent 工具集")
-    void excluded_tools_filtered() {
+    @DisplayName("白名单过滤(s12 Stage 3):只暴露 SUB_TOOLS,task / todo_write / spy_tool 都被排除")
+    void whitelist_filters_to_default_included_tools_only() {
         mock.reset(ResponseFixtures.endTurn("done"));
 
         subagent.spawn("任务");
@@ -80,9 +81,21 @@ class SubagentTest {
         CreateMessageRequest req = mock.getRequests().get(0);
         List<String> toolNames = req.getTools().stream().map(ToolDef::getName).toList();
 
-        assertTrue(toolNames.contains("spy_tool"), "spy_tool 应该可用");
-        assertFalse(toolNames.contains("task"), "task 工具必须被排除(防递归)");
-        assertFalse(toolNames.contains("todo_write"), "todo_write 必须被排除(防污染父 store)");
+        // 白名单里只有 5 个工具(bash / read_file / write_file / edit_file / glob)
+        // 这些是 ToolRegistry 里 BashTool + FileSystemTool 的注册项,实际容器有
+        assertTrue(toolNames.contains("bash"), "bash 在白名单,应该可见");
+        assertTrue(toolNames.contains("read_file"), "read_file 在白名单,应该可见");
+        // task / todo_write / spy_tool / load_skill / 5 个 tasks 系列,都不在白名单
+        assertFalse(toolNames.contains("task"),
+                "task 不在 SUB_TOOLS 白名单(防递归),应该被过滤");
+        assertFalse(toolNames.contains("todo_write"),
+                "todo_write 不在 SUB_TOOLS 白名单(防污染父 store),应该被过滤");
+        assertFalse(toolNames.contains("spy_tool"),
+                "spy_tool 不在 SUB_TOOLS 白名单(默认安全),应该被过滤");
+        assertFalse(toolNames.contains("create_task"),
+                "s12 任务系列工具不在白名单(子 Agent 不该自己管 task 状态)");
+        assertFalse(toolNames.contains("load_skill"),
+                "load_skill 不在白名单(子 Agent 简化:不再 lazy-load skill)");
     }
 
     @Test
