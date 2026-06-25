@@ -5,11 +5,11 @@ import okhttp3.Request;
 /**
  * Bearer Token 认证：Authorization: Bearer xxx header。
  *
- * <p>用于公司代理（如 proxy 的 proxy.example.com:8787）或其他 Anthropic-compatible 提供商。
+ * <p>用于 Anthropic-compatible 反向代理（自建 / 第三方提供商均可）。
  *
  * <p>HTTP header 示例：
  * <pre>
- *   Authorization: Bearer REDACTED-TOKEN
+ *   Authorization: Bearer &lt;your-token-here&gt;
  * </pre>
  */
 public final class BearerTokenAuth implements HttpAuth {

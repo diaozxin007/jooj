@@ -8,7 +8,7 @@ import okhttp3.Request;
  * <p>支持两种认证方式(实现类二选一):
  * <ul>
  *   <li>{@link ApiKeyAuth} - 官方 Anthropic,header: {@code x-api-key}</li>
- *   <li>{@link BearerTokenAuth} - 公司代理(如 proxy),header: {@code Authorization: Bearer}</li>
+ *   <li>{@link BearerTokenAuth} - 反向代理 / 第三方兼容服务,header: {@code Authorization: Bearer}</li>
  * </ul>
  *
  * <p>用 Strategy Pattern 是为了:

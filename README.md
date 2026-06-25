@@ -93,10 +93,10 @@ com.xilidou.marvis/
 export ANTHROPIC_API_KEY=sk-ant-xxx
 export MODEL_ID=claude-sonnet-4-6
 
-# 方案 B：公司代理（如 proxy）
+# 方案 B：Anthropic-compatible 代理（自建 / 第三方提供商）
 export ANTHROPIC_AUTH_TOKEN=xxx
-export ANTHROPIC_BASE_URL=http://proxy.example.com:8787
-export MODEL_ID=Claude-Sonnet-4.6-proxy
+export ANTHROPIC_BASE_URL=https://your-proxy.example.com
+export MODEL_ID=your-model-id
 ```
 
 或在项目根目录建 `.env` 文件（已被 .gitignore）：
