@@ -154,7 +154,8 @@ public class MarvisProperties {
                 "Available tools: bash, read_file, write_file, edit_file, glob, " +
                 "todo_write, load_skill, task, " +
                 "create_task, list_tasks, get_task, claim_task, complete_task, " +
-                "schedule_cron, list_crons, cancel_cron. " +
+                "schedule_cron, list_crons, cancel_cron, " +
+                "spawn_teammate, send_message, check_inbox. " +
                 "For slow ops (build/test/deploy/install), set bash.run_in_background=true " +
                 "to keep working while it runs in the background.";
 

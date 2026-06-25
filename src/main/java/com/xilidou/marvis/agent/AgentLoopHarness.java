@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xilidou.marvis.MarvisProperties;
 import com.xilidou.marvis.cron.CronJob;
 import com.xilidou.marvis.cron.CronService;
+import com.xilidou.marvis.team.Message;
+import com.xilidou.marvis.team.MessageBus;
 import com.xilidou.marvis.tool.ToolRegistry;
 import com.xilidou.marvis.tool.ToolCall;
 import com.xilidou.marvis.compact.CompactPipeline;
@@ -136,6 +138,16 @@ public class AgentLoopHarness {
     private final CronService cronService;
 
     /**
+     * s15 MessageBus —— Lead 在 {@link #processOneQuery} 末尾 drain 一次 lead inbox,
+     * 把队友汇报作为下一轮 user message 注入 history(让 LLM 在用户下一条 query 之前
+     * 看到队友结果)。
+     *
+     * <p>跟上游 s15 教学版一致 —— Lead 一轮跑完才看队友消息(对应 Q2 = 选项 a)。
+     * Real CC 用后台 1s poller(useInboxPoller)自动注入新 turn,marvis 暂不做。
+     */
+    private final MessageBus messageBus;
+
+    /**
      * s14 agentLock —— REPL user-input 流程跟 {@code CronQueueProcessor} 共享同一把锁,
      * 防 cron-fired turn 跟 user-input turn 撞 messages list。
      */
@@ -165,6 +177,7 @@ public class AgentLoopHarness {
                             RecoveryCoordinator recoveryCoordinator,
                             BackgroundTaskManager bgManager,
                             CronService cronService,
+                            MessageBus messageBus,
                             @Qualifier("agentLock") ReentrantLock agentLock,
                             MarvisProperties props) {
         this.client = client;
@@ -180,6 +193,7 @@ public class AgentLoopHarness {
         this.recoveryCoordinator = recoveryCoordinator;
         this.bgManager = bgManager;
         this.cronService = cronService;
+        this.messageBus = messageBus;
         this.agentLock = agentLock;
         this.recoveryCfg = props.getRecovery();
     }
@@ -418,6 +432,11 @@ public class AgentLoopHarness {
         agentLoop(history);
 
         memoryService.onTurnEnd(history);
+
+        // s15: 末尾 drain lead inbox —— 把队友(spawn 出去的 daemon)发给 lead 的消息
+        // 揉成一条 user message 加到 history,**不立即跑下一轮 agent_loop**(对齐上游教学版)。
+        // 用户下次 query 进来时,LLM 看到的就是"上一轮我自己 + 队友们的回复"组合 context。
+        drainLeadInbox();
     }
 
     /**
@@ -519,6 +538,31 @@ public class AgentLoopHarness {
                 System.out.println();
             }
         }
+    }
+
+    /**
+     * s15: drain lead 的 inbox,把队友消息揉成一条 user message 加到 history。
+     *
+     * <p>仅 append 不跑 loop —— 对齐上游 s15 教学版的决策(Q2-a):
+     * 用户下次 query 来时,LLM 看到的 context 自然包含队友消息;Lead 不为
+     * 队友消息单独跑一轮(那是 real CC 的 useInboxPoller 行为,留给后续 stage)。
+     *
+     * <p>history 因为这一调用可能形成 "...assistant, user(inbox)" 末尾,
+     * 下次 processOneQuery 进来时 history 末尾还会再 add 一条 user(query)——
+     * Anthropic 协议允许连续两条 user message。
+     */
+    private void drainLeadInbox() {
+        List<Message> inbox = messageBus.readInbox("lead");
+        if (inbox.isEmpty()) return;
+        StringBuilder sb = new StringBuilder("[Inbox] ").append(inbox.size())
+                .append(" message(s) from teammates:\n");
+        for (Message m : inbox) {
+            sb.append("  From ").append(m.getFrom())
+                    .append(" (").append(m.getType()).append("): ")
+                    .append(m.getContent()).append('\n');
+        }
+        history.add(MessageParam.user(sb.toString()));
+        log.info("[Team] drained {} message(s) from lead inbox into history", inbox.size());
     }
 
     private void printLastAssistantText(List<MessageParam> history) {

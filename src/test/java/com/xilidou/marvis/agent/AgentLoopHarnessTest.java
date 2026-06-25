@@ -3,6 +3,7 @@ package com.xilidou.marvis.agent;
 import com.xilidou.marvis.MarvisTestConfig;
 import com.xilidou.marvis.cron.CronJob;
 import com.xilidou.marvis.cron.CronService;
+import com.xilidou.marvis.team.MessageBus;
 import com.xilidou.marvis.tool.ToolCall;
 import com.xilidou.marvis.tool.ToolRegistry;
 import com.xilidou.marvis.tool.ToolDefinition;
@@ -59,6 +60,7 @@ class AgentLoopHarnessTest {
     @Autowired SpyTestTool spyTool;
     @Autowired HookManager hookManager;
     @Autowired CronService cronService;
+    @Autowired MessageBus messageBus;
 
     @BeforeEach
     void setUp() {
@@ -591,6 +593,55 @@ class AgentLoopHarnessTest {
 
         cronService.cancel(idA);
         cronService.cancel(idB);
+    }
+
+    // ────────────────────────────────────────────────────────────
+    //  s15 Team — processOneQuery 末尾 drain lead inbox
+    // ────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("s15: processOneQuery 末尾 drain lead inbox,把队友消息注入 history")
+    void team_inbox_drain_at_end_of_query() {
+        // mock LLM 一轮 end_turn(processOneQuery 跑完一轮就结束)
+        mock.reset(req -> ResponseFixtures.endTurn("ok"));
+
+        // 模拟队友 alice 在 lead inbox 里塞一条消息
+        messageBus.send("alice", "lead", "Schema done", "result");
+        assertEquals(1, messageBus.peekSize("lead"));
+
+        // 用户输入触发一轮
+        harness.processOneQuery("hi");
+
+        // 关键断言:
+        // 1. lead inbox 被 drain(peekSize=0)
+        // 2. history 末尾应有一条 user message 含 "[Inbox]" + "Schema done"
+        assertEquals(0, messageBus.peekSize("lead"), "lead inbox 应被 drain");
+
+        boolean injected = harness.getHistory().stream()
+                .filter(m -> "user".equals(m.getRole()))
+                .anyMatch(m -> {
+                    Object c = m.getContent();
+                    return c instanceof String s
+                            && s.contains("[Inbox]")
+                            && s.contains("alice")
+                            && s.contains("Schema done");
+                });
+        assertTrue(injected, "队友消息应注入 history");
+    }
+
+    @Test
+    @DisplayName("s15: lead inbox 空时 drain 不向 history 加多余 user message")
+    void team_inbox_drain_empty_does_nothing() {
+        mock.reset(req -> ResponseFixtures.endTurn("ok"));
+
+        int before = harness.getHistory().size();
+        harness.processOneQuery("hi");
+        int after = harness.getHistory().size();
+
+        // 一轮 query: +1 user + 1 assistant = +2;不应有第 3 条 inbox user
+        // (memoryService 的 turn-end LLM 调用不影响 history)
+        assertEquals(before + 2, after,
+                "空 inbox 时 history 只应增加 user query + assistant 回复 2 条");
     }
 
     // ────────────────────────────────────────────────────────────
