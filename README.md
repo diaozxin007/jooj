@@ -7,7 +7,9 @@
 
 ## ✨ 当前状态
 
-✅ **s01 完成**：Agent Loop（一个 loop + 一个 bash 工具，能完成多轮 self-correction）
+✅ **s01 ~ s12 全部完成**:Agent Loop / Tool Use / Permission / Hooks / Todo / Subagent / Skill Loading / Compact / Memory / System Prompt / Error Recovery / Task System。下一步 Week 8 — Background Tasks(s13)+ Cron(s14)+ Mini Harness 整合。
+
+✅ **s01 历史**:Agent Loop(一个 loop + 一个 bash 工具,能完成多轮 self-correction)。
 
 ```
 $ printf "数一下当前目录有多少个 .java 文件\nq\n" | ./mvnw -q exec:java -Dexec.mainClass="com.xilidou.marvis.MarvisApplication"
@@ -167,25 +169,25 @@ java -cp "$CP" com.xilidou.marvis.harness.http.HttpClientSmokeTest
 
 | 章节 | 状态 | 文件 |
 |------|------|------|
-| s01 Agent Loop | ✅ 完成 | `agent/AgentLoopHarness.java` + `skill/impl/BashSkill.java` |
-| s02 Tool Use | 🚧 部分（SkillRegistry 抽象就绪）| 需要再注册 1-2 个真实工具验证"加工具不改 loop" |
-| s03 Permission | ⏳ Week 4 | - |
-| s04 Hooks | ⏳ Week 4 | - |
-| s05 TodoWrite | ⏳ Week 5 | - |
-| s06 Subagent | ⏳ Week 5 | - |
-| s07 Skill Loading | 🚧 骨架（SkillRegistry.loadOnDemand）| 需要 Skill manifest |
-| s08 Context Compact | ⏳ Week 6 | - |
-| s09 Memory | ⏳ Week 6 | - |
-| s10 System Prompt | ⏳ Week 6 | - |
-| s11 Error Recovery | ⏳ Week 7 | - |
-| s12 Task System | ⏳ Week 7 | - |
+| s01 Agent Loop | ✅ 完成 | `agent/AgentLoopHarness.java` |
+| s02 Tool Use | ✅ 完成 | `tool/Tool.java` + `tool/ToolRegistry.java` |
+| s03 Permission | ✅ 完成 | `permission/PermissionPipeline.java` |
+| s04 Hooks | ✅ 完成 | `hook/HookManager.java` + `hook/impl/*` |
+| s05 TodoWrite | ✅ 完成 | `tool/impl/TodoTool.java` + `todo/TodoStore.java` |
+| s06 Subagent | ✅ 完成 | `subagent/Subagent.java` + `tool/impl/TaskTool.java` |
+| s07 Skill Loading | ✅ 完成 | `skill/SkillRegistry.java` + `tool/impl/LoadSkillTool.java` |
+| s08 Context Compact | ✅ 完成 | `compact/CompactPipeline.java` |
+| s09 Memory | ✅ 完成 | `memory/MemoryService.java` |
+| s10 System Prompt | ✅ 完成 | `prompt/SystemPromptAssembler.java` |
+| s11 Error Recovery | ✅ 完成 | `agent/RecoveryCoordinator.java` |
+| s12 Task System | ✅ 完成 | `tasks/TaskService.java` + `tool/impl/TasksTool.java` |
 | s13 Background Tasks | ⏳ Week 8 | - |
 | s14 Cron Scheduler | ⏳ Week 8 | - |
 | s15 Agent Teams | ⏳ Week 9 | - |
 | s16 Team Protocols | ⏳ Week 9 | - |
 | s17 Autonomous Agents | ⏳ Week 9 | - |
 | s18 Worktree Isolation | ⏳ Week 9 | - |
-| s19 MCP Plugin | 🚧 未开始（R1 删除占位 McpAdapter）| - |
+| s19 MCP Plugin | 🚧 未开始(R1 删除占位 McpAdapter)| - |
 | s20 Comprehensive | ⏳ Week 12 | - |
 
 ---
