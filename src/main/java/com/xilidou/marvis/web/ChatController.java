@@ -1,7 +1,6 @@
 package com.xilidou.marvis.web;
 
 import com.xilidou.marvis.agent.AgentLoopHarness;
-import com.xilidou.marvis.http.dto.ContentBlock;
 import com.xilidou.marvis.http.dto.MessageParam;
 import com.xilidou.marvis.http.dto.TextBlock;
 import com.xilidou.marvis.http.dto.ToolUseBlock;
@@ -138,7 +137,7 @@ public class ChatController {
         return flattenContent(last);
     }
 
-    /** 把 MessageParam 揉平成纯文本(各 block 文字拼接)。 */
+    /** 把 MessageParam 揉平成纯文本(只取用户可见的 TextBlock,协议内部 block 全跳过)。 */
     private static String flattenContent(MessageParam m) {
         Object content = m.getContent();
         if (content instanceof String s) return s;
@@ -148,14 +147,13 @@ public class ChatController {
                 if (b instanceof TextBlock t) {
                     if (sb.length() > 0) sb.append('\n');
                     sb.append(t.getText());
-                } else if (b instanceof ToolUseBlock tu) {
-                    if (sb.length() > 0) sb.append('\n');
-                    sb.append("[tool: ").append(tu.getName()).append("]");
-                } else if (b instanceof ContentBlock cb) {
-                    // tool_result / thinking / unknown — 按类型粗略表示
-                    if (sb.length() > 0) sb.append('\n');
-                    sb.append("[").append(cb.getType()).append("]");
                 }
+                // ⚠️ 故意跳过其他 block 类型:
+                // - ToolUseBlock / ToolResultBlock — 协议内部状态,工具名通过单独的
+                //   toolCalls 字段返(ChatResponse),气泡里不再重复展示 "[tool: bash]"
+                // - ThinkingBlock — Claude Sonnet 4.x extended thinking 块,内部推理
+                //   过程,前端用户看到"[thinking]"占位会很迷惑
+                // - UnknownBlock — 未知协议块,跳过更安全
             }
             return sb.toString();
         }
