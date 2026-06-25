@@ -7,7 +7,7 @@
 
 ## ✨ 当前状态
 
-✅ **s01 ~ s13 全部完成**:Agent Loop / Tool Use / Permission / Hooks / Todo / Subagent / Skill Loading / Compact / Memory / System Prompt / Error Recovery / Task System / Background Tasks。下一步 Week 8 续 — Cron(s14)+ Mini Harness 整合(架构文档)。
+✅ **s01 ~ s14 全部完成**:Agent Loop / Tool Use / Permission / Hooks / Todo / Subagent / Skill Loading / Compact / Memory / System Prompt / Error Recovery / Task System / Background Tasks / Cron Scheduler。下一步 Week 8 续 — Mini Harness 整合(架构文档,obsidian)。
 
 ✅ **s01 历史**:Agent Loop(一个 loop + 一个 bash 工具,能完成多轮 self-correction)。
 
@@ -182,7 +182,7 @@ java -cp "$CP" com.xilidou.marvis.harness.http.HttpClientSmokeTest
 | s11 Error Recovery | ✅ 完成 | `agent/RecoveryCoordinator.java` |
 | s12 Task System | ✅ 完成 | `tasks/TaskService.java` + `tool/impl/TasksTool.java` |
 | s13 Background Tasks | ✅ 完成 | `agent/BackgroundTaskManager.java` |
-| s14 Cron Scheduler | ⏳ Week 8 | - |
+| s14 Cron Scheduler | ✅ 完成 | `cron/CronService.java` + `tool/impl/CronTool.java` |
 | s15 Agent Teams | ⏳ Week 9 | - |
 | s16 Team Protocols | ⏳ Week 9 | - |
 | s17 Autonomous Agents | ⏳ Week 9 | - |

@@ -57,6 +57,9 @@ public class MarvisProperties {
     /** Task System(s12)路径配置。 */
     private Tasks tasks = new Tasks();
 
+    /** Cron Scheduler(s14)tick + 持久化路径配置。 */
+    private Cron cron = new Cron();
+
     @Data
     public static class Anthropic {
         /** API 根 URL,默认 https://api.anthropic.com。 */
@@ -147,7 +150,8 @@ public class MarvisProperties {
         private String tools =
                 "Available tools: bash, read_file, write_file, edit_file, glob, " +
                 "todo_write, load_skill, task, " +
-                "create_task, list_tasks, get_task, claim_task, complete_task. " +
+                "create_task, list_tasks, get_task, claim_task, complete_task, " +
+                "schedule_cron, list_crons, cancel_cron. " +
                 "For slow ops (build/test/deploy/install), set bash.run_in_background=true " +
                 "to keep working while it runs in the background.";
 
@@ -222,5 +226,27 @@ public class MarvisProperties {
     public static class Tasks {
         /** task 文件目录(相对 cwd 或绝对路径)。默认 {@code .tasks}。 */
         private String tasksDir = ".tasks";
+    }
+
+    /**
+     * Cron Scheduler(s14)配置。对应上游
+     * [s14_cron_scheduler/code.py] 的 4 层架构 + durable 持久化。
+     *
+     * <p>tick 间隔影响响应延迟与 CPU 开销。生产场景默认值即可:
+     * <ul>
+     *   <li>Layer 1 scheduler tick = 1000ms — 1 秒钟检查一次哪些 job 该 fire</li>
+     *   <li>Layer 3 processor tick = 200ms — 200ms 检查一次 queue 是否有 fired job</li>
+     * </ul>
+     *
+     * <p>测试 profile 把这俩调小让 cron-fire 测试快速完成。
+     */
+    @Data
+    public static class Cron {
+        /** Layer 1 CronScheduler 轮询间隔(毫秒)。默认 1000。 */
+        private int schedulerTickMs = 1000;
+        /** Layer 3 CronQueueProcessor 轮询间隔(毫秒)。默认 200。 */
+        private int processorTickMs = 200;
+        /** durable 持久化文件路径(相对 cwd 或绝对)。默认 {@code .scheduled_tasks.json}。 */
+        private String durablePath = ".scheduled_tasks.json";
     }
 }

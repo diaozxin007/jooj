@@ -42,3 +42,5 @@ build/
 .tasks/
 .task_outputs/
 .transcripts/
+.scheduled_tasks.json
+.scheduled_tasks.test.json

@@ -3,6 +3,8 @@ package com.xilidou.marvis.agent;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xilidou.marvis.MarvisProperties;
+import com.xilidou.marvis.cron.CronJob;
+import com.xilidou.marvis.cron.CronService;
 import com.xilidou.marvis.tool.ToolRegistry;
 import com.xilidou.marvis.tool.ToolCall;
 import com.xilidou.marvis.compact.CompactPipeline;
@@ -35,6 +37,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Scanner;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * AgentLoopHarness - s01_agent_loop.py 的 Java 实现。
@@ -125,6 +128,19 @@ public class AgentLoopHarness {
      */
     private final BackgroundTaskManager bgManager;
 
+    /**
+     * s14 Cron Scheduler 服务。{@link #agentLoop} 顶部 drain queue,把 fired job
+     * 转成 user message 注入。{@link CronQueueProcessor} 反向调
+     * {@link #processCronTriggers} 在持锁状态下触发一轮 agent loop。
+     */
+    private final CronService cronService;
+
+    /**
+     * s14 agentLock —— REPL user-input 流程跟 {@code CronQueueProcessor} 共享同一把锁,
+     * 防 cron-fired turn 跟 user-input turn 撞 messages list。
+     */
+    private final ReentrantLock agentLock;
+
     /** 新会话回调列表。{@link #repl} 接到新 user 输入时会依次执行。 */
     private final List<Runnable> onNewSessionListeners = new ArrayList<>();
 
@@ -148,6 +164,8 @@ public class AgentLoopHarness {
                             SystemPromptAssembler promptAssembler,
                             RecoveryCoordinator recoveryCoordinator,
                             BackgroundTaskManager bgManager,
+                            CronService cronService,
+                            @Qualifier("agentLock") ReentrantLock agentLock,
                             MarvisProperties props) {
         this.client = client;
         this.model = props.getAnthropic().getModel();
@@ -161,6 +179,8 @@ public class AgentLoopHarness {
         this.promptAssembler = promptAssembler;
         this.recoveryCoordinator = recoveryCoordinator;
         this.bgManager = bgManager;
+        this.cronService = cronService;
+        this.agentLock = agentLock;
         this.recoveryCfg = props.getRecovery();
     }
 
@@ -182,6 +202,16 @@ public class AgentLoopHarness {
     public void agentLoop(List<MessageParam> messages) {
         List<ToolDef> tools = buildTools();
         int roundsSinceTodo = 0;
+
+        // s14: 进入 agent_loop 顶部 drain cron queue,把 fired job 转成 user message。
+        // 注:CronQueueProcessor 在拿到 agentLock 后调 processCronTriggers,
+        // 那条路径已经把 prompt 注入 messages 再 agentLoop;这里 drain 是 belt-and-suspenders,
+        // 防 user-input 流程刚好夹在两次 fire 之间也能消费已 fired 的 prompt。
+        List<CronJob> firedAtTop = cronService.drainQueue();
+        for (CronJob job : firedAtTop) {
+            messages.add(MessageParam.user("[Scheduled] " + job.getPrompt()));
+            log.info("[Cron] injected fired job {} prompt into agent_loop top", job.getId());
+        }
 
         // s11: per-loop 错误恢复状态机。跨 agentLoop 调用不污染。
         // 初始 model = 配置里的默认 model;初始 max_tokens = recovery.defaultMaxTokens
@@ -390,6 +420,31 @@ public class AgentLoopHarness {
         memoryService.onTurnEnd(history);
     }
 
+    /**
+     * s14: 由 {@link com.xilidou.marvis.cron.CronQueueProcessor} 在持有 agentLock 后调用。
+     *
+     * <p>把 fired CronJob 的 prompt 各注入成一条 user message,然后跑一轮 agent_loop。
+     * <b>不</b>调 {@code fireOnNewSession} —— cron 触发不算新会话,history 不应被清。
+     *
+     * <p>跟 user-input 流程的差别:
+     * <ul>
+     *   <li>不走 hooks.triggerUserPrompt(那是 user 主动键入时才触发)</li>
+     *   <li>不走 memoryService.loadRelevant(cron prompt 通常不需要 memory 注入)</li>
+     *   <li>仍走 memoryService.onTurnEnd(让 cron 完成后能更新 memory)</li>
+     * </ul>
+     *
+     * @param firedJobs 已 drain 的 CronJob 列表
+     */
+    public void processCronTriggers(List<CronJob> firedJobs) {
+        if (firedJobs == null || firedJobs.isEmpty()) return;
+        for (CronJob job : firedJobs) {
+            history.add(MessageParam.user("[Scheduled] " + job.getPrompt()));
+            log.info("[Cron] injected fired job {} prompt into history", job.getId());
+        }
+        agentLoop(history);
+        memoryService.onTurnEnd(history);
+    }
+
     private void printToolHeader(ToolUseBlock toolUse, Map<String, Object> args) {
         Object cmd = args.get("command");
         String display = cmd != null ? cmd.toString() : args.toString();
@@ -446,8 +501,19 @@ public class AgentLoopHarness {
                     continue;
                 }
 
-                fireOnNewSession();
-                processOneQuery(query);
+                // s14: 拿 agentLock —— 跟 CronQueueProcessor 共享。
+                // user-input 流程跟 cron-fired 流程互斥,防 messages list 撞车。
+                // tryLock 失败说明 cron 流程刚好在跑,等下一轮(用户重输即可)。
+                if (!agentLock.tryLock()) {
+                    System.out.println("\033[33m⏳ Agent busy with a scheduled task, please retry.\033[0m");
+                    continue;
+                }
+                try {
+                    fireOnNewSession();
+                    processOneQuery(query);
+                } finally {
+                    agentLock.unlock();
+                }
 
                 printLastAssistantText(history);
                 System.out.println();

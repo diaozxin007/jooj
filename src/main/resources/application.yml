@@ -33,6 +33,15 @@ marvis:
     consolidate-threshold: 10
   tasks:
     tasks-dir: .tasks
+
+  # s14 Cron Scheduler 配置。4 层架构:
+  #   Layer 1 scheduler thread(scheduler-tick-ms 毫秒轮询匹配 cron)
+  #   Layer 3 queue processor thread(processor-tick-ms 毫秒轮询 fired job)
+  # durable=true 的 job 保存到 durable-path,marvis 重启后恢复。
+  cron:
+    scheduler-tick-ms: 1000
+    processor-tick-ms: 200
+    durable-path: .scheduled_tasks.json
   permission:
     mode: cli   # cli | always-allow | always-deny
   skills:
@@ -48,7 +57,8 @@ marvis:
     tools: >
       Available tools: bash, read_file, write_file, edit_file, glob,
       todo_write, load_skill, task,
-      create_task, list_tasks, get_task, claim_task, complete_task.
+      create_task, list_tasks, get_task, claim_task, complete_task,
+      schedule_cron, list_crons, cancel_cron.
       For slow ops (build/test/deploy/install), set bash.run_in_background=true
       to keep working while it runs in the background.
     memory-header: "Memory index (long-term knowledge from past sessions):"

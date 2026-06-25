@@ -1,6 +1,8 @@
 package com.xilidou.marvis.agent;
 
 import com.xilidou.marvis.MarvisTestConfig;
+import com.xilidou.marvis.cron.CronJob;
+import com.xilidou.marvis.cron.CronService;
 import com.xilidou.marvis.tool.ToolCall;
 import com.xilidou.marvis.tool.ToolRegistry;
 import com.xilidou.marvis.tool.ToolDefinition;
@@ -56,6 +58,7 @@ class AgentLoopHarnessTest {
     @Autowired ToolRegistry registry;
     @Autowired SpyTestTool spyTool;
     @Autowired HookManager hookManager;
+    @Autowired CronService cronService;
 
     @BeforeEach
     void setUp() {
@@ -522,6 +525,72 @@ class AgentLoopHarnessTest {
                 "应是 placeholder 而非真实 'ok: {arg=v}' 输出");
         // 关键:bg 路径不调 PostToolUse,因此 spy 真实 output 不会作为 ToolResultBlock 进 messages
         // 但 spy.execute 仍然在 daemon thread 跑了一次
+    }
+
+    // ────────────────────────────────────────────────────────────
+    //  s14 Cron Scheduler — agent_loop 顶部 consume queue
+    // ────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("s14: agentLoop 顶部 drain queue,把 fired CronJob 注入成 user message")
+    void cron_drain_at_loop_top_injects_user_message() {
+        mock.reset(ResponseFixtures.endTurn("ack"));
+
+        // 手动构造一个 fired job,丢进 queue —— 模拟 scheduler 已 fire
+        CronJob fired = new CronJob("cron_test01", "* * * * *", "do scheduled work", true, false);
+        // 通过 fireMatching 把 job 入队(借用 service 自身的 fire 路径)
+        String id = cronService.schedule("* * * * *", "do scheduled work", true, false);
+        cronService.fireMatching(java.time.LocalDateTime.now());
+        assertTrue(cronService.queueSize() >= 1, "至少应有 1 个 fired job 在队列");
+
+        List<MessageParam> messages = new ArrayList<>();
+        messages.add(MessageParam.user("hi"));
+
+        harness.agentLoop(messages);
+
+        // 验证 LLM 收到的请求里 messages 包含 [Scheduled] 注入
+        CreateMessageRequest firstReq = mock.getRequests().get(0);
+        boolean injected = firstReq.getMessages().stream()
+                .filter(m -> "user".equals(m.getRole()))
+                .anyMatch(m -> {
+                    Object c = m.getContent();
+                    return c instanceof String s && s.contains("[Scheduled]")
+                            && s.contains("do scheduled work");
+                });
+        assertTrue(injected, "agentLoop 应把 fired CronJob 转成 [Scheduled] user message 注入");
+
+        // 队列应被 drain 干净
+        assertEquals(0, cronService.queueSize());
+
+        // 清理 — 取消 job,避免干扰下一个测试
+        cronService.cancel(id);
+    }
+
+    @Test
+    @DisplayName("s14: 多个 fired job 顺序注入(每个一条 user message)")
+    void cron_multiple_fired_jobs_injected_in_order() {
+        mock.reset(ResponseFixtures.endTurn("ack"));
+
+        // 两个 cron 同时 match(每分钟)
+        String idA = cronService.schedule("* * * * *", "task A", true, false);
+        String idB = cronService.schedule("* * * * *", "task B", true, false);
+        cronService.fireMatching(java.time.LocalDateTime.now());
+        assertEquals(2, cronService.queueSize());
+
+        List<MessageParam> messages = new ArrayList<>();
+        messages.add(MessageParam.user("hi"));
+
+        harness.agentLoop(messages);
+
+        // 验证 messages 里有 2 条 [Scheduled] —— 顺序由 ConcurrentLinkedQueue 决定(先 fire 先入)
+        long count = messages.stream()
+                .filter(m -> "user".equals(m.getRole()))
+                .filter(m -> m.getContent() instanceof String s && s.contains("[Scheduled]"))
+                .count();
+        assertEquals(2, count, "两条 [Scheduled] user message 应被注入");
+
+        cronService.cancel(idA);
+        cronService.cancel(idB);
     }
 
     // ────────────────────────────────────────────────────────────

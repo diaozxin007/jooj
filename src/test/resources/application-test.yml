@@ -28,6 +28,12 @@ marvis:
     consolidate-threshold: 10
   tasks:
     tasks-dir: .tasks
+  # s14 测试场景:tick 调小让 cron 测试快速 fire / 处理。
+  # 测试场景 durable-path 也指向独立文件,避免污染主 .scheduled_tasks.json。
+  cron:
+    scheduler-tick-ms: 100
+    processor-tick-ms: 50
+    durable-path: .scheduled_tasks.test.json
   permission:
     mode: always-allow
   skills:
