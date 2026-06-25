@@ -31,6 +31,8 @@ marvis:
     index-filename: MEMORY.md
     max-body-bytes: 4096
     consolidate-threshold: 10
+  tasks:
+    tasks-dir: .tasks
   permission:
     mode: cli   # cli | always-allow | always-deny
   skills:
@@ -45,7 +47,8 @@ marvis:
       Update task status as you go. Act, don't explain.
     tools: >
       Available tools: bash, read_file, write_file, edit_file, glob,
-      todo_write, load_skill, task.
+      todo_write, load_skill, task,
+      create_task, list_tasks, get_task, claim_task, complete_task.
     memory-header: "Memory index (long-term knowledge from past sessions):"
 
   # s11 错误恢复阈值。RecoveryCoordinator 处理三条路径:

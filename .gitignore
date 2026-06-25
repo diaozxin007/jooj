@@ -39,5 +39,6 @@ build/
 
 # marvis runtime artifacts(都是运行期生成的,不入库)
 .memory/
+.tasks/
 .task_outputs/
 .transcripts/

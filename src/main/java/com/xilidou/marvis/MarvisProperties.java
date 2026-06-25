@@ -54,6 +54,9 @@ public class MarvisProperties {
     /** 错误恢复(s11)阈值。 */
     private Recovery recovery = new Recovery();
 
+    /** Task System(s12)路径配置。 */
+    private Tasks tasks = new Tasks();
+
     @Data
     public static class Anthropic {
         /** API 根 URL,默认 https://api.anthropic.com。 */
@@ -143,7 +146,8 @@ public class MarvisProperties {
         /** tools section:可用工具的概述(具体 ToolDef 仍通过 Anthropic API 协议传)。 */
         private String tools =
                 "Available tools: bash, read_file, write_file, edit_file, glob, " +
-                "todo_write, load_skill, task.";
+                "todo_write, load_skill, task, " +
+                "create_task, list_tasks, get_task, claim_task, complete_task.";
 
         /**
          * memory section 的标题前缀。memory 正文由 MemoryService.catalog() 提供,
@@ -204,5 +208,17 @@ public class MarvisProperties {
         /** Path 1 续写时插入的 user prompt。 */
         private String continuationPrompt =
                 "Your previous response was cut off. Continue from where you left off.";
+    }
+
+    /**
+     * Task System(s12)目录配置。对应 Python 的 {@code TASKS_DIR = WORKDIR / ".tasks"}。
+     *
+     * <p>每个 task 一个 JSON 文件,文件名是 task id(形如 {@code task_1729000000_3812.json})。
+     * 教学版不加 file lock —— 与上游严格一致;marvis 是单进程 REPL,不会并发写。
+     */
+    @Data
+    public static class Tasks {
+        /** task 文件目录(相对 cwd 或绝对路径)。默认 {@code .tasks}。 */
+        private String tasksDir = ".tasks";
     }
 }

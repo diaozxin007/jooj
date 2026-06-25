@@ -26,6 +26,8 @@ marvis:
     index-filename: MEMORY.md
     max-body-bytes: 4096
     consolidate-threshold: 10
+  tasks:
+    tasks-dir: .tasks
   permission:
     mode: always-allow
   skills:
