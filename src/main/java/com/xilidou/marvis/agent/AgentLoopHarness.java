@@ -13,7 +13,6 @@ import com.xilidou.marvis.http.AnthropicException;
 import com.xilidou.marvis.http.dto.ContentBlock;
 import com.xilidou.marvis.http.dto.CreateMessageRequest;
 import com.xilidou.marvis.http.dto.CreateMessageResponse;
-import com.xilidou.marvis.http.dto.InputSchema;
 import com.xilidou.marvis.http.dto.MessageParam;
 import com.xilidou.marvis.http.dto.TextBlock;
 import com.xilidou.marvis.http.dto.ToolDef;
@@ -23,7 +22,6 @@ import com.xilidou.marvis.hook.HookManager;
 import com.xilidou.marvis.memory.MemoryService;
 import com.xilidou.marvis.permission.PermissionPipeline;
 import com.xilidou.marvis.prompt.SystemPromptAssembler;
-import com.xilidou.marvis.subagent.Subagent;
 import com.xilidou.marvis.todo.TodoStore;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
@@ -56,20 +54,16 @@ import java.util.Scanner;
  * {@code @SpringBootTest + @Import(MarvisTestConfig.class)} —— 让
  * Spring 测试框架接管依赖装配,保持生产代码"只为生产场景服务"的纯净。
  *
- * <h3>{@code task} 工具内联在本类</h3>
+ * <h3>{@code task} 工具回归 Tool 接口(s12 Stage 1)</h3>
  *
- * <p>原 {@code TaskTool} 类(实现 {@code Tool},被 {@code @Component} 收集)已删除,
- * {@code task} 的工具定义和分发逻辑直接内联在 {@link #buildTools} / {@link #executeOneTool}。
+ * <p>R4 重构(2026-06-24)曾把 {@code task} 工具内联到本类,通过"结构性消除"
+ * 打破三方循环依赖 {@code TaskTool → Subagent → ToolRegistry → List<Tool>}。
  *
- * <p><b>动机</b>:消除三方循环依赖
- * {@code TaskTool → Subagent → ToolRegistry → List<Tool> ⊃ TaskTool}。
- * 任何 @Lazy / ObjectProvider 方案都只是"让循环能被装配",不是"消除循环"。
- * 真正消除需要打破其中一条边 —— 把 task 从 List&lt;Tool&gt; 里拿出来,正是这种"结构性消除"。
- *
- * <p><b>取舍</b>:破坏了"加新 Tool 只需加 @Component"的统一性,但 {@code task} 本来就不是
- * 普通工具 —— 它是 agent runtime 自己派子 agent 的能力。把它和 BashTool / FileSystemTool
- * 这种"调用外部资源"的工具区别对待,反而更诚实。其它工具(bash / file / todo /
- * load_skill)继续走 @Component 自动收集,扩展开闭原则不变。
+ * <p>s12 Stage 1 把 {@code task} 抽回 {@link com.xilidou.marvis.tool.impl.TaskTool}
+ * 标准 Tool 实现,通过 {@code @Lazy} 注入 Subagent 打破循环 ——
+ * 让所有任务相关工具(s06 task + s12 五个工具)都走统一的 ToolRegistry 路径,
+ * 语义一致,扩展开闭原则纯粹。详见
+ * {@link com.xilidou.marvis.tool.impl.TaskTool} 的类注释。
  *
  * <p>典型测试模式:
  * <pre>
@@ -95,27 +89,6 @@ public class AgentLoopHarness {
     /** todo 工具名(注入 reminder 时识别用)。 */
     private static final String TODO_TOOL_NAME = "todo_write";
 
-    /** task 工具名(内联工具,不出现在 List&lt;Tool&gt; 里 —— 见类注释循环依赖讨论)。*/
-    private static final String TASK_TOOL_NAME = "task";
-
-    /**
-     * task 工具的 Anthropic 协议定义。内联在 AgentLoopHarness 而非 {@code @Component Tool},
-     * 是为了消除 TaskTool↔Subagent↔ToolRegistry 三方循环 —— 详见类注释。
-     */
-    private static final ToolDefinition TASK_TOOL_DEFINITION = new ToolDefinition(
-            TASK_TOOL_NAME,
-            "Launch a subagent to handle a complex subtask. " +
-                    "Use this when a sub-problem would clutter your own context " +
-                    "(e.g. reading 100 files to find one thing). " +
-                    "Returns only the final conclusion.",
-            InputSchema.object(
-                    Map.of("description", Map.of(
-                            "type", "string",
-                            "description", "The full task description to delegate")),
-                    "description"
-            )
-    );
-
     /** 工具结果输出在屏幕上的截断长度。 */
     private static final int CONSOLE_PREVIEW_LIMIT = 200;
 
@@ -129,12 +102,6 @@ public class AgentLoopHarness {
     private final CompactPipeline compactPipeline;
     private final MemoryService memoryService;
     private final TodoStore todoStore;
-    /**
-     * Subagent —— 由 {@link #execute(ToolCall)} 在 {@code task} 工具被调用时使用。
-     * 直接注入(无 @Lazy):TaskTool 类已删除,Subagent 不再出现在 List&lt;Tool&gt; 里,
-     * 三方循环已被 **结构性消除**(而非 @Lazy 打破)。
-     */
-    private final Subagent subagent;
 
     /**
      * SYSTEM prompt 运行期组装器(s10)。每轮 LLM 调用前由 {@link #agentLoop} 调用,
@@ -172,7 +139,6 @@ public class AgentLoopHarness {
                             CompactPipeline compactPipeline,
                             MemoryService memoryService,
                             TodoStore todoStore,
-                            Subagent subagent,
                             SystemPromptAssembler promptAssembler,
                             RecoveryCoordinator recoveryCoordinator,
                             MarvisProperties props) {
@@ -185,7 +151,6 @@ public class AgentLoopHarness {
         this.compactPipeline = compactPipeline;
         this.memoryService = memoryService;
         this.todoStore = todoStore;
-        this.subagent = subagent;
         this.promptAssembler = promptAssembler;
         this.recoveryCoordinator = recoveryCoordinator;
         this.recoveryCfg = props.getRecovery();
@@ -341,21 +306,16 @@ public class AgentLoopHarness {
     }
 
     /**
-     * 把 {@link ToolRegistry} 里的工具转成 Anthropic 协议 ToolDef,**并追加 {@code task} 内联工具**。
+     * 把 {@link ToolRegistry} 里的工具转成 Anthropic 协议 ToolDef。
      *
-     * <p>{@code task} 不在 List&lt;Tool&gt; 里(为消除三方循环依赖,见类注释),
-     * 在 LLM 看来它和其它工具没区别,只是分发逻辑写在 {@link #executeOneTool} 里。
+     * <p>s12 Stage 1 之后,{@code task} 工具是 {@link com.xilidou.marvis.tool.impl.TaskTool}
+     * 的标准实现,自动出现在 {@code registry.getAllTools()} 里 —— 不再需要手动追加。
      */
     private List<ToolDef> buildTools() {
         List<ToolDef> tools = new ArrayList<>();
         for (ToolDefinition def : registry.getAllTools()) {
             tools.add(new ToolDef(def.getName(), def.getDescription(), def.getInputSchema()));
         }
-        // task 是 agent runtime 的内置工具,不出现在 List<Tool> 里,这里手动追加。
-        tools.add(new ToolDef(
-                TASK_TOOL_DEFINITION.getName(),
-                TASK_TOOL_DEFINITION.getDescription(),
-                TASK_TOOL_DEFINITION.getInputSchema()));
         return tools;
     }
 
@@ -406,12 +366,13 @@ public class AgentLoopHarness {
     }
 
     /**
-     * 派发一次工具调用。优先看是否是内置 {@code task} 工具,否则走普通 {@link ToolRegistry}。
+     * 派发一次工具调用 —— 统一走 {@link ToolRegistry}。
+     *
+     * <p>s12 Stage 1 之后,{@code task} 工具回归 {@link com.xilidou.marvis.tool.impl.TaskTool}
+     * 标准实现,这里不再需要 task 特判。
      */
     private ToolResultBlock executeOneTool(ToolUseBlock toolUse, Map<String, Object> args) {
-        ToolResult result = TASK_TOOL_NAME.equals(toolUse.getName())
-                ? executeTaskTool(args)
-                : registry.execute(new ToolCall(toolUse.getName(), args));
+        ToolResult result = registry.execute(new ToolCall(toolUse.getName(), args));
         String output = result.getOutput();
 
         System.out.println(output.length() > CONSOLE_PREVIEW_LIMIT
@@ -419,34 +380,6 @@ public class AgentLoopHarness {
                 : output);
 
         return ToolResultBlock.ofText(toolUse.getId(), output);
-    }
-
-    /**
-     * task 工具的内置实现:验参 → 调 {@link Subagent#spawn} → 包成 ToolResult。
-     *
-     * <p>原来这是 {@code TaskTool implements Tool},在 {@code @Component} 自动收集中。
-     * 切片 C 之后为消除三方循环依赖删除了 TaskTool 类,逻辑内联到这里 ——
-     * 这与 {@code task} 的本质相符:它不是普通工具,而是 agent runtime 自身派子 agent 的能力。
-     */
-    private ToolResult executeTaskTool(Map<String, Object> args) {
-        Object descArg = args.get("description");
-        if (descArg == null) {
-            return new ToolResult(false, "Error: 'description' argument is required");
-        }
-        String description = descArg.toString();
-        if (description.isBlank()) {
-            return new ToolResult(false, "Error: 'description' must not be blank");
-        }
-
-        log.info("[Task] spawning subagent: {}",
-                description.length() > 80 ? description.substring(0, 80) + "..." : description);
-
-        try {
-            return new ToolResult(true, subagent.spawn(description));
-        } catch (Exception e) {
-            log.error("[Task] subagent failed", e);
-            return new ToolResult(false, "Subagent failed: " + e.getMessage());
-        }
     }
 
     private Map<String, Object> parseToolInput(ToolUseBlock toolUse) {

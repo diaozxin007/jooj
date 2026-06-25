@@ -38,9 +38,9 @@ import static org.junit.jupiter.api.Assertions.*;
  *       {@link com.xilidou.marvis.permission.PermissionConfiguration}
  *       的 5 个 @Bean 都装配成功
  *       (CompactConfig / MemoryConfig / PermissionPipeline / CompactPipeline / MemoryService)</li>
- *   <li>{@link Subagent} 的 @Lazy ToolRegistry 切断了 TaskTool↔Subagent 循环</li>
- *   <li>{@link AgentLoopHarness} 的 11 参 Spring 构造器 + @PostConstruct 都跑通</li>
- *   <li>所有 5 个 @Component Tool 被 ToolRegistry 自动收集</li>
+ *   <li>{@link Subagent} 的 @Lazy 注入打破 TaskTool↔Subagent↔ToolRegistry 三方循环</li>
+ *   <li>{@link AgentLoopHarness} 的 10 参 Spring 构造器 + @PostConstruct 都跑通</li>
+ *   <li>所有 6 个 @Component Tool 被 ToolRegistry 自动收集(含 s12 Stage 1 后回归的 task)</li>
  * </ol>
  *
  * <p>{@link MockitoBean} 是 Spring Boot 4 替代 @MockBean 的官方方案,
@@ -88,11 +88,11 @@ class MarvisSpringIntegrationTest {
     }
 
     @Test
-    @DisplayName("ToolRegistry 自动收集了所有 @Component Tool;task 内联在 AgentLoopHarness 不在 registry")
+    @DisplayName("ToolRegistry 自动收集了所有 @Component Tool;task 通过 @Lazy 也在 registry 里")
     void tool_registry_collects_all_component_tools() {
         var tools = toolRegistry.getAllTools();
-        // bash + filesystem(4) + todo + load_skill = 7 个普通工具,不含 task
-        assertTrue(tools.size() >= 7,
+        // bash + filesystem(4) + todo + load_skill + task = 8 个普通工具
+        assertTrue(tools.size() >= 8,
                 "Spring 应该自动收集所有 @Component Tool,实际:" + tools);
 
         var names = tools.stream().map(t -> t.getName()).toList();
@@ -100,10 +100,9 @@ class MarvisSpringIntegrationTest {
         assertTrue(names.contains("read_file"), "read_file 必须自动注册");
         assertTrue(names.contains("todo_write"), "todo_write 必须自动注册");
         assertTrue(names.contains("load_skill"), "load_skill 必须自动注册");
-        // task 工具结构性消除循环依赖后,内联到 AgentLoopHarness#buildTools(),
-        // 不再出现在 ToolRegistry 里。LLM 看到 task 是因为 buildTools 手动追加。
-        assertFalse(names.contains("task"),
-                "task 工具已结构性消除循环 —— 不应该在 ToolRegistry 里(它是 AgentLoopHarness 内置的)");
+        // s12 Stage 1: task 工具回归 Tool 接口标准实现,通过 @Lazy 注入 Subagent 打破循环
+        assertTrue(names.contains("task"),
+                "task 工具应该和其他 @Component Tool 一样在 ToolRegistry 里");
     }
 
     @Test
