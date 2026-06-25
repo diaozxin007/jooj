@@ -46,23 +46,32 @@
   }
 
   function appendBubble({ role, text, toolCalls = [], isError = false }) {
+    // 双重保险:空文本不渲染气泡(后端 /api/history 已过滤一次,但 reply 路径可能也空)
+    const hasText = text != null && String(text).trim().length > 0;
+    const hasToolCalls = toolCalls && toolCalls.length > 0;
+    if (!hasText && !hasToolCalls && !isError) return null;
+
     clearEmptyState();
     const bubble = document.createElement('div');
     bubble.className = 'bubble ' + role + (isError ? ' error' : '');
 
     const initial = role === 'user' ? '你' : 'M';
     let metaHtml = '';
-    if (toolCalls && toolCalls.length > 0) {
+    if (hasToolCalls) {
       metaHtml = '<div class="meta">' +
         toolCalls.map(t => `<span class="tool-tag">${escapeHtml(t)}</span>`).join('') +
         '</div>';
     }
 
+    // 只有 hasToolCalls 没文本时,把工具列表当 content 显示;
+    // 大部分场景仍是 text + meta(tool tags)分两行
+    const displayText = hasText ? text : (hasToolCalls ? '(调用了工具)' : '');
+
     bubble.innerHTML = `
       <div class="row">
         ${role === 'assistant' ? `<div class="avatar">${initial}</div>` : ''}
         <div>
-          <div class="content">${escapeHtml(text || '(empty)')}</div>
+          <div class="content">${escapeHtml(displayText)}</div>
           ${metaHtml}
         </div>
         ${role === 'user' ? `<div class="avatar">${initial}</div>` : ''}

@@ -100,13 +100,24 @@ public class ChatController {
         }
     }
 
-    /** 完整对话历史(只给前端展示用)。 */
+    /**
+     * 完整对话历史(只给前端展示用)。
+     *
+     * <p>跳过揉平后是空的消息 —— 协议内部状态(tool_use only / tool_result only
+     * 那些 message),前端用户不该看到这些占位气泡。具体哪些会被跳过:
+     * <ul>
+     *   <li>assistant 一轮纯 ToolUseBlock + ThinkingBlock(没 TextBlock)</li>
+     *   <li>user 一轮纯 ToolResultBlock(协议要求 tool_use 后紧跟的 user 消息)</li>
+     * </ul>
+     */
     @GetMapping("/history")
     public HistoryResponse history() {
         List<MessageParam> hist = harness.getHistory();
         List<HistoryResponse.Entry> entries = new ArrayList<>(hist.size());
         for (MessageParam m : hist) {
-            entries.add(new HistoryResponse.Entry(m.getRole(), flattenContent(m)));
+            String text = flattenContent(m);
+            if (text == null || text.isBlank()) continue;
+            entries.add(new HistoryResponse.Entry(m.getRole(), text));
         }
         return new HistoryResponse(entries);
     }
