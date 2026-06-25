@@ -35,6 +35,17 @@
             <artifactId>spring-boot-starter</artifactId>
         </dependency>
 
+        <!-- Spring Boot Web Starter — 让 marvis 可选地以 Web 模式启动。
+             不引会强制 web 化:启动逻辑用 spring.main.web-application-type=none
+             或 web 控制(MarvisApplication 默认 NONE = CLI 模式),只有在 web profile
+             或 spring.main.web-application-type=servlet 时才起 Tomcat。
+             Spring Boot 4 的 WebApplicationType.NONE 即使引了 starter-web 也不会启动 servlet,
+             所以引入此依赖是安全的——不影响 CLI 默认行为。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
         <!-- Jackson 2.x（com.fasterxml.jackson.*）
              ⚠️ Spring Boot 4.1 默认用 Jackson 3.x（tools.jackson.*），与我们代码 import 不兼容。
              显式声明 jackson-databind 2.x 优先，强制覆盖。
@@ -76,6 +87,15 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Spring Boot 4 把 web 相关测试 autoconfigure 拆出独立 module。
+             带来 @AutoConfigureMockMvc + WebMvcTest 等(原 spring-boot-test-autoconfigure
+             里的内容)。仅 test scope,不影响 main。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-webmvc-test</artifactId>
             <scope>test</scope>
         </dependency>
 

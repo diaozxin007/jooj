@@ -6,6 +6,8 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
 
+import java.util.Arrays;
+
 /**
  * Spring Boot 启动类(切片 C 后:真·主入口)。
  *
@@ -13,32 +15,66 @@ import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
  * 手工装配)。切片 C 完成后:
  * <ul>
  *   <li>容器拉起所有 {@code @Component}(Tool/Hook/Service)</li>
- *   <li>{@link MarvisCliRunner}({@code @Profile("!test")})调用
- *       {@link com.xilidou.marvis.agent.AgentLoopHarness#repl()} 启动交互循环</li>
+ *   <li>{@link MarvisCliRunner}({@code @Profile("!web & !test")})调用
+ *       {@link com.xilidou.marvis.agent.AgentLoopHarness#repl()} 启动交互循环(CLI 模式)</li>
+ *   <li>{@code web} profile 时不跑 CLI runner,改起 Tomcat 暴露
+ *       {@link com.xilidou.marvis.web.ChatController} 的 REST 接口</li>
  * </ul>
+ *
+ * <h3>启动方式</h3>
+ *
+ * <pre>
+ *   # CLI 模式(默认,跟之前一样)
+ *   ./mvnw spring-boot:run
+ *
+ *   # Web 模式(--web 或 -Dspring.profiles.active=web)
+ *   ./mvnw spring-boot:run -Dspring-boot.run.arguments=--web
+ *   # 或
+ *   ./mvnw spring-boot:run -Dspring-boot.run.profiles=web
+ * </pre>
  *
  * <p><b>关键参数</b>:
  * <ul>
- *   <li>{@link WebApplicationType#NONE} — 显式声明 CLI(不起 web,不需要 spring-boot-starter-web)</li>
  *   <li>{@link Banner.Mode#OFF} — 关闭 Spring 大旗,REPL 启动更干净</li>
+ *   <li>web profile 启用时 web-application-type=SERVLET,默认 = NONE</li>
  * </ul>
  *
  * <p>{@link ConfigurationPropertiesScan} 让 Spring 找到 {@link MarvisProperties}
  * 而不需要在每个配置类上重复 {@code @EnableConfigurationProperties}。
- *
- * <p><b>为什么 REPL 不直接写在本类的 CommandLineRunner 上</b>:
- * 测试场景下 @SpringBootTest 也会触发 CommandLineRunner,REPL 会卡在等 stdin。
- * 提取出 {@link MarvisCliRunner} 加 {@code @Profile("!test")} 才能让所有
- * @SpringBootTest 装配完毕直接退出。
  */
 @SpringBootApplication
 @ConfigurationPropertiesScan
 public class MarvisApplication {
 
     public static void main(String[] args) {
-        new SpringApplicationBuilder(MarvisApplication.class)
-                .web(WebApplicationType.NONE)
-                .bannerMode(Banner.Mode.OFF)
-                .run(args);
+        boolean webMode = isWebMode(args);
+
+        SpringApplicationBuilder builder = new SpringApplicationBuilder(MarvisApplication.class)
+                .bannerMode(Banner.Mode.OFF);
+        if (webMode) {
+            builder.web(WebApplicationType.SERVLET).profiles("web");
+        } else {
+            builder.web(WebApplicationType.NONE);
+        }
+        builder.run(args);
+    }
+
+    /**
+     * Web 模式判定 —— 任意一项命中即启用:
+     * <ul>
+     *   <li>命令行 {@code --web} 参数</li>
+     *   <li>{@code spring.profiles.active} 系统属性 / 环境变量含 {@code web}</li>
+     * </ul>
+     *
+     * <p>没有命中任何条件 → 走原 CLI 模式,跟切片 C 之前完全一致。
+     */
+    private static boolean isWebMode(String[] args) {
+        if (args != null && Arrays.stream(args).anyMatch(a ->
+                "--web".equals(a) || "-web".equals(a))) {
+            return true;
+        }
+        String profiles = System.getProperty("spring.profiles.active",
+                System.getenv().getOrDefault("SPRING_PROFILES_ACTIVE", ""));
+        return profiles != null && profiles.toLowerCase().contains("web");
     }
 }
