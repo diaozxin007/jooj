@@ -119,6 +119,12 @@ public class AgentLoopHarness {
     /** 错误恢复配置(s11)。{@link #agentLoop} 用 {@code defaultMaxTokens} 初始化 RecoveryState。 */
     private final MarvisProperties.Recovery recoveryCfg;
 
+    /**
+     * s13 Background Tasks 管理器。慢操作派 daemon 线程,placeholder 立即返回给 LLM,
+     * 完成后通过 {@code <task_notification>} 文本块注入下一轮。
+     */
+    private final BackgroundTaskManager bgManager;
+
     /** 新会话回调列表。{@link #repl} 接到新 user 输入时会依次执行。 */
     private final List<Runnable> onNewSessionListeners = new ArrayList<>();
 
@@ -141,6 +147,7 @@ public class AgentLoopHarness {
                             TodoStore todoStore,
                             SystemPromptAssembler promptAssembler,
                             RecoveryCoordinator recoveryCoordinator,
+                            BackgroundTaskManager bgManager,
                             MarvisProperties props) {
         this.client = client;
         this.model = props.getAnthropic().getModel();
@@ -153,6 +160,7 @@ public class AgentLoopHarness {
         this.todoStore = todoStore;
         this.promptAssembler = promptAssembler;
         this.recoveryCoordinator = recoveryCoordinator;
+        this.bgManager = bgManager;
         this.recoveryCfg = props.getRecovery();
     }
 
@@ -266,6 +274,23 @@ public class AgentLoopHarness {
                     continue;
                 }
 
+                // s13: 决定本次工具调用走前台还是后台。
+                // - LLM 显式 run_in_background=true 优先
+                // - 否则启发式:bash + 慢操作关键词命中 → 后台
+                // 后台路径不接 PostToolUse hook —— hook 是同步对前台结果的反应,
+                // 后台完成后通过 task_notification 注入,LLM 自己消费(跟上游一致)。
+                if (BackgroundTaskManager.shouldRunBackground(toolUse.getName(), args)) {
+                    Object cmd = args.get("command");
+                    String command = cmd != null ? cmd.toString() : "(no command)";
+                    String bgId = bgManager.start(toolUse.getId(), command,
+                            () -> registry.execute(new ToolCall(toolUse.getName(), args)));
+                    String placeholder = "[Background task " + bgId + " started] " +
+                            "Result will be available when complete.";
+                    System.out.println("\033[35m" + placeholder + "\033[0m");
+                    toolResults.add(ToolResultBlock.ofText(toolUse.getId(), placeholder));
+                    continue;
+                }
+
                 ToolResultBlock result = executeOneTool(toolUse, args);
                 hooks.triggerPostToolUse(toolUse, result.getContent().toString());
 
@@ -276,7 +301,13 @@ public class AgentLoopHarness {
                 toolResults.add(result);
             }
 
-            messages.add(MessageParam.toolResults(toolResults));
+            // s13: drain 已完成的 bg task 通知,跟本轮 tool_results 合并到同一条 user message。
+            // notifications 为空时 toolResultsWithNotifications 退化为 toolResults,行为不变。
+            List<TextBlock> notifications = bgManager.drainNotifications();
+            if (!notifications.isEmpty()) {
+                log.info("[BG] injected {} task_notification(s) into next turn", notifications.size());
+            }
+            messages.add(MessageParam.toolResultsWithNotifications(toolResults, notifications));
         }
     }
 

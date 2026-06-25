@@ -147,7 +147,9 @@ public class MarvisProperties {
         private String tools =
                 "Available tools: bash, read_file, write_file, edit_file, glob, " +
                 "todo_write, load_skill, task, " +
-                "create_task, list_tasks, get_task, claim_task, complete_task.";
+                "create_task, list_tasks, get_task, claim_task, complete_task. " +
+                "For slow ops (build/test/deploy/install), set bash.run_in_background=true " +
+                "to keep working while it runs in the background.";
 
         /**
          * memory section 的标题前缀。memory 正文由 MemoryService.catalog() 提供,

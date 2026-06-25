@@ -37,16 +37,27 @@ public class BashTool implements Tool {
 
     @Override
     public List<ToolDefinition> getTools() {
+        // s13: bash 工具加可选 run_in_background boolean 参数。
+        // 这是"语义提示给 marvis"——AgentLoopHarness 在派发前提前读出来,
+        // 不传到 executeBash;BashTool 自身不感知此参数。
+        // 跟上游 [s13_background_tasks/code.py] 的 RUN_BASH 工具 schema 严格一致。
+        Map<String, Object> properties = new java.util.LinkedHashMap<>();
+        properties.put("command", Map.of(
+                "type", "string",
+                "description", "The shell command to run"));
+        properties.put("run_in_background", Map.of(
+                "type", "boolean",
+                "description",
+                "Optional. If true, marvis runs this in a daemon thread, returns " +
+                        "a placeholder bg_id immediately, and injects the result as a " +
+                        "<task_notification> in the next turn. Use for slow ops " +
+                        "(builds / tests / installs / docker / make)."));
+
         return List.of(
                 new ToolDefinition(
                         "bash",
                         "Run a shell command.",
-                        InputSchema.object(
-                                Map.of("command", Map.of(
-                                        "type", "string",
-                                        "description", "The shell command to run")),
-                                "command"   // required
-                        )
+                        InputSchema.object(properties, "command")
                 )
         );
     }

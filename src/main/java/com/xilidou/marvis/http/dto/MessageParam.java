@@ -5,6 +5,7 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -37,6 +38,8 @@ import java.util.List;
  *   <li>{@link #user(String)} - 普通用户输入</li>
  *   <li>{@link #assistant(List)} - 把 LLM 返回的 content 数组原样回传（坑 4）</li>
  *   <li>{@link #toolResults(List)} - tool 执行结果（注意 role 是 user，不是 tool！坑 3）</li>
+ *   <li>{@link #toolResultsWithNotifications(List, List)} - s13 Background Tasks:
+ *       同一条 user message 里 tool_result + {@code <task_notification>} 文本块</li>
  * </ul>
  */
 @Data
@@ -72,5 +75,36 @@ public class MessageParam {
      */
     public static MessageParam toolResults(List<ToolResultBlock> results) {
         return new MessageParam("user", results);
+    }
+
+    /**
+     * s13 Background Tasks —— 把 tool 执行结果 + 后台完成通知合并到同一条 user message。
+     *
+     * <p>对应上游 s13 的关键消息形态:同一条 {@code role: "user"} 里既有
+     * {@code tool_result} blocks(本轮同步执行的工具)又有
+     * {@code <task_notification>} 文本块(此前派出去的 bg task 已完成)。
+     *
+     * <p>合并顺序:tool_result 在前,task_notification 在后(让 LLM 先消化本轮工具结果,
+     * 再看后台异步通知)。
+     *
+     * <p><b>不变量</b>:返回 {@code List<ContentBlock>} 形态的 content,而非 String,
+     * 让 Anthropic API 协议看到的是多块结构化输入。
+     *
+     * <p>当 {@code notifications} 为空时,行为退化为 {@link #toolResults}(直接传 results 列表)
+     * —— 让上游调用方可以无条件调用此 factory,不需要先判空。
+     *
+     * @param results       本轮工具执行结果(可空但通常至少有一条)
+     * @param notifications 后台完成通知(可空)
+     */
+    public static MessageParam toolResultsWithNotifications(
+            List<ToolResultBlock> results,
+            List<TextBlock> notifications) {
+        if (notifications == null || notifications.isEmpty()) {
+            return toolResults(results);
+        }
+        List<ContentBlock> combined = new ArrayList<>();
+        if (results != null) combined.addAll(results);
+        combined.addAll(notifications);
+        return new MessageParam("user", combined);
     }
 }
