@@ -67,11 +67,18 @@
     // 大部分场景仍是 text + meta(tool tags)分两行
     const displayText = hasText ? text : (hasToolCalls ? '(调用了工具)' : '');
 
+    // 关键:assistant 文本走 markdown 渲染(LLM 经常用 ** ` ``` # 等),
+    // user 输入保留 plain text(用户没写 markdown 习惯,意外 ** 也别被加粗)。
+    // error 气泡也走 plain,错误信息直白比较好。
+    const contentHtml = (role === 'assistant' && !isError && hasText)
+      ? `<div class="content markdown">${renderMarkdown(displayText)}</div>`
+      : `<div class="content">${escapeHtml(displayText)}</div>`;
+
     bubble.innerHTML = `
       <div class="row">
         ${role === 'assistant' ? `<div class="avatar">${initial}</div>` : ''}
         <div>
-          <div class="content">${escapeHtml(displayText)}</div>
+          ${contentHtml}
           ${metaHtml}
         </div>
         ${role === 'user' ? `<div class="avatar">${initial}</div>` : ''}
@@ -104,6 +111,44 @@
     const div = document.createElement('div');
     div.textContent = s == null ? '' : String(s);
     return div.innerHTML;
+  }
+
+  // ── Markdown 渲染(只对 assistant 用,防 XSS) ──
+  // 配置 marked:GFM(table、strikethrough)+ breaks(单换行=<br>,贴近 LLM 输出习惯)
+  if (window.marked) {
+    window.marked.setOptions({
+      gfm: true,
+      breaks: true,
+      headerIds: false,    // 不生成 id,避免气泡里 anchor 链接干扰
+      mangle: false,       // 关闭 email 混淆(GFM 没要求)
+    });
+  }
+
+  /** 渲染 markdown 到 HTML 字符串。CDN 没加载时 fallback 到 escapeHtml + 保留换行。 */
+  function renderMarkdown(text) {
+    if (!text) return '';
+    if (!window.marked || !window.DOMPurify) {
+      // 降级:CDN 挂了就 plain text + 保换行
+      return escapeHtml(text).replace(/\n/g, '<br>');
+    }
+    const rawHtml = window.marked.parse(String(text));
+    // 关键:DOMPurify 清洗,白名单标签 + 强制链接安全
+    const clean = window.DOMPurify.sanitize(rawHtml, {
+      ADD_ATTR: ['target', 'rel'],          // 允许 target/rel(下面 hook 加上)
+      FORBID_TAGS: ['style', 'iframe', 'form', 'input'],
+      FORBID_ATTR: ['onerror', 'onload', 'onclick', 'style'],
+    });
+    return clean;
+  }
+
+  // 给所有 markdown 链接强制加 target=_blank + rel=noopener noreferrer
+  if (window.DOMPurify) {
+    window.DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+      if (node.tagName === 'A') {
+        node.setAttribute('target', '_blank');
+        node.setAttribute('rel', 'noopener noreferrer');
+      }
+    });
   }
 
   function updateHistorySize(n) {
