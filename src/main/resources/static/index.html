@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>marvis</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="logo">▸</span>
+      <span class="title">marvis</span>
+      <span class="subtitle">Java agent harness · s01-s14</span>
+    </div>
+    <div class="actions">
+      <span id="status" class="status idle">idle</span>
+      <button id="clearBtn" type="button" title="清空对话历史">清空</button>
+    </div>
+  </header>
+
+  <main id="messages" aria-live="polite"></main>
+
+  <footer>
+    <form id="chatForm" autocomplete="off">
+      <textarea
+        id="queryInput"
+        rows="2"
+        placeholder="问点什么... (Enter 发送, Shift+Enter 换行)"
+        required></textarea>
+      <button id="sendBtn" type="submit">发送</button>
+    </form>
+    <p class="hint">
+      <span id="historySize">0 条历史</span>
+      <span class="dot">·</span>
+      <span>marvis 共享 history with CLI REPL</span>
+    </p>
+  </footer>
+
+  <script src="app.js" defer></script>
+</body>
+</html>

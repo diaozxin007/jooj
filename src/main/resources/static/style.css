@@ -1,0 +1,205 @@
+/* marvis WebUI — vanilla CSS,深色主题,无前端框架。
+   设计目标:像 Claude Code 终端那样克制,但比 CLI 体验好。 */
+
+:root {
+  --bg: #0f1115;
+  --bg-elevated: #181c24;
+  --bg-input: #1f242e;
+  --border: #2a313e;
+  --text: #e4e6ea;
+  --text-dim: #8a93a3;
+  --text-faint: #5a626f;
+  --accent: #d97706;          /* 橙,跟 marvis logo 同色系 */
+  --accent-hover: #f59842;
+  --user: #4ea1d3;            /* 用户气泡蓝 */
+  --user-bg: rgba(78, 161, 211, 0.08);
+  --assistant: #a8d97c;       /* 助手气泡绿 */
+  --assistant-bg: rgba(168, 217, 124, 0.06);
+  --tool: #c084fc;            /* 工具调用紫 */
+  --error: #f87171;
+  --shadow: 0 2px 8px rgba(0,0,0,0.3);
+  --radius: 8px;
+  --radius-lg: 12px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0; padding: 0; height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue",
+               "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+  font-size: 14px; line-height: 1.6;
+  background: var(--bg); color: var(--text);
+}
+
+body {
+  display: flex; flex-direction: column;
+}
+
+/* ── Header ────────────────────────────────────────────────── */
+
+header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 12px 24px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elevated);
+}
+
+.brand { display: flex; align-items: center; gap: 10px; }
+.logo {
+  color: var(--accent); font-size: 20px;
+  font-weight: 700;
+}
+.title { font-weight: 600; font-size: 16px; }
+.subtitle { color: var(--text-faint); font-size: 12px; }
+
+.actions { display: flex; align-items: center; gap: 12px; }
+
+.status {
+  font-size: 12px; padding: 4px 10px; border-radius: 999px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.status.idle { background: rgba(168, 217, 124, 0.1); color: var(--assistant); }
+.status.busy { background: rgba(217, 119, 6, 0.15); color: var(--accent); }
+.status.error { background: rgba(248, 113, 113, 0.1); color: var(--error); }
+
+button {
+  background: var(--bg-input); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 6px 14px; font-size: 13px; cursor: pointer;
+  transition: background .15s ease, border-color .15s ease;
+}
+button:hover:not(:disabled) {
+  background: #252b36; border-color: #38414f;
+}
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+#sendBtn {
+  background: var(--accent); border-color: var(--accent); color: #fff;
+  font-weight: 500; padding: 8px 22px;
+}
+#sendBtn:hover:not(:disabled) {
+  background: var(--accent-hover); border-color: var(--accent-hover);
+}
+
+/* ── Messages ──────────────────────────────────────────────── */
+
+main {
+  flex: 1; overflow-y: auto;
+  padding: 24px 0;
+  display: flex; flex-direction: column; gap: 16px;
+}
+
+.empty-state {
+  margin: auto; padding: 40px 20px; text-align: center;
+  color: var(--text-faint);
+}
+.empty-state h2 { color: var(--text-dim); font-weight: 500; margin-bottom: 8px; }
+.empty-state .examples {
+  margin-top: 24px; font-size: 13px;
+  display: flex; flex-direction: column; gap: 6px; align-items: center;
+}
+.empty-state .examples code {
+  background: var(--bg-elevated); padding: 4px 10px; border-radius: var(--radius);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text-dim); font-size: 12px;
+}
+
+.bubble {
+  max-width: 760px; margin: 0 auto; padding: 0 24px; width: 100%;
+}
+
+.bubble .row {
+  display: flex; gap: 12px; align-items: flex-start;
+}
+.bubble.user .row { justify-content: flex-end; }
+.bubble.assistant .row { justify-content: flex-start; }
+
+.bubble .avatar {
+  width: 28px; height: 28px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 600; flex-shrink: 0;
+}
+.bubble.user .avatar { background: var(--user-bg); color: var(--user); }
+.bubble.assistant .avatar { background: var(--assistant-bg); color: var(--assistant); }
+
+.bubble .content {
+  border-radius: var(--radius-lg);
+  padding: 12px 16px; max-width: calc(100% - 50px);
+  word-wrap: break-word; white-space: pre-wrap;
+  font-size: 14px;
+}
+.bubble.user .content {
+  background: var(--user-bg); border: 1px solid rgba(78, 161, 211, 0.2);
+}
+.bubble.assistant .content {
+  background: var(--assistant-bg); border: 1px solid rgba(168, 217, 124, 0.15);
+}
+
+.bubble .meta {
+  font-size: 11px; color: var(--text-faint); margin-top: 6px;
+  display: flex; gap: 8px; flex-wrap: wrap;
+}
+.bubble .tool-tag {
+  background: rgba(192, 132, 252, 0.1); color: var(--tool);
+  padding: 1px 8px; border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+
+.bubble.error .content {
+  background: rgba(248, 113, 113, 0.06);
+  border: 1px solid rgba(248, 113, 113, 0.2);
+  color: var(--error);
+}
+
+/* loading 占位泡 */
+.bubble.loading .content {
+  display: inline-flex; align-items: center; gap: 6px;
+  color: var(--text-faint);
+}
+.bubble.loading .dots span {
+  display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent); margin: 0 2px;
+  animation: bounce 1.4s ease-in-out infinite both;
+}
+.bubble.loading .dots span:nth-child(1) { animation-delay: -0.32s; }
+.bubble.loading .dots span:nth-child(2) { animation-delay: -0.16s; }
+@keyframes bounce {
+  0%, 80%, 100% { transform: scale(0.6); opacity: 0.5; }
+  40% { transform: scale(1); opacity: 1; }
+}
+
+/* ── Footer / Input ──────────────────────────────────────── */
+
+footer {
+  border-top: 1px solid var(--border);
+  background: var(--bg-elevated);
+  padding: 16px 24px;
+}
+
+#chatForm {
+  max-width: 760px; margin: 0 auto;
+  display: flex; gap: 8px; align-items: flex-end;
+}
+
+textarea {
+  flex: 1;
+  background: var(--bg-input); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 10px 14px;
+  font-family: inherit; font-size: 14px; line-height: 1.5;
+  resize: vertical; min-height: 38px; max-height: 200px;
+  transition: border-color .15s ease;
+}
+textarea:focus {
+  outline: none; border-color: var(--accent);
+}
+textarea::placeholder { color: var(--text-faint); }
+
+.hint {
+  max-width: 760px; margin: 8px auto 0; padding: 0;
+  font-size: 11px; color: var(--text-faint);
+  text-align: center;
+}
+.hint .dot { margin: 0 6px; }

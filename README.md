@@ -116,6 +116,8 @@ MODEL_ID=claude-sonnet-4-6
 
 ### 3. 运行
 
+#### CLI 模式(默认)
+
 ```bash
 # 交互式 REPL
 ./mvnw -q exec:java -Dexec.mainClass="com.xilidou.marvis.MarvisApplication"
@@ -124,6 +126,29 @@ MODEL_ID=claude-sonnet-4-6
 ./mvnw -q dependency:build-classpath -Dmdep.outputFile=/tmp/cp.txt
 java -cp "$(cat /tmp/cp.txt):target/classes" com.xilidou.marvis.MarvisApplication
 ```
+
+#### Web 模式(浏览器 UI)
+
+```bash
+# 用 --web 参数(简单)
+./mvnw -q spring-boot:run -Dspring-boot.run.arguments=--web
+
+# 或用 web profile(等价)
+SPRING_PROFILES_ACTIVE=web ./mvnw -q spring-boot:run
+
+# 打包后用 jar 跑(生产化场景)
+./mvnw -q -DskipTests=true package
+java -jar target/marvis-0.0.1-SNAPSHOT.jar --web
+```
+
+启动后浏览器打开 [http://localhost:8080](http://localhost:8080) 即可。
+
+WebUI 暴露 3 个 REST endpoint:
+- `POST /api/chat` —— 喂一条 query 跑一轮 agent loop,返 reply / historySize / 本轮 toolCalls
+- `GET /api/history` —— 完整对话历史(role + 揉平 text)
+- `POST /api/clear` —— 清空 history
+
+注意:WebUI 跟 CLI REPL **共享同一个 history**(单 `AgentLoopHarness` 单例 + `agentLock` 全局互斥)。两边并行操作会串聊,v1 单用户场景接受。
 
 ### 4. 跑测试
 
