@@ -124,13 +124,15 @@ main {
 .bubble.assistant .avatar { background: var(--assistant-bg); color: var(--assistant); }
 
 /* content 在 row 里是个 flex item。
-   - max-width 70%:防长文本撑满整行,跟主流聊天 UI 一致
-   - 不设 width:让短文本(如"你好")按内容自然宽度,不被拉伸
-   - min-width 0 + word-wrap 让长 URL / 代码 token 能正常换行 */
+   - max-width 100%:由父级(.bubble 760px max-width + 24px padding)兜底,
+     content 只在父超界时才换行;短文本按内容自然宽度,不被拉伸
+   - min-width 0 + word-wrap 让长 URL / 代码 token 能正常换行
+   - width: fit-content 双重确保短文本不被 flex 拉伸到固定列宽 */
 .bubble .content {
   border-radius: var(--radius-lg);
   padding: 12px 16px;
-  max-width: 70%;
+  width: fit-content;
+  max-width: 100%;
   min-width: 0;
   word-wrap: break-word;
   overflow-wrap: break-word;
@@ -144,11 +146,13 @@ main {
   background: var(--assistant-bg); border: 1px solid rgba(168, 217, 124, 0.15);
 }
 
-/* meta(工具 tag)跟 content 同列,贴 content 边对齐 */
+/* meta(工具 tag)跟 content 同列,贴 content 边对齐。
+   不设 max-width — 让里面的 .content (max-width: 70%) 自己决定宽度,
+   外包只负责"上下排列 content + meta"和"跟 user/assistant 侧对齐"。 */
 .bubble .row > div:not(.avatar) {
   display: flex; flex-direction: column;
-  max-width: calc(100% - 80px);
   min-width: 0;
+  flex: 0 1 auto;
 }
 .bubble.user .row > div:not(.avatar) { align-items: flex-end; }
 .bubble.assistant .row > div:not(.avatar) { align-items: flex-start; }
