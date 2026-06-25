@@ -34,6 +34,9 @@ marvis:
     scheduler-tick-ms: 100
     processor-tick-ms: 50
     durable-path: .scheduled_tasks.test.json
+  # s15:测试 profile 用独立目录,避免污染 ./.mailboxes
+  team:
+    mailbox-dir: .mailboxes.test
   permission:
     mode: always-allow
   skills:

@@ -60,6 +60,9 @@ public class MarvisProperties {
     /** Cron Scheduler(s14)tick + 持久化路径配置。 */
     private Cron cron = new Cron();
 
+    /** Team / MessageBus(s15)邮箱目录配置。 */
+    private Team team = new Team();
+
     @Data
     public static class Anthropic {
         /** API 根 URL,默认 https://api.anthropic.com。 */
@@ -248,5 +251,17 @@ public class MarvisProperties {
         private int processorTickMs = 200;
         /** durable 持久化文件路径(相对 cwd 或绝对)。默认 {@code .scheduled_tasks.json}。 */
         private String durablePath = ".scheduled_tasks.json";
+    }
+
+    /**
+     * Team / MessageBus(s15)配置 —— 文件邮箱形态的 agent 间通信。
+     *
+     * <p>跟上游 s15 {@code MAILBOX_DIR = WORKDIR / ".mailboxes"} 一致,
+     * 每个 agent 一个 {@code <name>.jsonl} 文件。
+     */
+    @Data
+    public static class Team {
+        /** mailbox 目录(相对 cwd 或绝对路径)。默认 {@code .mailboxes}。 */
+        private String mailboxDir = ".mailboxes";
     }
 }

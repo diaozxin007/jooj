@@ -42,6 +42,10 @@ marvis:
     scheduler-tick-ms: 1000
     processor-tick-ms: 200
     durable-path: .scheduled_tasks.json
+
+  # s15 Team / MessageBus 配置:文件邮箱目录,每个 agent 一个 <name>.jsonl 文件。
+  team:
+    mailbox-dir: .mailboxes
   permission:
     mode: cli   # cli | always-allow | always-deny
   skills:
