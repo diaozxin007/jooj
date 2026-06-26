@@ -159,7 +159,8 @@ public class MarvisProperties {
                 "create_task, list_tasks, get_task, claim_task, complete_task, " +
                 "schedule_cron, list_crons, cancel_cron, " +
                 "spawn_teammate, send_message, check_inbox, " +
-                "create_worktree, remove_worktree, keep_worktree. " +
+                "create_worktree, remove_worktree, keep_worktree, " +
+                "connect_mcp (+ dynamic mcp__server__tool after connect). " +
                 "For slow ops (build/test/deploy/install), set bash.run_in_background=true " +
                 "to keep working while it runs in the background.";
 
