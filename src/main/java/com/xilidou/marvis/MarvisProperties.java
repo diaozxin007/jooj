@@ -272,20 +272,25 @@ public class MarvisProperties {
     /**
      * 并发 / 线程池配置 —— 配合 {@link com.xilidou.marvis.config.MarvisExecutors}。
      *
-     * <p>marvis 用两类池:
+     * <p>marvis 用三类池:
      * <ul>
      *   <li>{@code schedulerPoolSize} —— 长期循环任务({@code @Scheduled})的池容量,
      *       当前 marvis 有 cron scheduler + cron processor 两个长期任务,默认 4 槽</li>
-     *   <li>{@code workerMaxSize} —— 一次性任务(bg 工具调用 / teammate spawn)的池上限,
-     *       默认 32。满了会拒绝新任务,caller 收到 {@code RejectedExecutionException}
-     *       返友好错误给 LLM</li>
+     *   <li>{@code bgPoolSize} —— BG 慢工具调用池(s13),默认 8。
+     *       池策略 {@code CallerRunsPolicy}:满则降级同步,LLM 仍能拿到结果只是慢一点</li>
+     *   <li>{@code teammatePoolSize} —— Teammate spawn 池(s15+),默认 16。
+     *       池策略 {@code AbortPolicy}:满则抛 {@code RejectedExecutionException},
+     *       Teammate 返"Error: pool full"给 LLM 让它降并发(不能 inline 跑,
+     *       会卡死 agent loop 几分钟)</li>
      * </ul>
      */
     @Data
     public static class Concurrency {
         /** 长期循环任务({@code @Scheduled})的调度池容量。默认 4。 */
         private int schedulerPoolSize = 4;
-        /** 一次性任务工作池上限(bg / teammate)。默认 32。 */
-        private int workerMaxSize = 32;
+        /** BG 慢工具池上限(s13)。CallerRunsPolicy 满则同步降级。默认 8。 */
+        private int bgPoolSize = 8;
+        /** Teammate spawn 池上限(s15+)。AbortPolicy 满则返 Error 给 LLM。默认 16。 */
+        private int teammatePoolSize = 16;
     }
 }

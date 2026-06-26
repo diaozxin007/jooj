@@ -238,17 +238,18 @@ class BackgroundTaskManagerTest {
     }
 
     @Test
-    @DisplayName("worker 池满 → start 抛 RejectedExecutionException(线程重构 Stage 2)")
-    void start_throws_rejected_when_pool_full() throws Exception {
-        // 用一个不接受任何任务的 executor 模拟池满
-        java.util.concurrent.ExecutorService rejecting = new java.util.concurrent.ThreadPoolExecutor(
-                0, 1,
-                0L, java.util.concurrent.TimeUnit.MILLISECONDS,
-                new java.util.concurrent.SynchronousQueue<>(),
-                r -> { Thread t = new Thread(r); t.setDaemon(true); return t; },
-                new java.util.concurrent.ThreadPoolExecutor.AbortPolicy()
-        );
-        BackgroundTaskManager smallMgr = new BackgroundTaskManager(rejecting);
+    @DisplayName("BG 池满 → CallerRunsPolicy 同步降级,start 不抛(Stage 3 拆池)")
+    void start_falls_back_to_sync_when_pool_full() throws Exception {
+        // 用一个池满策略 = CallerRunsPolicy 的小池(模拟生产 bgExecutor)
+        java.util.concurrent.ThreadPoolExecutor smallPool =
+                new java.util.concurrent.ThreadPoolExecutor(
+                        0, 1,
+                        0L, java.util.concurrent.TimeUnit.MILLISECONDS,
+                        new java.util.concurrent.SynchronousQueue<>(),
+                        r -> { Thread t = new Thread(r); t.setDaemon(true); return t; },
+                        new java.util.concurrent.ThreadPoolExecutor.CallerRunsPolicy()
+                );
+        BackgroundTaskManager smallMgr = new BackgroundTaskManager(smallPool);
 
         // 占满那唯一 1 槽 —— 派一个永久阻塞的任务
         java.util.concurrent.CountDownLatch holdSlot = new java.util.concurrent.CountDownLatch(1);
@@ -258,18 +259,25 @@ class BackgroundTaskManagerTest {
             }
             return new ToolResult(true, "done");
         });
-        // 等占用生效(thread 真正开始跑)
         Thread.sleep(50);
 
-        // 第二个任务应该被拒
-        assertThrows(java.util.concurrent.RejectedExecutionException.class,
-                () -> smallMgr.start("tu_2", "echo", () -> new ToolResult(true, "x")));
+        // 第二个任务**不应抛**(CallerRunsPolicy)
+        // 它会在 caller 线程同步跑(等于本次没派 bg)→ start 阻塞到 work 跑完才返回
+        long t0 = System.nanoTime();
+        java.util.concurrent.atomic.AtomicBoolean ranSync =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
+        String bgId = smallMgr.start("tu_2", "echo", () -> {
+            ranSync.set(true);
+            return new ToolResult(true, "x");
+        });
+        long elapsedMs = (System.nanoTime() - t0) / 1_000_000;
 
-        // 状态机回退:tu_2 不应留在 tasks 里(不算注册成功)
-        // 验证只有 tu_hold 的那一条 in tasks(running)
-        assertEquals(1, smallMgr.taskCount());
+        assertNotNull(bgId, "CallerRunsPolicy 不抛异常,bgId 仍然分配");
+        assertTrue(ranSync.get(), "work 应已在 caller 线程同步跑完");
+        // 同步跑会让 start 阻塞 —— 应该 > 0,但又不应太久(我们的 work 是即时的)
+        assertTrue(elapsedMs < 1000, "同步降级应快速完成,实际:" + elapsedMs + "ms");
 
         holdSlot.countDown();
-        rejecting.shutdownNow();
+        smallPool.shutdownNow();
     }
 }

@@ -13,7 +13,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
@@ -102,18 +101,20 @@ public class BackgroundTaskManager {
     private final Object lock = new Object();
 
     /**
-     * 工作线程池 —— 替代上游裸 {@code threading.Thread()}。
+     * BG 慢工具池 —— Stage 3 拆出独立池。
      *
-     * <p>由 {@link MarvisExecutors#marvisWorkerExecutor} 提供,跟 Teammate spawn
-     * 共享同一个池(core=0 max=workerMaxSize SyncQueue AbortPolicy)。
+     * <p>由 {@link MarvisExecutors#marvisBgExecutor} 提供,跟 Teammate 的池**分开**:
+     * bg 用 {@link java.util.concurrent.ThreadPoolExecutor.CallerRunsPolicy},
+     * 池满时 caller 线程 inline 跑工具,等价于本次没派 bg —— LLM 仍能拿到工具结果,
+     * 只是这一轮慢一点。
      *
-     * <p>池满时 {@link #start} 会抛 {@link RejectedExecutionException} 由 caller
-     * (AgentLoopHarness 的 tool dispatch)接住,返友好错误给 LLM。
+     * <p>因此 {@link #start} 不会抛 {@link RejectedExecutionException},
+     * caller(AgentLoopHarness)无需 try-catch。
      */
     private final ExecutorService workerExecutor;
 
     public BackgroundTaskManager(
-            @Qualifier(MarvisExecutors.WORKER_BEAN) ExecutorService workerExecutor) {
+            @Qualifier(MarvisExecutors.BG_BEAN) ExecutorService workerExecutor) {
         this.workerExecutor = workerExecutor;
     }
 
@@ -155,7 +156,10 @@ public class BackgroundTaskManager {
         }
         log.info("[BG] started {} for command: {}", bgId, command);
 
-        Runnable bgWork = () -> {
+        // BG 池用 CallerRunsPolicy:满则 caller 线程同步跑,不抛异常,
+        // 这里直接 submit 不需要 try-catch。降级语义对 LLM 透明 ——
+        // 它只会感觉这一轮工具调用慢一点(变成同步)。
+        workerExecutor.submit(() -> {
             String output;
             try {
                 ToolResult r = work.get();
@@ -172,20 +176,7 @@ public class BackgroundTaskManager {
                 }
             }
             log.info("[BG] {} completed", bgId);
-        };
-
-        try {
-            workerExecutor.submit(bgWork);
-        } catch (RejectedExecutionException e) {
-            // 池满 —— 把状态机回退,bg_id 不算注册
-            synchronized (lock) {
-                tasks.remove(bgId);
-            }
-            log.warn("[BG] worker pool full, rejected {}: {}", bgId, e.toString());
-            throw new RejectedExecutionException(
-                    "Background task pool full (max " +
-                    "concurrent bg/teammate tasks reached). Try again later.", e);
-        }
+        });
 
         return bgId;
     }

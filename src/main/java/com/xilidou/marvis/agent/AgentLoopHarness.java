@@ -334,23 +334,19 @@ public class AgentLoopHarness {
                 // - 否则启发式:bash + 慢操作关键词命中 → 后台
                 // 后台路径不接 PostToolUse hook —— hook 是同步对前台结果的反应,
                 // 后台完成后通过 task_notification 注入,LLM 自己消费(跟上游一致)。
+                //
+                // 线程重构 Stage 3:bg 池用 CallerRunsPolicy,满则 caller 线程同步跑,
+                // BackgroundTaskManager.start 不会抛 RejectedExecutionException,
+                // 不需要 try-catch fallback。
                 if (BackgroundTaskManager.shouldRunBackground(toolUse.getName(), args)) {
                     Object cmd = args.get("command");
                     String command = cmd != null ? cmd.toString() : "(no command)";
-                    try {
-                        String bgId = bgManager.start(toolUse.getId(), command,
-                                () -> registry.execute(new ToolCall(toolUse.getName(), args)));
-                        String placeholder = "[Background task " + bgId + " started] " +
-                                "Result will be available when complete.";
-                        System.out.println("\033[35m" + placeholder + "\033[0m");
-                        toolResults.add(ToolResultBlock.ofText(toolUse.getId(), placeholder));
-                    } catch (java.util.concurrent.RejectedExecutionException e) {
-                        // worker 池满 —— 退化为同步执行(降级),让 LLM 至少能拿到结果
-                        log.warn("[BG] pool full, falling back to sync: {}", e.getMessage());
-                        ToolResultBlock result = executeOneTool(toolUse, args);
-                        hooks.triggerPostToolUse(toolUse, result.getContent().toString());
-                        toolResults.add(result);
-                    }
+                    String bgId = bgManager.start(toolUse.getId(), command,
+                            () -> registry.execute(new ToolCall(toolUse.getName(), args)));
+                    String placeholder = "[Background task " + bgId + " started] " +
+                            "Result will be available when complete.";
+                    System.out.println("\033[35m" + placeholder + "\033[0m");
+                    toolResults.add(ToolResultBlock.ofText(toolUse.getId(), placeholder));
                     continue;
                 }
 

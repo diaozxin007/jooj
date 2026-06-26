@@ -49,10 +49,12 @@ marvis:
 
   # 并发 / 线程池配置(线程重构):
   #   scheduler-pool-size — @Scheduled 长期任务池容量(cron scheduler/processor 各占 1)
-  #   worker-max-size — 一次性任务池上限(bg/teammate),满则拒绝
+  #   bg-pool-size — BG 慢工具池(s13);CallerRunsPolicy 满则同步降级
+  #   teammate-pool-size — Teammate 池(s15+);AbortPolicy 满则返 Error 给 LLM
   concurrency:
     scheduler-pool-size: 4
-    worker-max-size: 32
+    bg-pool-size: 8
+    teammate-pool-size: 16
   permission:
     mode: cli   # cli | always-allow | always-deny
   skills:

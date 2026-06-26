@@ -17,19 +17,33 @@ import java.util.concurrent.atomic.AtomicInteger;
 /**
  * marvis 统一线程模型 —— 替代 4 处 {@code new Thread().setDaemon(true).start()}。
  *
- * <h3>分两类池</h3>
+ * <h3>分三类池(Stage 3 拆分)</h3>
  *
  * <ul>
  *   <li><b>{@link #marvisTaskScheduler() taskScheduler}</b> ——
  *       长期循环任务(cron scheduler / processor)用 {@link ThreadPoolTaskScheduler}。
  *       配合 {@link org.springframework.scheduling.annotation.Scheduled @Scheduled} 注解,
  *       业务代码只写 tick 方法,不再管 thread 启停 / sleep / interrupt</li>
- *   <li><b>{@link #marvisWorkerExecutor() workerExecutor}</b> ——
- *       短/中期一次性任务(bg 工具调用 / teammate spawn)用 cached 风格 ThreadPoolExecutor。
- *       core=0 max=N keepAlive=60s,空闲全部回收。{@link ThreadPoolExecutor.AbortPolicy}
- *       让池满时抛 {@link java.util.concurrent.RejectedExecutionException},
- *       由 caller(BackgroundTaskManager / Teammate)接住返友好错误给 LLM</li>
+ *   <li><b>{@link #marvisBgExecutor() bgExecutor}</b> ——
+ *       BG 慢工具调用(s13)。**{@link ThreadPoolExecutor.CallerRunsPolicy}**:
+ *       池满时调用线程自己跑 → 退化为同步工具调用,LLM 仍能拿到结果只是慢一点。
+ *       适合 bg 路径:**满了降级,不告诉 LLM**</li>
+ *   <li><b>{@link #marvisTeammateExecutor() teammateExecutor}</b> ——
+ *       Teammate spawn(s15+)。**{@link ThreadPoolExecutor.AbortPolicy}**:
+ *       池满时抛 {@link java.util.concurrent.RejectedExecutionException},
+ *       caller(Teammate.spawn)接住返"Error: pool full"给 LLM。
+ *       适合 teammate 路径:**满了不能 inline 跑**(会卡死 agent loop 几分钟),
+ *       告诉 LLM 让它降并发</li>
  * </ul>
+ *
+ * <h3>为什么 bg 跟 teammate 用不同策略</h3>
+ *
+ * <table>
+ *   <tr><th></th><th>BG (CallerRuns)</th><th>Teammate (Abort)</th></tr>
+ *   <tr><td>池满时 caller 阻塞多久</td><td>1 个工具调用(秒~分)</td><td>整个 agent loop(分~几十分)</td></tr>
+ *   <tr><td>阻塞期间副作用</td><td>本轮工具同步跑完</td><td>用户输入 / cron / 其他 teammate 全卡</td></tr>
+ *   <tr><td>策略选择</td><td>降级同步可接受</td><td>必须立即返回 + 告诉 LLM</td></tr>
+ * </table>
  *
  * <h3>{@link EnableScheduling} 必需</h3>
  *
@@ -39,9 +53,8 @@ import java.util.concurrent.atomic.AtomicInteger;
  * <h3>Spring 接管生命周期</h3>
  *
  * <ul>
- *   <li>{@link ThreadPoolTaskScheduler} 实现 {@link org.springframework.beans.factory.DisposableBean},
- *       容器 shutdown 时自动 destroy</li>
- *   <li>{@link ExecutorService} 用 {@code destroyMethod} 触发 shutdown</li>
+ *   <li>{@link ThreadPoolTaskScheduler} 实现 {@code DisposableBean},容器 shutdown 时自动 destroy</li>
+ *   <li>{@link ExecutorService} 用 {@code destroyMethod = "shutdown"} 触发优雅关闭</li>
  * </ul>
  */
 @Configuration
@@ -50,21 +63,22 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class MarvisExecutors {
 
     public static final String SCHEDULER_BEAN = "marvisTaskScheduler";
-    public static final String WORKER_BEAN = "marvisWorkerExecutor";
+    public static final String BG_BEAN = "marvisBgExecutor";
+    public static final String TEAMMATE_BEAN = "marvisTeammateExecutor";
 
     /**
      * 长期循环任务的调度池。被 {@code @Scheduled} 自动用作默认 task scheduler。
      *
      * <p>容量 = {@link MarvisProperties.Concurrency#schedulerPoolSize}(默认 4)。
-     * 这个池要容纳所有 {@code @Scheduled(fixedDelay)} / {@code fixedRate} 任务,
-     * 当前 marvis 有 2 个(cron scheduler + cron processor),给 4 槽留余量。
+     * 当前 marvis 有 2 个 @Scheduled 任务(cron scheduler + cron processor),
+     * 4 槽留余量。
      */
     @Bean(name = SCHEDULER_BEAN)
     public ThreadPoolTaskScheduler marvisTaskScheduler(MarvisProperties props) {
         ThreadPoolTaskScheduler s = new ThreadPoolTaskScheduler();
         s.setPoolSize(props.getConcurrency().getSchedulerPoolSize());
         s.setThreadNamePrefix("marvis-sched-");
-        s.setDaemon(true);                                  // JVM 退出时不被 hang
+        s.setDaemon(true);
         s.setWaitForTasksToCompleteOnShutdown(false);
         s.setAwaitTerminationSeconds(2);
         s.setRemoveOnCancelPolicy(true);
@@ -75,36 +89,53 @@ public class MarvisExecutors {
     }
 
     /**
-     * 一次性任务的工作池(bg / teammate)。
+     * BG 慢工具调用专用池。**{@link ThreadPoolExecutor.CallerRunsPolicy}** 池满降级同步。
      *
-     * <p>设计:
-     * <ul>
-     *   <li>core=0 + SynchronousQueue + max=N → "cached" 模式:
-     *       有空闲 thread 用空闲的,没有就新建到 max,满 max 直接拒绝</li>
-     *   <li>keepAlive=60s → 空闲 thread 60s 后回收(包括 core,因为 core=0)</li>
-     *   <li>{@link ThreadPoolExecutor.AbortPolicy} → 满时抛
-     *       {@link java.util.concurrent.RejectedExecutionException},
-     *       caller 接住返"Error: too many concurrent tasks",LLM 看到会自我调整</li>
-     * </ul>
+     * <p>典型场景:LLM 同时派 N 个 {@code bash + run_in_background=true},
+     * 池里 8 槽全占用时第 9 个会在 caller(agent_loop)线程 inline 跑 ——
+     * 等于本次没派 bg,跟同步工具调用等价。LLM 仍能拿到结果,只是这一轮慢一点。
      *
-     * <p>为什么不用 {@link Executors#newCachedThreadPool}:它的 max 是
-     * {@link Integer#MAX_VALUE},满世界 spawn 没上限。marvis 单 agent 同时可能 10+ 队友,
-     * 给 32 槽够用且防爆炸。
+     * <p>容量 = {@link MarvisProperties.Concurrency#bgPoolSize}(默认 8)。
      */
-    @Bean(name = WORKER_BEAN, destroyMethod = "shutdown")
-    public ExecutorService marvisWorkerExecutor(MarvisProperties props) {
-        int max = props.getConcurrency().getWorkerMaxSize();
+    @Bean(name = BG_BEAN, destroyMethod = "shutdown")
+    public ExecutorService marvisBgExecutor(MarvisProperties props) {
+        int max = props.getConcurrency().getBgPoolSize();
         ThreadPoolExecutor pool = new ThreadPoolExecutor(
                 0, max,
                 60L, TimeUnit.SECONDS,
                 new SynchronousQueue<>(),
-                namedDaemonThreadFactory("marvis-worker-"),
-                new ThreadPoolExecutor.AbortPolicy()
+                namedDaemonThreadFactory("marvis-bg-"),
+                new ThreadPoolExecutor.CallerRunsPolicy()        // ← 满则同步降级
         );
-        // 允许 core=0 时 keepAlive 也对 core 生效(JDK 17 默认 core 不超时,
-        // 但我们 core=0 没影响;保险起见显式开)
         pool.allowCoreThreadTimeOut(true);
-        log.info("[Executors] worker pool started (max={})", max);
+        log.info("[Executors] bg pool started (max={}, policy=CallerRuns)", max);
+        return pool;
+    }
+
+    /**
+     * Teammate spawn 专用池。**{@link ThreadPoolExecutor.AbortPolicy}** 池满抛异常。
+     *
+     * <p>不能用 CallerRunsPolicy:teammate.runLoop 包含 active turns(≤30 LLM call)
+     * + idle loop(≤5 分钟),inline 跑会卡死整个 agent loop 几分钟到几十分钟,
+     * 期间用户输入 / cron / 其他 teammate 全卡。改用 AbortPolicy,池满时抛
+     * {@link java.util.concurrent.RejectedExecutionException},
+     * Teammate.spawn 接住返"Error: pool full"给 LLM,LLM 自己降并发。
+     *
+     * <p>容量 = {@link MarvisProperties.Concurrency#teammatePoolSize}(默认 16)。
+     * 典型 multi-agent 场景同时活跃 teammate ≤10,16 槽留余量。
+     */
+    @Bean(name = TEAMMATE_BEAN, destroyMethod = "shutdown")
+    public ExecutorService marvisTeammateExecutor(MarvisProperties props) {
+        int max = props.getConcurrency().getTeammatePoolSize();
+        ThreadPoolExecutor pool = new ThreadPoolExecutor(
+                0, max,
+                60L, TimeUnit.SECONDS,
+                new SynchronousQueue<>(),
+                namedDaemonThreadFactory("marvis-teammate-"),
+                new ThreadPoolExecutor.AbortPolicy()             // ← 满则抛异常给 caller
+        );
+        pool.allowCoreThreadTimeOut(true);
+        log.info("[Executors] teammate pool started (max={}, policy=Abort)", max);
         return pool;
     }
 

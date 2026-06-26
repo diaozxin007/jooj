@@ -143,7 +143,7 @@ public class Teammate {
                     HookManager hooks,
                     MessageBus bus,
                     ProtocolRegistry protocols,
-                    @Qualifier(MarvisExecutors.WORKER_BEAN) ExecutorService workerExecutor,
+                    @Qualifier(MarvisExecutors.TEAMMATE_BEAN) ExecutorService workerExecutor,
                     MarvisProperties props) {
         this.client = client;
         this.model = props.getAnthropic().getModel();
