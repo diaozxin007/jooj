@@ -3,6 +3,7 @@ package com.xilidou.jooj.prompt;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xilidou.jooj.JoojProperties;
+import com.xilidou.jooj.skill.SkillRegistry;
 import com.xilidou.jooj.tool.ToolRegistry;
 import com.xilidou.jooj.tool.ToolDefinition;
 import com.xilidou.jooj.http.dto.CacheControl;
@@ -59,7 +60,7 @@ public class SystemPromptAssembler {
 
     /** section 拼接顺序。 */
     private static final List<String> SECTION_ORDER =
-            List.of("identity", "tools", "workspace", "memory");
+            List.of("identity", "tools", "workspace", "skills", "memory");
 
     /** section 之间的分隔符,与 Python 版一致。 */
     private static final String SECTION_DELIMITER = "\n\n";
@@ -68,6 +69,7 @@ public class SystemPromptAssembler {
     private final ObjectMapper json;
     private final ToolRegistry registry;
     private final MemoryService memoryService;
+    private final SkillRegistry skillRegistry;
     private final String workspace;
 
     // ── 缓存(单 entry,Spring 单例)──────────────────────────────
@@ -77,11 +79,13 @@ public class SystemPromptAssembler {
     public SystemPromptAssembler(JoojProperties props,
                                  @Qualifier("joojObjectMapper") ObjectMapper json,
                                  ToolRegistry registry,
-                                 MemoryService memoryService) {
+                                 MemoryService memoryService,
+                                 SkillRegistry skillRegistry) {
         this.template = props.getPrompt();
         this.json = json;
         this.registry = registry;
         this.memoryService = memoryService;
+        this.skillRegistry = skillRegistry;
         // workspace 启动时就固定,不暴露 yml override 防止用户配错
         this.workspace = System.getProperty("user.dir");
     }
@@ -92,17 +96,23 @@ public class SystemPromptAssembler {
      *   <li>{@code enabledTools} ← {@link ToolRegistry#getAllTools()}</li>
      *   <li>{@code workspace} ← cwd(启动时固定)</li>
      *   <li>{@code memoryCatalog} ← {@link MemoryService#catalog()}</li>
+     *   <li>{@code skillCatalog} ← {@link SkillRegistry#catalog()}</li>
      * </ul>
      *
      * <p>每轮 LLM 调用前由 AgentLoopHarness 调用,确保 context 反映**当前**状态
-     * (尤其是 memory:turn 1 写的 memory,turn 2 立刻可见)。
+     * (尤其是 memory:turn 1 写的 memory,turn 2 立刻可见;skill 启动后不变,但放这里
+     * 让 cache key 一致。)
      */
     public PromptContext currentContext() {
         List<String> toolNames = new ArrayList<>();
         for (ToolDefinition def : registry.getAllTools()) {
             toolNames.add(def.getName());
         }
-        return new PromptContext(toolNames, workspace, memoryService.catalog());
+        // 触发 SkillRegistry 节流式重扫:让会话中通过 bash 装的新 skill 下一轮 turn
+        // 自动可见,不需要重启 jooj。force=false → 1s 内重复调用 no-op,IO 安全。
+        skillRegistry.rescan(false);
+        return new PromptContext(toolNames, workspace,
+                memoryService.catalog(), skillRegistry.catalog());
     }
 
     /**
@@ -161,11 +171,13 @@ public class SystemPromptAssembler {
      * @return 1 或 2 个 text block,适合直接放入 {@code CreateMessageRequest.system}
      */
     public List<SystemTextBlock> assembleBlocks(PromptContext ctx) {
-        // 第 1 段:稳定内容(identity + tools + workspace)
+        // 第 1 段:稳定内容(identity + tools + workspace + skills)
+        // skills 放进稳定段:启动后 SkillRegistry 是 immutable,跟 identity/tools 一档
         StringBuilder stable = new StringBuilder();
         appendSection(stable, sectionContent("identity", ctx));
         appendSection(stable, sectionContent("tools", ctx));
         appendSection(stable, sectionContent("workspace", ctx));
+        appendSection(stable, sectionContent("skills", ctx));
 
         SystemTextBlock stableBlock = SystemTextBlock.builder()
                 .type("text")
@@ -202,6 +214,7 @@ public class SystemPromptAssembler {
      * <ul>
      *   <li>identity / tools — 直接用 {@link JoojProperties.Prompt} 的模板</li>
      *   <li>workspace — {@code "Working directory: <cwd>"}</li>
+     *   <li>skills — header + skillCatalog 正文(catalog 为空则整段跳过)</li>
      *   <li>memory — header + memoryCatalog 正文(catalog 为空则整段跳过)</li>
      * </ul>
      */
@@ -210,6 +223,11 @@ public class SystemPromptAssembler {
             case "identity" -> template.getIdentity();
             case "tools" -> template.getTools();
             case "workspace" -> "Working directory: " + ctx.workspace();
+            case "skills" -> {
+                String catalog = ctx.skillCatalog();
+                if (catalog == null || catalog.isBlank()) yield null;
+                yield template.getSkillsHeader() + "\n" + catalog;
+            }
             case "memory" -> {
                 String catalog = ctx.memoryCatalog();
                 if (catalog == null || catalog.isBlank()) yield null;

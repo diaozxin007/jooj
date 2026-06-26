@@ -26,12 +26,20 @@ public class ToolUseLogHook implements Hook.OnPreToolUse {
 
     @Override
     public Optional<String> handle(ToolUseBlock toolUse) {
-        // 不暴露完整 input（可能含敏感信息），只 preview 前 60 字
+        // INFO 层:不暴露完整 input(可能含敏感信息),只 preview 前 60 字
         String inputPreview = String.valueOf(toolUse.getInput());
         if (inputPreview.length() > 60) {
             inputPreview = inputPreview.substring(0, 60) + "...";
         }
         log.info("[Hook] PreToolUse: {} {}", toolUse.getName(), inputPreview);
+
+        // DEBUG 层:打全文,排查问题用
+        // 开启:-Dlogging.level.com.xilidou.jooj.hook=DEBUG
+        //      或 application.yml: logging.level.com.xilidou.jooj.hook: DEBUG
+        // 注意:isDebugEnabled() 短路 —— 没开 DEBUG 时不会调 toString()/序列化 input,零开销
+        if (log.isDebugEnabled()) {
+            log.debug("[Hook] PreToolUse: {} full_input={}", toolUse.getName(), toolUse.getInput());
+        }
         return Optional.empty();
     }
 }

@@ -37,7 +37,11 @@ public class CronConfig {
     }
 
     private static Path defaultDurablePath() {
-        return Paths.get(System.getProperty("user.dir"), ".scheduled_tasks.json");
+        // 默认 ~/.jooj/cron/scheduled_tasks.json —— 跟 application.yml 的 durable-path 默认值保持一致。
+        // 用户级 schedule 不绑 cwd,换项目目录起 jooj 仍能恢复已定的 job。
+        // 这里**不调** JoojHome.ensureSubdir(因为 CronConfig 是无 Spring 的纯 POJO,启动期由
+        // CronStore 第一次 save 时按需 mkdir);只算路径。
+        return Paths.get(System.getProperty("user.home"), ".jooj", "cron", "scheduled_tasks.json");
     }
 
     /** 持久化文件路径,默认 {@code <cwd>/.scheduled_tasks.json}。 */

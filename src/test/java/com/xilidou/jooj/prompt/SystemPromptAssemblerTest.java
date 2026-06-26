@@ -16,8 +16,8 @@ import static org.junit.jupiter.api.Assertions.*;
 /**
  * 锁定 {@link SystemPromptAssembler} 的核心行为(s10):
  * <ul>
- *   <li>section 顺序固定:identity → tools → workspace → memory</li>
- *   <li>memory 为空时整段跳过(不留 trailing 分隔符)</li>
+ *   <li>section 顺序固定:identity → tools → workspace → skills → memory</li>
+ *   <li>memory / skills 为空时整段跳过(不留 trailing 分隔符)</li>
  *   <li>同 context 二次调用命中缓存,只组装一次</li>
  *   <li>context 变化后缓存失效,重新组装</li>
  *   <li>identity / tools 段从 yml 取(application-test.yml 里的测试值)</li>
@@ -41,12 +41,14 @@ class SystemPromptAssemblerTest {
         var ctx = new PromptContext(
                 List.of("bash", "read_file"),
                 "/test/workspace",
-                "## fact-1\nUser likes Python."
+                "## fact-1\nUser likes Python.",
+                ""   // 空 skill catalog,本测试不验证 skills 段
         );
 
         String prompt = assembler.assemble(ctx);
 
         // 验证顺序:identity 先于 tools 先于 workspace 先于 memory
+        // (skills 段被空 catalog 跳过,不参与顺序断言)
         int identityIdx = prompt.indexOf("Test identity");
         int toolsIdx = prompt.indexOf("Available tools");
         int workspaceIdx = prompt.indexOf("Working directory");
@@ -69,7 +71,8 @@ class SystemPromptAssemblerTest {
         var ctx = new PromptContext(
                 List.of("bash"),
                 "/test/workspace",
-                ""   // 空 memory
+                "",   // 空 memory
+                ""    // 空 skill catalog
         );
 
         String prompt = assembler.assemble(ctx);
@@ -87,6 +90,7 @@ class SystemPromptAssemblerTest {
         var ctx = new PromptContext(
                 List.of("bash"),
                 "/test/workspace",
+                null,
                 null
         );
 
@@ -101,7 +105,8 @@ class SystemPromptAssemblerTest {
         var ctx = new PromptContext(
                 List.of("bash"),
                 "/test/cache",
-                "memory-A"
+                "memory-A",
+                ""
         );
 
         String first = assembler.assemble(ctx);
@@ -115,8 +120,8 @@ class SystemPromptAssemblerTest {
     @Test
     @DisplayName("context 字段变化后,缓存失效,重新组装")
     void context_change_invalidates_cache() {
-        var ctx1 = new PromptContext(List.of("bash"), "/ws-1", "");
-        var ctx2 = new PromptContext(List.of("bash"), "/ws-2", "");   // workspace 变了
+        var ctx1 = new PromptContext(List.of("bash"), "/ws-1", "", "");
+        var ctx2 = new PromptContext(List.of("bash"), "/ws-2", "", "");   // workspace 变了
 
         String prompt1 = assembler.assemble(ctx1);
         String prompt2 = assembler.assemble(ctx2);
@@ -129,7 +134,7 @@ class SystemPromptAssemblerTest {
     @Test
     @DisplayName("identity / tools 段从 yml 取(application-test.yml 里的值)")
     void identity_and_tools_loaded_from_yaml() {
-        var ctx = new PromptContext(List.of(), "/x", "");
+        var ctx = new PromptContext(List.of(), "/x", "", "");
 
         String prompt = assembler.assemble(ctx);
 
@@ -140,6 +145,28 @@ class SystemPromptAssemblerTest {
                 "identity 应该来自 application-test.yml");
         assertTrue(prompt.contains("Available tools: test stub."),
                 "tools 应该来自 application-test.yml");
+    }
+
+    @Test
+    @DisplayName("skillCatalog 非空时,skills section 出现在 workspace 之后、memory 之前")
+    void skills_section_appears_between_workspace_and_memory() {
+        var ctx = new PromptContext(
+                List.of("bash"),
+                "/test/workspace",
+                "## fact-1\nUser likes Python.",
+                "- **find-skills**: discover and install agent skills\n"
+        );
+
+        String prompt = assembler.assemble(ctx);
+
+        int workspaceIdx = prompt.indexOf("Working directory");
+        int skillsIdx = prompt.indexOf("Available skills");
+        int memoryIdx = prompt.indexOf("Memory:");
+
+        assertTrue(skillsIdx > workspaceIdx, "skills 段在 workspace 之后");
+        assertTrue(memoryIdx > skillsIdx, "memory 段在 skills 之后");
+        assertTrue(prompt.contains("find-skills"), "skill name 应该出现");
+        assertTrue(prompt.contains("discover and install"), "skill description 应该出现");
     }
 
     @Test

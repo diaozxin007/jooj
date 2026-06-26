@@ -1,11 +1,16 @@
 spring:
   application:
     name: jooj
-  # 兼容老用户的 .env 文件:Spring Boot 4 内置 spring.config.import 支持 dotenv-style 文件,
-  # 写成 KEY=value 即可被自动绑定。optional: 让 .env 缺失时不报错,纯环境变量场景仍可启动。
-  # 注意:.env 文件需要重命名为 .env.properties 或保持 KEY=value(无 quotes)。
+  # 加载 ~/.jooj/.env (用户级 secret 文件,跟 hermes 的 ~/.hermes/.env 一个套路)。
+  # JoojEnvBootstrap (EnvironmentPostProcessor) 会在这一步之前确保:
+  #   1) ~/.jooj/ 目录存在(POSIX 0700)
+  #   2) ~/.jooj/.env 不存在时写入带注释的模板(POSIX 0600)
+  # 所以这里 import 一定能命中文件;optional: 是双保险(并发/IO 异常时不爆栈)。
+  #
+  # 优先级(Spring 默认):OS env / -D 系统属性 > ~/.jooj/.env > application.yml 默认值
+  # ${user.home} 是 Spring StandardConfigDataLocationResolver 支持的占位符。
   config:
-    import: optional:file:.env[.properties]
+    import: optional:file:${user.home}/.jooj/.env[.properties]
 
 # Jooj 自定义配置(对应 JoojProperties)。
 # 所有占位符 ${ENV:default} 都先看环境变量,再回落到 default。
@@ -38,10 +43,12 @@ jooj:
   #   Layer 1 scheduler thread(scheduler-tick-ms 毫秒轮询匹配 cron)
   #   Layer 3 queue processor thread(processor-tick-ms 毫秒轮询 fired job)
   # durable=true 的 job 保存到 durable-path,jooj 重启后恢复。
+  # 默认放在 ~/.jooj/cron/ 下 —— 用户级 schedule 不应跟单个项目的 cwd 绑定
+  # (你换个目录起 jooj 不该"丢"已经定的 cron)。
   cron:
     scheduler-tick-ms: 1000
     processor-tick-ms: 200
-    durable-path: .scheduled_tasks.json
+    durable-path: ${user.home}/.jooj/cron/scheduled_tasks.json
 
   # s15 Team / MessageBus 配置:文件邮箱目录,每个 agent 一个 <name>.jsonl 文件。
   # s17 加 idle 配置:autonomous teammate IDLE 阶段轮询间隔 + 超时退出。

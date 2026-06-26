@@ -177,6 +177,16 @@ public class JoojProperties {
          * 此前缀放在正文之前形成完整的 memory section。
          */
         private String memoryHeader = "Memory index (long-term knowledge from past sessions):";
+
+        /**
+         * skill section 的标题前缀。skill 正文由 SkillRegistry.catalog() 提供,
+         * 此前缀放在正文之前形成完整的 skill section。
+         *
+         * <p>提示 LLM 怎么用:catalog 只列出 name + description,需要完整内容时
+         * 调 {@code load_skill(name=...)} 工具。空 catalog 时整段 skill section 跳过。
+         */
+        private String skillsHeader =
+                "Available skills (call load_skill(name=...) to load full content):";
     }
 
     /**
