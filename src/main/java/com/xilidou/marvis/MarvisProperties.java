@@ -63,6 +63,9 @@ public class MarvisProperties {
     /** Team / MessageBus(s15)邮箱目录配置。 */
     private Team team = new Team();
 
+    /** 并发 / 线程池(线程重构)配置 —— 替代裸 {@code new Thread()}。 */
+    private Concurrency concurrency = new Concurrency();
+
     @Data
     public static class Anthropic {
         /** API 根 URL,默认 https://api.anthropic.com。 */
@@ -264,5 +267,25 @@ public class MarvisProperties {
     public static class Team {
         /** mailbox 目录(相对 cwd 或绝对路径)。默认 {@code .mailboxes}。 */
         private String mailboxDir = ".mailboxes";
+    }
+
+    /**
+     * 并发 / 线程池配置 —— 配合 {@link com.xilidou.marvis.config.MarvisExecutors}。
+     *
+     * <p>marvis 用两类池:
+     * <ul>
+     *   <li>{@code schedulerPoolSize} —— 长期循环任务({@code @Scheduled})的池容量,
+     *       当前 marvis 有 cron scheduler + cron processor 两个长期任务,默认 4 槽</li>
+     *   <li>{@code workerMaxSize} —— 一次性任务(bg 工具调用 / teammate spawn)的池上限,
+     *       默认 32。满了会拒绝新任务,caller 收到 {@code RejectedExecutionException}
+     *       返友好错误给 LLM</li>
+     * </ul>
+     */
+    @Data
+    public static class Concurrency {
+        /** 长期循环任务({@code @Scheduled})的调度池容量。默认 4。 */
+        private int schedulerPoolSize = 4;
+        /** 一次性任务工作池上限(bg / teammate)。默认 32。 */
+        private int workerMaxSize = 32;
     }
 }

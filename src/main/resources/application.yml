@@ -46,6 +46,13 @@ marvis:
   # s15 Team / MessageBus 配置:文件邮箱目录,每个 agent 一个 <name>.jsonl 文件。
   team:
     mailbox-dir: .mailboxes
+
+  # 并发 / 线程池配置(线程重构):
+  #   scheduler-pool-size — @Scheduled 长期任务池容量(cron scheduler/processor 各占 1)
+  #   worker-max-size — 一次性任务池上限(bg/teammate),满则拒绝
+  concurrency:
+    scheduler-pool-size: 4
+    worker-max-size: 32
   permission:
     mode: cli   # cli | always-allow | always-deny
   skills:
