@@ -1,5 +1,6 @@
 package com.xilidou.marvis.tool.impl;
 
+import com.xilidou.marvis.tool.ExecutionContext;
 import com.xilidou.marvis.tool.ToolCall;
 import com.xilidou.marvis.tool.ToolDefinition;
 import com.xilidou.marvis.tool.ToolResult;
@@ -134,18 +135,42 @@ public class FileSystemTool implements Tool {
 
     @Override
     public ToolResult execute(ToolCall call) {
+        return execute(call, ExecutionContext.lead());
+    }
+
+    /**
+     * s18 新签名 —— 按 {@link ExecutionContext#cwd} 决定相对路径解析基准。
+     *
+     * <p>{@code resolveBase}(等于 ctx.cwd 或 workdir)用来:
+     * <ul>
+     *   <li>解析用户传的相对路径(read/write/edit 的 path 参数)</li>
+     *   <li>glob 的搜索根</li>
+     * </ul>
+     *
+     * <p><b>安全 root 仍是全局 {@link #workdir}</b> —— resolveBase 通常是 workdir 的子目录
+     * (如 {@code <workdir>/.worktrees/auth-refactor/}),safePath 会校验最终路径
+     * {@code .startsWith(workdir)},防 worktree 内的相对路径逃出 workdir 之外。
+     *
+     * <p>这是双职责拆分:**resolveBase 决定相对路径怎么解析,workdir 决定能不能逃逸**。
+     */
+    @Override
+    public ToolResult execute(ToolCall call, ExecutionContext ctx) {
         String tool = call.getToolName();
         Map<String, Object> args = call.getArguments();
+        Path resolveBase = ctx != null ? ctx.cwdOr(workdir) : workdir;
         try {
             return switch (tool) {
-                case "read_file"  -> readFile((String) args.get("path"), (Integer) args.get("limit"));
-                case "write_file" -> writeFile((String) args.get("path"), (String) args.get("content"));
+                case "read_file"  -> readFile((String) args.get("path"),
+                        (Integer) args.get("limit"), resolveBase);
+                case "write_file" -> writeFile((String) args.get("path"),
+                        (String) args.get("content"), resolveBase);
                 case "edit_file"  -> editFile(
                         (String) args.get("path"),
                         (String) args.get("old_text"),
-                        (String) args.get("new_text")
+                        (String) args.get("new_text"),
+                        resolveBase
                 );
-                case "glob"       -> glob((String) args.get("pattern"));
+                case "glob"       -> glob((String) args.get("pattern"), resolveBase);
                 default -> new ToolResult(false, "Unknown tool: " + tool);
             };
         } catch (IllegalArgumentException e) {
@@ -163,10 +188,10 @@ public class FileSystemTool implements Tool {
     /**
      * 读文件，可选截断到前 N 行。
      */
-    private ToolResult readFile(String userPath, Integer limit) throws IOException {
+    private ToolResult readFile(String userPath, Integer limit, Path resolveBase) throws IOException {
         if (userPath == null) return new ToolResult(false, "Error: path is required");
 
-        Path file = safePath(userPath);
+        Path file = safePath(userPath, resolveBase);
         if (!Files.exists(file)) {
             return new ToolResult(false, "Error: file not found: " + userPath);
         }
@@ -191,11 +216,11 @@ public class FileSystemTool implements Tool {
     /**
      * 写文件，自动创建父目录。
      */
-    private ToolResult writeFile(String userPath, String content) throws IOException {
+    private ToolResult writeFile(String userPath, String content, Path resolveBase) throws IOException {
         if (userPath == null) return new ToolResult(false, "Error: path is required");
         if (content == null) return new ToolResult(false, "Error: content is required");
 
-        Path file = safePath(userPath);
+        Path file = safePath(userPath, resolveBase);
         Path parent = file.getParent();
         if (parent != null) Files.createDirectories(parent);
         Files.writeString(file, content);
@@ -204,15 +229,15 @@ public class FileSystemTool implements Tool {
     }
 
     /**
-     * 替换一次匹配的文本。如果 old_text 不在文件里，失败。
+     * 替换一次匹配的文本。如果 old_text 不在文件里,失败。
      */
-    private ToolResult editFile(String userPath, String oldText, String newText) throws IOException {
+    private ToolResult editFile(String userPath, String oldText, String newText, Path resolveBase) throws IOException {
         if (userPath == null) return new ToolResult(false, "Error: path is required");
         if (oldText == null || newText == null) {
             return new ToolResult(false, "Error: old_text and new_text are required");
         }
 
-        Path file = safePath(userPath);
+        Path file = safePath(userPath, resolveBase);
         if (!Files.exists(file)) {
             return new ToolResult(false, "Error: file not found: " + userPath);
         }
@@ -231,22 +256,28 @@ public class FileSystemTool implements Tool {
     }
 
     /**
-     * Glob 匹配。Java NIO 的 PathMatcher 直接支持 glob 语法。
-     * 例：{@code *.java}（当前目录所有 .java）/{@code **\/*.md}（递归所有 md）。
+     * Glob 匹配。从 {@code resolveBase} 开始走,匹配相对其的路径。
      */
-    private ToolResult glob(String pattern) throws IOException {
+    private ToolResult glob(String pattern, Path resolveBase) throws IOException {
         if (pattern == null || pattern.isBlank()) {
             return new ToolResult(false, "Error: pattern is required");
+        }
+
+        // glob 起始目录 = resolveBase。但仍要求所有匹配在 workdir 内(safePath 校验)
+        Path searchRoot = resolveBase.toAbsolutePath().normalize();
+        if (!searchRoot.startsWith(workdir)) {
+            return new ToolResult(false,
+                    "Error: glob root escapes workspace: " + searchRoot);
         }
 
         PathMatcher matcher = FileSystems.getDefault().getPathMatcher("glob:" + pattern);
         List<String> matches = new ArrayList<>();
 
-        try (Stream<Path> stream = Files.walk(workdir)) {
+        try (Stream<Path> stream = Files.walk(searchRoot)) {
             stream
-                    .filter(p -> !p.equals(workdir))
+                    .filter(p -> !p.equals(searchRoot))
                     .forEach(p -> {
-                        Path rel = workdir.relativize(p);
+                        Path rel = searchRoot.relativize(p);
                         if (matcher.matches(rel)) {
                             matches.add(rel.toString());
                         }
@@ -264,28 +295,46 @@ public class FileSystemTool implements Tool {
     // ── 路径安全防御 ────────────────────────────────────────────
 
     /**
-     * 把用户输入的路径解析、规范化，并验证它在 workdir 内。
+     * 把用户输入的路径解析、规范化,并验证它在 {@link #workdir} 内(安全 root)。
      *
-     * <p>防御 path traversal 攻击：
+     * <p><b>双职责拆分(s18 引入)</b>:
+     * <ul>
+     *   <li>{@code resolveBase} —— 决定<b>相对路径怎么解析</b>。
+     *       Lead 路径下等于 {@link #workdir};Teammate 在 worktree 时是 worktree 路径。</li>
+     *   <li>{@link #workdir} —— 决定<b>能不能逃出去</b>。
+     *       永远是全局根,不论 ctx 如何,最终路径必须 startsWith(workdir)。</li>
+     * </ul>
+     *
+     * <p>因为 worktree 路径是 workdir 的子目录(典型 {@code <workdir>/.worktrees/<name>}),
+     * 队友相对路径 {@code config.py} 在 worktree 里解析为 {@code <workdir>/.worktrees/<name>/config.py},
+     * startsWith(workdir) 自动通过。但队友传 {@code ../../etc/passwd} 仍会被拒。
+     *
+     * <p>防御 path traversal 攻击:
      * <ul>
      *   <li>{@code ../../etc/passwd} → resolve 后落到 workdir 外 → 拒绝</li>
      *   <li>{@code /etc/passwd}      → 绝对路径直接落到 workdir 外 → 拒绝</li>
-     *   <li>符号链接到外部目录的情况 normalize 不会跟随，但读写时仍可能逃逸；
-     *       这里采用"路径字符串前缀检查"，对学习项目够用。生产级应该用
+     *   <li>符号链接到外部目录的情况 normalize 不会跟随,但读写时仍可能逃逸;
+     *       这里采用"路径字符串前缀检查",对学习项目够用。生产级应该用
      *       {@link Path#toRealPath} 解析符号链接。</li>
      * </ul>
      */
-    Path safePath(String userPath) {
+    Path safePath(String userPath, Path resolveBase) {
         if (userPath == null) {
             throw new IllegalArgumentException("path is null");
         }
-        Path resolved = workdir.resolve(userPath).toAbsolutePath().normalize();
+        if (resolveBase == null) resolveBase = workdir;
+        Path resolved = resolveBase.resolve(userPath).toAbsolutePath().normalize();
         if (!resolved.startsWith(workdir)) {
             throw new IllegalArgumentException(
                     "Path escapes workspace: " + userPath +
                             " (resolved=" + resolved + ", workdir=" + workdir + ")");
         }
         return resolved;
+    }
+
+    /** 旧 safePath:等价于 resolveBase = workdir。保留给现有测试 / 内部调用。 */
+    Path safePath(String userPath) {
+        return safePath(userPath, workdir);
     }
 
     /**

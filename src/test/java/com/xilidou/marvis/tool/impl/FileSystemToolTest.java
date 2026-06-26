@@ -297,6 +297,80 @@ class FileSystemToolTest {
         }
     }
 
+    // ── s18:ExecutionContext.cwd 改变相对路径解析基准 ───────────────
+
+    @org.junit.jupiter.api.Nested
+    @DisplayName("s18: ctx.cwd 决定相对路径解析基准")
+    class ExecutionContextCwd {
+
+        @Test
+        @DisplayName("read_file with ctx.cwd:相对路径在 cwd 下解析,不是 workdir")
+        void read_file_uses_ctx_cwd_as_base() throws Exception {
+            // 模拟 worktree 在 workdir 子目录
+            Path subDir = workdir.resolve(".worktrees/auth");
+            Files.createDirectories(subDir);
+            Files.writeString(subDir.resolve("config.py"), "wt content");
+
+            // workdir 根也有 config.py(故意同名,验证不被读到)
+            Files.writeString(workdir.resolve("config.py"), "main content");
+
+            // ctx.cwd = workdir/.worktrees/auth → 相对路径"config.py"应解析到子目录
+            com.xilidou.marvis.tool.ExecutionContext ctx =
+                    com.xilidou.marvis.tool.ExecutionContext.inWorktree("alice", "auth", subDir);
+            ToolResult result = skill.execute(call("read_file", Map.of("path", "config.py")), ctx);
+
+            assertTrue(result.isSuccess());
+            assertEquals("wt content", result.getOutput(),
+                    "应该读到 worktree 下的 config.py,不是 workdir 根的");
+        }
+
+        @Test
+        @DisplayName("write_file with ctx.cwd:写到 cwd 子树,不是 workdir 根")
+        void write_file_uses_ctx_cwd_as_base() throws Exception {
+            Path subDir = workdir.resolve(".worktrees/auth");
+            Files.createDirectories(subDir);
+
+            com.xilidou.marvis.tool.ExecutionContext ctx =
+                    com.xilidou.marvis.tool.ExecutionContext.inWorktree("alice", "auth", subDir);
+            ToolResult result = skill.execute(
+                    call("write_file", Map.of("path", "new.txt", "content", "hi")), ctx);
+
+            assertTrue(result.isSuccess());
+            assertTrue(Files.exists(subDir.resolve("new.txt")));
+            assertFalse(Files.exists(workdir.resolve("new.txt")),
+                    "不应写到 workdir 根");
+        }
+
+        @Test
+        @DisplayName("ctx.cwd 路径仍受 workdir 安全 root 保护(防 ../../etc 逃逸)")
+        void ctx_cwd_still_blocked_by_workdir_security() throws Exception {
+            Path subDir = workdir.resolve(".worktrees/auth");
+            Files.createDirectories(subDir);
+
+            com.xilidou.marvis.tool.ExecutionContext ctx =
+                    com.xilidou.marvis.tool.ExecutionContext.inWorktree("alice", "auth", subDir);
+            // 队友试图从 worktree 内部用 ../../.. 跳出 workdir
+            ToolResult result = skill.execute(
+                    call("read_file", Map.of("path", "../../../etc/passwd")), ctx);
+
+            assertFalse(result.isSuccess());
+            assertTrue(result.getOutput().toLowerCase().contains("escapes"));
+        }
+
+        @Test
+        @DisplayName("ctx 为 null / lead():行为跟旧 execute(call) 完全一致")
+        void null_or_lead_ctx_falls_back_to_workdir() throws Exception {
+            Files.writeString(workdir.resolve("config.py"), "main content");
+
+            ToolResult oldApi = skill.execute(call("read_file", Map.of("path", "config.py")));
+            ToolResult newApiLead = skill.execute(
+                    call("read_file", Map.of("path", "config.py")),
+                    com.xilidou.marvis.tool.ExecutionContext.lead());
+
+            assertEquals(oldApi.getOutput(), newApiLead.getOutput());
+        }
+    }
+
     // ── helpers ────────────────────────────────────────────────
     private static ToolCall call(String tool, Map<String, Object> args) {
         return new ToolCall(tool, args);

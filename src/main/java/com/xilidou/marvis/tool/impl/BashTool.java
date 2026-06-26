@@ -1,12 +1,14 @@
 package com.xilidou.marvis.tool.impl;
 
+import com.xilidou.marvis.http.dto.InputSchema;
+import com.xilidou.marvis.tool.ExecutionContext;
+import com.xilidou.marvis.tool.Tool;
 import com.xilidou.marvis.tool.ToolCall;
 import com.xilidou.marvis.tool.ToolDefinition;
 import com.xilidou.marvis.tool.ToolResult;
-import com.xilidou.marvis.http.dto.InputSchema;
-import com.xilidou.marvis.tool.Tool;
 import org.springframework.stereotype.Component;
 
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -14,6 +16,9 @@ import java.util.Map;
 /**
  * BashTool - 对应 Python s01 中的 run_bash 工具
  * 执行 shell 命令并返回输出，含危险命令拦截
+ *
+ * <p>s18:重写 {@link #execute(ToolCall, ExecutionContext)} 让 ctx.cwd 决定
+ * 实际工作目录 —— 队友在 worktree 内执行 bash 命令时切到 worktree 路径。
  */
 @Component
 public class BashTool implements Tool {
@@ -62,8 +67,23 @@ public class BashTool implements Tool {
         );
     }
 
+    /**
+     * 旧签名:等价于 ctx = lead(无 cwd 覆盖,用 user.dir)。
+     * 兼容 s17 之前的调用方;新调用方应该走带 ctx 的重载。
+     */
     @Override
     public ToolResult execute(ToolCall call) {
+        return execute(call, ExecutionContext.lead());
+    }
+
+    /**
+     * s18 新签名:按 {@link ExecutionContext#cwd} 决定 ProcessBuilder 工作目录。
+     *
+     * <p>cwd null → fallback {@code user.dir}(跟 s17 行为完全一致)。
+     * cwd 非 null → 进程切到 worktree 路径执行(队友隔离场景)。
+     */
+    @Override
+    public ToolResult execute(ToolCall call, ExecutionContext ctx) {
         if (!"bash".equals(call.getToolName())) {
             return new ToolResult(false, "Unknown tool: " + call.getToolName());
         }
@@ -83,7 +103,10 @@ public class BashTool implements Tool {
         try {
             ProcessBuilder pb = new ProcessBuilder("sh", "-c", command);
             pb.redirectErrorStream(true);
-            pb.directory(new java.io.File(System.getProperty("user.dir")));
+            // s18: cwd 优先 ctx,否则 user.dir
+            Path cwd = ctx != null ? ctx.cwdOrUserDir()
+                    : java.nio.file.Paths.get(System.getProperty("user.dir"));
+            pb.directory(cwd.toFile());
 
             Process process = pb.start();
             boolean finished = process.waitFor(TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS);

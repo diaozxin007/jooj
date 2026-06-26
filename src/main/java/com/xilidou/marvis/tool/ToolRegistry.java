@@ -83,16 +83,29 @@ public class ToolRegistry {
     }
 
     /**
-     * 执行一个工具调用
+     * 执行一个工具调用 —— 旧签名,等价于带 {@link ExecutionContext#lead()} 的调用。
+     *
+     * <p>保留这个签名是为了兼容现有调用点 / 测试。新调用点应该用
+     * {@link #execute(ToolCall, ExecutionContext)} 显式传 ctx。
      */
     public ToolResult execute(ToolCall call) {
+        return execute(call, ExecutionContext.lead());
+    }
+
+    /**
+     * s18 新签名 —— 显式传 {@link ExecutionContext}。
+     *
+     * <p>调用方明确表达"谁在调 / 在哪调"语义,工具按 ctx 决定行为
+     * (如 BashTool 在 worktree cwd 执行命令,FileSystemTool 用 cwd 解析相对路径)。
+     */
+    public ToolResult execute(ToolCall call, ExecutionContext ctx) {
         Tool skill = allTools.get(call.getToolName());
         if (skill == null) {
             return new ToolResult(false,
                     String.format("Tool '%s' not found. Available tools: %s",
                             call.getToolName(), allTools.keySet()));
         }
-        return skill.execute(call);
+        return skill.execute(call, ctx);
     }
 
     /**
