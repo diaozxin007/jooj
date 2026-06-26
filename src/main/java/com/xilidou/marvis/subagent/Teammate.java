@@ -20,6 +20,8 @@ import com.xilidou.marvis.team.Message;
 import com.xilidou.marvis.team.MessageBus;
 import com.xilidou.marvis.team.ProtocolRegistry;
 import com.xilidou.marvis.team.ProtocolState;
+import com.xilidou.marvis.team.WorktreeService;
+import com.xilidou.marvis.tool.ExecutionContext;
 import com.xilidou.marvis.tool.ToolCall;
 import com.xilidou.marvis.tool.ToolDefinition;
 import com.xilidou.marvis.tool.ToolRegistry;
@@ -28,6 +30,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -38,6 +41,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Teammate —— s15 多 agent 队友:**daemon thread + 简化 agent loop + 异步消息通信**。
@@ -163,6 +167,10 @@ public class Teammate {
     private final ExecutorService workerExecutor;
     /** s17:自组织 idle 阶段的 scan + auto-claim 封装。 */
     private final AutonomousIdle autonomousIdle;
+    /** s18:worktree 服务,claim 后查 task.worktree 字段需要拿对应路径。 */
+    private final WorktreeService worktreeService;
+    /** s18:claim_task 后读 task.worktree 字段需要 task 服务。 */
+    private final com.xilidou.marvis.tasks.TaskService taskService;
     /** s17:idle 轮询间隔(ms),来自 marvis.team.idle-poll-ms。 */
     private final long idlePollMs;
     /** s17:idle 总超时(ms),来自 marvis.team.idle-timeout-ms。 */
@@ -176,6 +184,8 @@ public class Teammate {
                     ProtocolRegistry protocols,
                     @Qualifier(MarvisExecutors.TEAMMATE_BEAN) ExecutorService workerExecutor,
                     AutonomousIdle autonomousIdle,
+                    WorktreeService worktreeService,
+                    com.xilidou.marvis.tasks.TaskService taskService,
                     MarvisProperties props) {
         this.client = client;
         this.model = props.getAnthropic().getModel();
@@ -186,6 +196,8 @@ public class Teammate {
         this.protocols = protocols;
         this.workerExecutor = workerExecutor;
         this.autonomousIdle = autonomousIdle;
+        this.worktreeService = worktreeService;
+        this.taskService = taskService;
         this.idlePollMs = props.getTeam().getIdlePollMs();
         this.idleTimeoutMs = props.getTeam().getIdleTimeoutMs();
     }
@@ -271,6 +283,16 @@ public class Teammate {
         List<MessageParam> messages = new ArrayList<>();
         messages.add(MessageParam.user(prompt));
 
+        // s18: per-spawn worktree 状态。每个 spawn 一份独立 AtomicReference,
+        // 跟 Python 闭包 wt_ctx={"path": None} 语义对应。线程安全(workerExecutor 复用 thread
+        // 时本变量是 method-local,跟 thread 无关)。
+        // 值更新点:
+        //   - claim_task 工具执行成功后,从 task.worktree 字段读路径
+        //   - complete_task 工具执行成功后,清回 null
+        //   - auto-claim(IDLE 阶段)同样要更新
+        AtomicReference<Path> currentCwd = new AtomicReference<>(null);
+        AtomicReference<String> currentWorktreeName = new AtomicReference<>(null);
+
         List<ToolDef> tools = buildTeammateTools();
         String lastText = "";
         boolean shutdownRequested = false;
@@ -333,7 +355,7 @@ public class Teammate {
                 }
 
                 // 执行工具
-                executeToolsInResponse(name, response, messages);
+                executeToolsInResponse(name, response, messages, currentCwd, currentWorktreeName);
             }
 
             // ── IDLE 阶段(s17 升级)──
@@ -347,7 +369,7 @@ public class Teammate {
             } else {
                 System.out.println(GRAY + "  [" + name + "] WORK budget reached, entering IDLE..." + RESET);
             }
-            IdleResult idle = idlePoll(name, messages);
+            IdleResult idle = idlePoll(name, messages, currentCwd, currentWorktreeName);
             if (idle.shutdown) {
                 shutdownRequested = true;
                 break;
@@ -370,9 +392,18 @@ public class Teammate {
 
     /**
      * 抽出 WORK 阶段的工具执行块,让 runLoop 主流程更清楚。
+     *
+     * <p>s18 加 currentCwdRef 参数:
+     * <ul>
+     *   <li>构造 {@link ExecutionContext} 让需要 cwd 的工具(bash/filesystem)按 worktree 路径执行</li>
+     *   <li>claim_task 成功后从 task.worktree 字段读路径,更新 cwdRef</li>
+     *   <li>complete_task 成功后清 cwdRef 回 null(下次 claim 重设)</li>
+     * </ul>
      */
     private void executeToolsInResponse(String name, CreateMessageResponse response,
-                                         List<MessageParam> messages) {
+                                         List<MessageParam> messages,
+                                         AtomicReference<Path> currentCwd,
+                                         AtomicReference<String> currentWorktreeName) {
         List<ToolResultBlock> results = new ArrayList<>();
         for (ToolUseBlock tu : response.toolUses()) {
             Map<String, Object> args = parseToolInput(tu);
@@ -383,6 +414,11 @@ public class Teammate {
                 results.add(ToolResultBlock.ofText(tu.getId(), blocked.get()));
                 continue;
             }
+
+            // s18:每次工具调用都构造 ctx,工具按 ctx.cwd 决定行为
+            ExecutionContext ctx = currentCwd.get() != null
+                    ? ExecutionContext.inWorktree(name, currentWorktreeName.get(), currentCwd.get())
+                    : ExecutionContext.forTeammate(name);
 
             String output;
             if (SEND_MESSAGE_TOOL.equals(tu.getName())) {
@@ -396,10 +432,24 @@ public class Teammate {
                 if ("claim_task".equals(tu.getName())) {
                     withOwner.put("owner", name);
                 }
-                ToolResult r = registry.execute(new ToolCall(tu.getName(), withOwner));
+                ToolResult r = registry.execute(new ToolCall(tu.getName(), withOwner), ctx);
                 output = r.getOutput();
+                // s18:claim_task 成功后切 cwd 到 task.worktree;complete 后清
+                if ("claim_task".equals(tu.getName()) && output.startsWith("Claimed ")) {
+                    Object taskIdArg = withOwner.get("task_id");
+                    if (taskIdArg != null) {
+                        applyClaimedTaskWorktree(taskIdArg.toString(), name,
+                                currentCwd, currentWorktreeName);
+                    }
+                } else if ("complete_task".equals(tu.getName()) && output.startsWith("Completed ")) {
+                    if (currentCwd.get() != null) {
+                        System.out.println(GRAY + "  [" + name + "] worktree cwd cleared after complete" + RESET);
+                    }
+                    currentCwd.set(null);
+                    currentWorktreeName.set(null);
+                }
             } else if (Subagent.DEFAULT_INCLUDED_TOOLS.contains(tu.getName())) {
-                ToolResult r = registry.execute(new ToolCall(tu.getName(), args));
+                ToolResult r = registry.execute(new ToolCall(tu.getName(), args), ctx);
                 output = r.getOutput();
             } else {
                 output = "Error: tool '" + tu.getName() + "' not available to teammates";
@@ -407,6 +457,39 @@ public class Teammate {
             results.add(ToolResultBlock.ofText(tu.getId(), output));
         }
         messages.add(MessageParam.toolResults(results));
+    }
+
+    /**
+     * s18:claim_task 成功后,从 task 读 worktree 字段更新 cwd。
+     *
+     * <p>找不到 task / 没绑 worktree → 静默清 cwd(队友在共享 workdir 干活,跟 s17 行为一致)。
+     */
+    private void applyClaimedTaskWorktree(String taskId, String name,
+                                           AtomicReference<Path> currentCwd,
+                                           AtomicReference<String> currentWorktreeName) {
+        TaskRecord task = taskService.get(taskId).orElse(null);
+        if (task == null) {
+            currentCwd.set(null);
+            currentWorktreeName.set(null);
+            return;
+        }
+        String wtName = task.getWorktree();
+        if (wtName == null || wtName.isBlank()) {
+            currentCwd.set(null);
+            currentWorktreeName.set(null);
+            return;
+        }
+        Path wtPath = worktreeService.pathFor(wtName);
+        if (!java.nio.file.Files.isDirectory(wtPath)) {
+            log.warn("[Teammate {}] task {} bound to worktree {} but path missing: {}; falling back to user.dir",
+                    name, taskId, wtName, wtPath);
+            currentCwd.set(null);
+            currentWorktreeName.set(null);
+            return;
+        }
+        currentCwd.set(wtPath);
+        currentWorktreeName.set(wtName);
+        System.out.println("\033[33m  [" + name + "] cwd → " + wtPath + " (worktree:" + wtName + ")" + RESET);
     }
 
     /**
@@ -504,8 +587,12 @@ public class Teammate {
      * </ol>
      *
      * <p>累计超过 {@link #idleTimeoutMs} 没有任何活就 timeout 退出。
+     *
+     * <p>s18:auto-claim 时同步更新 currentCwd/currentWorktreeName 引用。
      */
-    private IdleResult idlePoll(String name, List<MessageParam> messages) {
+    private IdleResult idlePoll(String name, List<MessageParam> messages,
+                                AtomicReference<Path> currentCwd,
+                                AtomicReference<String> currentWorktreeName) {
         long deadline = System.currentTimeMillis() + idleTimeoutMs;
         while (System.currentTimeMillis() < deadline) {
             try {
@@ -536,6 +623,8 @@ public class Teammate {
                 messages.add(MessageParam.user(injection));
                 System.out.println("\033[32m  [idle] " + name + " auto-claimed: "
                         + t.getSubject() + RESET);
+                // s18:auto-claim 也要更新 cwd
+                applyClaimedTaskWorktree(t.getId(), name, currentCwd, currentWorktreeName);
                 return new IdleResult(false, false);
             }
         }

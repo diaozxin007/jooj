@@ -187,11 +187,15 @@ public class TasksTool implements Tool {
             String deps = t.getBlockedBy() != null && !t.getBlockedBy().isEmpty()
                     ? " (blockedBy: " + String.join(", ", t.getBlockedBy()) + ")"
                     : "";
+            // s18:绑了 worktree 的 task 后缀显式标记 (wt:<name>)
+            String wt = t.getWorktree() != null && !t.getWorktree().isBlank()
+                    ? " (wt:" + t.getWorktree() + ")"
+                    : "";
             // 缩进 2 空格,跟 Python 一致
             sb.append("  ").append(icon).append(' ')
                     .append(t.getId()).append(": ").append(t.getSubject())
                     .append(" [").append(t.getStatus().getValue()).append("]")
-                    .append(owner).append(deps).append('\n');
+                    .append(owner).append(deps).append(wt).append('\n');
         }
         // 去掉最后一个 \n
         String out = sb.toString();
