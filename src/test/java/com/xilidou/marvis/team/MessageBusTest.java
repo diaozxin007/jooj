@@ -172,4 +172,44 @@ class MessageBusTest {
     void peek_missing_returns_zero() {
         assertEquals(0, bus.peekSize("nobody"));
     }
+
+    @Test
+    @DisplayName("s16: send 带 metadata,readInbox 完整保留(JSON 序列化反序列化)")
+    void send_with_metadata_roundtrip() {
+        bus.send("lead", "alice", "Please shut down", "shutdown_request",
+                java.util.Map.of("request_id", "req_004281"));
+
+        var msgs = bus.readInbox("alice");
+        assertEquals(1, msgs.size());
+        Message m = msgs.get(0);
+        assertEquals("shutdown_request", m.getType());
+        assertNotNull(m.getMetadata());
+        assertEquals("req_004281", m.getMetadata().get("request_id"));
+    }
+
+    @Test
+    @DisplayName("s16: send 4 参版兼容(无 metadata),Message.metadata 为空 map")
+    void send_4arg_backward_compatible() {
+        bus.send("alice", "lead", "Schema done", "result");
+        var msgs = bus.readInbox("lead");
+        Message m = msgs.get(0);
+        assertNotNull(m.getMetadata(), "metadata 应被初始化(不是 null)");
+        assertTrue(m.getMetadata().isEmpty(), "metadata 应为空 map");
+    }
+
+    @Test
+    @DisplayName("s16: metadata 含 boolean / 嵌套 map 也能正确序列化")
+    void send_metadata_complex_types() {
+        bus.send("alice", "lead", "approved", "shutdown_response",
+                java.util.Map.of(
+                        "request_id", "req_001",
+                        "approve", true,
+                        "extra", java.util.Map.of("nested", "value")));
+        Message m = bus.readInbox("lead").get(0);
+        assertEquals("req_001", m.getMetadata().get("request_id"));
+        assertEquals(Boolean.TRUE, m.getMetadata().get("approve"));
+        @SuppressWarnings("unchecked")
+        java.util.Map<String, Object> nested = (java.util.Map<String, Object>) m.getMetadata().get("extra");
+        assertEquals("value", nested.get("nested"));
+    }
 }

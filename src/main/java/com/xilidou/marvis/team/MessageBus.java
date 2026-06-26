@@ -97,13 +97,30 @@ public class MessageBus {
      * @return 写入的 {@link Message} 对象,带分配的 ts
      */
     public Message send(String fromAgent, String toAgent, String content, String type) {
+        return send(fromAgent, toAgent, content, type, null);
+    }
+
+    /**
+     * s16 增强版:发消息时附 metadata(协议字段如 request_id / approve)。
+     *
+     * <p>跟 4 参版唯一差别是 metadata 会写入 Message.metadata,jsonl 序列化时
+     * 出现 {@code "metadata": {"request_id": "..."}} 字段。
+     *
+     * @param metadata 协议附加字段。null 或空 map 都视为"无 metadata"
+     * @return 写入磁盘的 {@link Message} 对象
+     */
+    public Message send(String fromAgent, String toAgent, String content, String type,
+                        Map<String, Object> metadata) {
         validateName(fromAgent, "fromAgent");
         validateName(toAgent, "toAgent");
         if (content == null) content = "";
         if (type == null || type.isBlank()) type = "message";
 
         long ts = System.currentTimeMillis();
-        Message msg = new Message(fromAgent, toAgent, content, type, ts);
+        Map<String, Object> meta = metadata != null
+                ? new HashMap<>(metadata)
+                : new HashMap<>();
+        Message msg = new Message(fromAgent, toAgent, content, type, ts, meta);
 
         ReentrantLock lock = lockFor(toAgent);
         lock.lock();
@@ -113,8 +130,9 @@ public class MessageBus {
             String line = json.writeValueAsString(msg) + System.lineSeparator();
             Files.writeString(file, line, StandardCharsets.UTF_8,
                     StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-            log.info("[Bus] {} → {} ({}, {} chars)",
-                    fromAgent, toAgent, type, content.length());
+            log.info("[Bus] {} → {} ({}, {} chars, meta={})",
+                    fromAgent, toAgent, type, content.length(),
+                    meta.isEmpty() ? "{}" : meta.keySet());
             return msg;
         } catch (IOException e) {
             throw new UncheckedIOException("Failed to send message to " + toAgent, e);
