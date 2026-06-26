@@ -9,10 +9,10 @@
         <relativePath/> <!-- lookup parent from repository -->
     </parent>
     <groupId>com.xilidou</groupId>
-    <artifactId>marvis</artifactId>
+    <artifactId>jooj</artifactId>
     <version>0.0.1-SNAPSHOT</version>
-    <name>marvis</name>
-    <description>marvis</description>
+    <name>jooj</name>
+    <description>jooj</description>
     <url/>
     <licenses>
         <license/>
@@ -35,9 +35,9 @@
             <artifactId>spring-boot-starter</artifactId>
         </dependency>
 
-        <!-- Spring Boot Web Starter — 让 marvis 可选地以 Web 模式启动。
+        <!-- Spring Boot Web Starter — 让 jooj 可选地以 Web 模式启动。
              不引会强制 web 化:启动逻辑用 spring.main.web-application-type=none
-             或 web 控制(MarvisApplication 默认 NONE = CLI 模式),只有在 web profile
+             或 web 控制(JoojApplication 默认 NONE = CLI 模式),只有在 web profile
              或 spring.main.web-application-type=servlet 时才起 Tomcat。
              Spring Boot 4 的 WebApplicationType.NONE 即使引了 starter-web 也不会启动 servlet,
              所以引入此依赖是安全的——不影响 CLI 默认行为。 -->
@@ -87,10 +87,10 @@
         <!-- s19: MCP 官方 Java SDK(io.modelcontextprotocol.sdk:mcp).
              不依赖 Spring,纯 JDK 17+,跟 Boot 4.1 兼容。
              带宽:transitively 引入 jackson 3.x(tools.jackson.*)+ reactor-core 3.7。
-             跟 marvis 现有 jackson 2.x(com.fasterxml.jackson.*)不同包名,可共存,
+             跟 jooj 现有 jackson 2.x(com.fasterxml.jackson.*)不同包名,可共存,
              classpath +5MB 左右。
              该 SDK 官方提供 stdio / streamable-http / sse 三种 transport,
-             marvis 当前只用 stdio(子进程)实现外部 server 接入。 -->
+             jooj 当前只用 stdio(子进程)实现外部 server 接入。 -->
         <dependency>
             <groupId>io.modelcontextprotocol.sdk</groupId>
             <artifactId>mcp</artifactId>

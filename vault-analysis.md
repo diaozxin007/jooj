@@ -1,24 +1,24 @@
-# Marvis 项目代码结构分析
+# Jooj 项目代码结构分析
 
 ## 1. 所有 Package 及类数量
 
 | Package | 类数量 |
 |---------|--------|
-| `com.xilidou.marvis.harness.http.dto` | 14 |
-| `com.xilidou.marvis.harness.archive.day3` | 11 |
-| `com.xilidou.marvis.harness.permission` | 10 |
-| `com.xilidou.marvis.harness.http` | 10 |
-| `com.xilidou.marvis.harness.skill.impl` | 7 |
-| `com.xilidou.marvis.harness.hook.impl` | 6 |
-| `com.xilidou.marvis.harness.todo` | 4 |
-| `com.xilidou.marvis.harness.hook` | 4 |
-| `com.xilidou.marvis` | 3 |
-| `com.xilidou.marvis.harness.base` | 3 |
-| `com.xilidou.marvis.harness.archive.day4` | 3 |
-| `com.xilidou.marvis.harness.entity` | 2 |
-| `com.xilidou.marvis.harness.agent` | 2 |
-| `com.xilidou.marvis.harness` | 1 |
-| `com.xilidou.marvis.harness.skill` | 1 |
+| `com.xilidou.jooj.harness.http.dto` | 14 |
+| `com.xilidou.jooj.harness.archive.day3` | 11 |
+| `com.xilidou.jooj.harness.permission` | 10 |
+| `com.xilidou.jooj.harness.http` | 10 |
+| `com.xilidou.jooj.harness.skill.impl` | 7 |
+| `com.xilidou.jooj.harness.hook.impl` | 6 |
+| `com.xilidou.jooj.harness.todo` | 4 |
+| `com.xilidou.jooj.harness.hook` | 4 |
+| `com.xilidou.jooj` | 3 |
+| `com.xilidou.jooj.harness.base` | 3 |
+| `com.xilidou.jooj.harness.archive.day4` | 3 |
+| `com.xilidou.jooj.harness.entity` | 2 |
+| `com.xilidou.jooj.harness.agent` | 2 |
+| `com.xilidou.jooj.harness` | 1 |
+| `com.xilidou.jooj.harness.skill` | 1 |
 
 > 共 **15 个 package**，合计 **81 个 Java 文件**。
 
@@ -38,4 +38,4 @@
 
 ## 3. 项目总结
 
-Marvis 是一个基于 Java + Spring Boot 构建的 AI Agent 框架，整体架构清晰、分层明确。项目以 `harness` 作为核心命名空间，划分了 `agent`（主循环调度）、`skill`（工具能力）、`hook`（事件钩子）、`permission`（权限管控）、`http`（与 Anthropic Claude API 通信）、`todo`（任务管理）等子模块，职责边界清晰。`AgentLoopHarness` 是整个系统的核心调度类，以 33 个 import 居全项目之首，承担工具调用、上下文管理、LLM 交互等重度协作职责。`http.dto` 包以 14 个类规模最大，完整封装了 Claude API 的请求/响应数据结构。项目还保留了 `archive/day3`、`archive/day4` 等历史演进版本，体现了迭代开发过程。整体代码质量较高，测试覆盖充分，是一个结构完善、具备生产参考价值的 Agent 工程实践项目。
+Jooj 是一个基于 Java + Spring Boot 构建的 AI Agent 框架，整体架构清晰、分层明确。项目以 `harness` 作为核心命名空间，划分了 `agent`（主循环调度）、`skill`（工具能力）、`hook`（事件钩子）、`permission`（权限管控）、`http`（与 Anthropic Claude API 通信）、`todo`（任务管理）等子模块，职责边界清晰。`AgentLoopHarness` 是整个系统的核心调度类，以 33 个 import 居全项目之首，承担工具调用、上下文管理、LLM 交互等重度协作职责。`http.dto` 包以 14 个类规模最大，完整封装了 Claude API 的请求/响应数据结构。项目还保留了 `archive/day3`、`archive/day4` 等历史演进版本，体现了迭代开发过程。整体代码质量较高，测试覆盖充分，是一个结构完善、具备生产参考价值的 Agent 工程实践项目。

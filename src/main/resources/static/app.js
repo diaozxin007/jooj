@@ -1,4 +1,4 @@
-// marvis WebUI — vanilla JS,无前端框架。
+// jooj WebUI — vanilla JS,无前端框架。
 // 三个 endpoint:POST /api/chat / GET /api/history / POST /api/clear
 
 (function () {
@@ -30,7 +30,7 @@
   function renderEmptyState() {
     messages.innerHTML = `
       <div class="empty-state">
-        <h2>欢迎用 marvis</h2>
+        <h2>欢迎用 jooj</h2>
         <p>试试这些:</p>
         <div class="examples">
           <code>列出当前目录下所有 .java 文件</code>
@@ -248,7 +248,7 @@
   });
 
   clearBtn.addEventListener('click', async () => {
-    if (!confirm('清空对话历史?(marvis 共享同一份 history,CLI 那边也会被清)')) return;
+    if (!confirm('清空对话历史?(jooj 共享同一份 history,CLI 那边也会被清)')) return;
     setBusy(true);
     try {
       await postJson('/api/clear');

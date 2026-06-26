@@ -1,4 +1,4 @@
-# Marvis - Java Agent Harness
+# Jooj - Java Agent Harness
 
 > 用 Java 从零实现 [shareAI-lab/learn-claude-code](https://github.com/shareAI-lab/learn-claude-code) 的 20 课。
 > Anthropic 官方协议 + OkHttp 直连 + Spring Boot 4 + Jackson 2.x，零 SDK 依赖。
@@ -12,7 +12,7 @@
 ✅ **s01 历史**:Agent Loop(一个 loop + 一个 bash 工具,能完成多轮 self-correction)。
 
 ```
-$ printf "数一下当前目录有多少个 .java 文件\nq\n" | ./mvnw -q exec:java -Dexec.mainClass="com.xilidou.marvis.MarvisApplication"
+$ printf "数一下当前目录有多少个 .java 文件\nq\n" | ./mvnw -q exec:java -Dexec.mainClass="com.xilidou.jooj.JoojApplication"
 
 18:32:26 INFO  [SkillRegistry] Loaded skill: bash (1 tools)
 s01: Agent Loop (Java)
@@ -20,7 +20,7 @@ s01: Agent Loop (Java)
 
 s01 >> $ find . -name "*.java" -not -path "./target/*" | wc -l
 46
-当前 marvis 项目（不含 target/）共有 46 个 .java 文件。
+当前 jooj 项目（不含 target/）共有 46 个 .java 文件。
 
 s01 >>
 ```
@@ -30,9 +30,9 @@ s01 >>
 ## 🏗 架构
 
 ```
-com.xilidou.marvis/
-├── S01.java                     ← s01 Agent Loop 入口(R1 重构后已删,统一走 MarvisApplication)
-├── MarvisApplication.java       ← Spring Boot 启动占位（暂未启用 IoC）
+com.xilidou.jooj/
+├── S01.java                     ← s01 Agent Loop 入口(R1 重构后已删,统一走 JoojApplication)
+├── JoojApplication.java       ← Spring Boot 启动占位（暂未启用 IoC）
 ├── JacksonConfig.java           ← 全局 ObjectMapper 工厂
 └── harness/
     ├── agent/
@@ -71,7 +71,7 @@ com.xilidou.marvis/
 
 ### 设计决策
 
-详见 `docs/design-decisions.md`（如有）和 [[Marvis 项目 Obsidian 笔记]]。
+详见 `docs/design-decisions.md`（如有）和 [[Jooj 项目 Obsidian 笔记]]。
 
 | ADR | 决策 | 理由 |
 |-----|------|------|
@@ -120,11 +120,11 @@ MODEL_ID=claude-sonnet-4-6
 
 ```bash
 # 交互式 REPL
-./mvnw -q exec:java -Dexec.mainClass="com.xilidou.marvis.MarvisApplication"
+./mvnw -q exec:java -Dexec.mainClass="com.xilidou.jooj.JoojApplication"
 
 # 或用 raw java（启动更快，无 maven 噪音）
 ./mvnw -q dependency:build-classpath -Dmdep.outputFile=/tmp/cp.txt
-java -cp "$(cat /tmp/cp.txt):target/classes" com.xilidou.marvis.MarvisApplication
+java -cp "$(cat /tmp/cp.txt):target/classes" com.xilidou.jooj.JoojApplication
 ```
 
 #### Web 模式(浏览器 UI)
@@ -138,7 +138,7 @@ SPRING_PROFILES_ACTIVE=web ./mvnw -q spring-boot:run
 
 # 打包后用 jar 跑(生产化场景)
 ./mvnw -q -DskipTests=true package
-java -jar target/marvis-0.0.1-SNAPSHOT.jar --web
+java -jar target/jooj-0.0.1-SNAPSHOT.jar --web
 ```
 
 启动后浏览器打开 [http://localhost:8080](http://localhost:8080) 即可。
@@ -160,7 +160,7 @@ WebUI 暴露 3 个 REST endpoint:
 ### 5. 调试 HTTP 请求
 
 ```bash
-java -Dmarvis.log.http=DEBUG -cp ... com.xilidou.marvis.MarvisApplication
+java -Djooj.log.http=DEBUG -cp ... com.xilidou.jooj.JoojApplication
 # 输出会包含完整的 Anthropic 请求体
 ```
 
@@ -174,16 +174,16 @@ java -Dmarvis.log.http=DEBUG -cp ... com.xilidou.marvis.MarvisApplication
 |--------|------|------|
 | `AgentLoopHarnessTest` | 5 | Loop 行为：end_turn / tool_use / 多 tool / 完整回传 / 未知工具错误 |
 | `ContentBlockDeserializationTest` | 7 | DTO 多态反序列化 + 序列化 + 真实 fixture |
-| `MarvisApplicationTests` | 1 | Spring Boot context loads |
+| `JoojApplicationTests` | 1 | Spring Boot context loads |
 
 ### Smoke Test（真实 API）
 
 ```bash
 # 测试 OkHttp 链路（手写请求）
-java -cp "$CP" com.xilidou.marvis.harness.http.SmokeTest
+java -cp "$CP" com.xilidou.jooj.harness.http.SmokeTest
 
 # 测试 AnthropicHttpClient + DI 链路
-java -cp "$CP" com.xilidou.marvis.harness.http.HttpClientSmokeTest
+java -cp "$CP" com.xilidou.jooj.harness.http.HttpClientSmokeTest
 ```
 
 ---
@@ -289,7 +289,7 @@ Jackson 反序列化多态时 type 字段被消费掉，序列化回去时不会
 `MockAnthropicClient` 保存 `request.messages` 引用，但 loop 后续修改这个 List，让历史断言失败。
 **修复**：Mock 收到 request 时 `new ArrayList<>(messages)` 拍快照。
 
-详见 [[AI Agent 实战/Marvis_迁移到OkHttp]]。
+详见 [[AI Agent 实战/Jooj_迁移到OkHttp]]。
 
 ---
 

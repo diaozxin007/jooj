@@ -1,4 +1,4 @@
-/* marvis WebUI — vanilla CSS,深色主题,无前端框架。
+/* jooj WebUI — vanilla CSS,深色主题,无前端框架。
    设计目标:像 Claude Code 终端那样克制,但比 CLI 体验好。 */
 
 :root {
@@ -9,7 +9,7 @@
   --text: #e4e6ea;
   --text-dim: #8a93a3;
   --text-faint: #5a626f;
-  --accent: #d97706;          /* 橙,跟 marvis logo 同色系 */
+  --accent: #d97706;          /* 橙,跟 jooj logo 同色系 */
   --accent-hover: #f59842;
   --user: #4ea1d3;            /* 用户气泡蓝 */
   --user-bg: rgba(78, 161, 211, 0.08);

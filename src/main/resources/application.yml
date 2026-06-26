@@ -1,16 +1,16 @@
 spring:
   application:
-    name: marvis
+    name: jooj
   # 兼容老用户的 .env 文件:Spring Boot 4 内置 spring.config.import 支持 dotenv-style 文件,
   # 写成 KEY=value 即可被自动绑定。optional: 让 .env 缺失时不报错,纯环境变量场景仍可启动。
   # 注意:.env 文件需要重命名为 .env.properties 或保持 KEY=value(无 quotes)。
   config:
     import: optional:file:.env[.properties]
 
-# Marvis 自定义配置(对应 MarvisProperties)。
+# Jooj 自定义配置(对应 JoojProperties)。
 # 所有占位符 ${ENV:default} 都先看环境变量,再回落到 default。
-# 用户可在 ./application.local.yml 或 ~/.claude/marvis/application.yml 里 override。
-marvis:
+# 用户可在 ./application.local.yml 或 ~/.claude/jooj/application.yml 里 override。
+jooj:
   anthropic:
     base-url: ${ANTHROPIC_BASE_URL:https://api.anthropic.com}
     # ANTHROPIC_API_KEY 和 ANTHROPIC_AUTH_TOKEN 二选一(HttpClientConfig 的 httpAuth Bean 会校验)
@@ -37,7 +37,7 @@ marvis:
   # s14 Cron Scheduler 配置。4 层架构:
   #   Layer 1 scheduler thread(scheduler-tick-ms 毫秒轮询匹配 cron)
   #   Layer 3 queue processor thread(processor-tick-ms 毫秒轮询 fired job)
-  # durable=true 的 job 保存到 durable-path,marvis 重启后恢复。
+  # durable=true 的 job 保存到 durable-path,jooj 重启后恢复。
   cron:
     scheduler-tick-ms: 1000
     processor-tick-ms: 200

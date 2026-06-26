@@ -4,8 +4,8 @@
 
   特点：
   - root WARN，主线 INFO（业务日志可见、第三方安静）
-  - HTTP debug：传 -Dmarvis.log.http=DEBUG
-      java -Dmarvis.log.http=DEBUG -cp ... com.xilidou.marvis.S01
+  - HTTP debug：传 -Djooj.log.http=DEBUG
+      java -Djooj.log.http=DEBUG -cp ... com.xilidou.jooj.S01
   - 格式简洁：HH:mm:ss + level + logger 类名 + msg
 -->
 <configuration>
@@ -22,14 +22,14 @@
     </root>
 
     <!-- 主线代码：INFO 级别 -->
-    <logger name="com.xilidou.marvis" level="INFO"/>
+    <logger name="com.xilidou.jooj" level="INFO"/>
 
     <!--
-      HTTP 层：默认继承上面的 INFO，但允许通过 -Dmarvis.log.http=DEBUG 切到 DEBUG。
-      - 没设 -Dmarvis.log.http 时，${...:-INFO} 默认 INFO
-      - 设了 -Dmarvis.log.http=DEBUG 时，会打印 Anthropic 请求体
+      HTTP 层：默认继承上面的 INFO，但允许通过 -Djooj.log.http=DEBUG 切到 DEBUG。
+      - 没设 -Djooj.log.http 时，${...:-INFO} 默认 INFO
+      - 设了 -Djooj.log.http=DEBUG 时，会打印 Anthropic 请求体
     -->
-    <logger name="com.xilidou.marvis.harness.http" level="${marvis.log.http:-INFO}"/>
+    <logger name="com.xilidou.jooj.harness.http" level="${jooj.log.http:-INFO}"/>
 
 </configuration>
 
