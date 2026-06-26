@@ -23,10 +23,22 @@ import static org.junit.jupiter.api.Assertions.*;
 class BackgroundTaskManagerTest {
 
     private BackgroundTaskManager mgr;
+    private java.util.concurrent.ExecutorService executor;
 
     @BeforeEach
     void setUp() {
-        mgr = new BackgroundTaskManager();
+        // 测试用 cached pool,几乎无限 thread,模拟生产 worker pool 行为
+        executor = java.util.concurrent.Executors.newCachedThreadPool(r -> {
+            Thread t = new Thread(r);
+            t.setDaemon(true);
+            return t;
+        });
+        mgr = new BackgroundTaskManager(executor);
+    }
+
+    @org.junit.jupiter.api.AfterEach
+    void tearDown() {
+        executor.shutdownNow();
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -223,5 +235,41 @@ class BackgroundTaskManagerTest {
             Thread.sleep(5);
         }
         fail("Expected " + expected + " pending results, got " + mgr.pendingResultCount());
+    }
+
+    @Test
+    @DisplayName("worker 池满 → start 抛 RejectedExecutionException(线程重构 Stage 2)")
+    void start_throws_rejected_when_pool_full() throws Exception {
+        // 用一个不接受任何任务的 executor 模拟池满
+        java.util.concurrent.ExecutorService rejecting = new java.util.concurrent.ThreadPoolExecutor(
+                0, 1,
+                0L, java.util.concurrent.TimeUnit.MILLISECONDS,
+                new java.util.concurrent.SynchronousQueue<>(),
+                r -> { Thread t = new Thread(r); t.setDaemon(true); return t; },
+                new java.util.concurrent.ThreadPoolExecutor.AbortPolicy()
+        );
+        BackgroundTaskManager smallMgr = new BackgroundTaskManager(rejecting);
+
+        // 占满那唯一 1 槽 —— 派一个永久阻塞的任务
+        java.util.concurrent.CountDownLatch holdSlot = new java.util.concurrent.CountDownLatch(1);
+        smallMgr.start("tu_hold", "block", () -> {
+            try { holdSlot.await(); } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return new ToolResult(true, "done");
+        });
+        // 等占用生效(thread 真正开始跑)
+        Thread.sleep(50);
+
+        // 第二个任务应该被拒
+        assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                () -> smallMgr.start("tu_2", "echo", () -> new ToolResult(true, "x")));
+
+        // 状态机回退:tu_2 不应留在 tasks 里(不算注册成功)
+        // 验证只有 tu_hold 的那一条 in tasks(running)
+        assertEquals(1, smallMgr.taskCount());
+
+        holdSlot.countDown();
+        rejecting.shutdownNow();
     }
 }

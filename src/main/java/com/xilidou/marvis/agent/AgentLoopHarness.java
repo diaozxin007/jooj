@@ -337,12 +337,20 @@ public class AgentLoopHarness {
                 if (BackgroundTaskManager.shouldRunBackground(toolUse.getName(), args)) {
                     Object cmd = args.get("command");
                     String command = cmd != null ? cmd.toString() : "(no command)";
-                    String bgId = bgManager.start(toolUse.getId(), command,
-                            () -> registry.execute(new ToolCall(toolUse.getName(), args)));
-                    String placeholder = "[Background task " + bgId + " started] " +
-                            "Result will be available when complete.";
-                    System.out.println("\033[35m" + placeholder + "\033[0m");
-                    toolResults.add(ToolResultBlock.ofText(toolUse.getId(), placeholder));
+                    try {
+                        String bgId = bgManager.start(toolUse.getId(), command,
+                                () -> registry.execute(new ToolCall(toolUse.getName(), args)));
+                        String placeholder = "[Background task " + bgId + " started] " +
+                                "Result will be available when complete.";
+                        System.out.println("\033[35m" + placeholder + "\033[0m");
+                        toolResults.add(ToolResultBlock.ofText(toolUse.getId(), placeholder));
+                    } catch (java.util.concurrent.RejectedExecutionException e) {
+                        // worker 池满 —— 退化为同步执行(降级),让 LLM 至少能拿到结果
+                        log.warn("[BG] pool full, falling back to sync: {}", e.getMessage());
+                        ToolResultBlock result = executeOneTool(toolUse, args);
+                        hooks.triggerPostToolUse(toolUse, result.getContent().toString());
+                        toolResults.add(result);
+                    }
                     continue;
                 }
 

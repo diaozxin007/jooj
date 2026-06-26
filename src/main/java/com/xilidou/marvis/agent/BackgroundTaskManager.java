@@ -1,8 +1,10 @@
 package com.xilidou.marvis.agent;
 
+import com.xilidou.marvis.config.MarvisExecutors;
 import com.xilidou.marvis.http.dto.TextBlock;
 import com.xilidou.marvis.tool.ToolResult;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -10,6 +12,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
@@ -97,6 +101,22 @@ public class BackgroundTaskManager {
      */
     private final Object lock = new Object();
 
+    /**
+     * 工作线程池 —— 替代上游裸 {@code threading.Thread()}。
+     *
+     * <p>由 {@link MarvisExecutors#marvisWorkerExecutor} 提供,跟 Teammate spawn
+     * 共享同一个池(core=0 max=workerMaxSize SyncQueue AbortPolicy)。
+     *
+     * <p>池满时 {@link #start} 会抛 {@link RejectedExecutionException} 由 caller
+     * (AgentLoopHarness 的 tool dispatch)接住,返友好错误给 LLM。
+     */
+    private final ExecutorService workerExecutor;
+
+    public BackgroundTaskManager(
+            @Qualifier(MarvisExecutors.WORKER_BEAN) ExecutorService workerExecutor) {
+        this.workerExecutor = workerExecutor;
+    }
+
     // ─────────────────────────────────────────────────────────────
     //  API
     // ─────────────────────────────────────────────────────────────
@@ -135,7 +155,7 @@ public class BackgroundTaskManager {
         }
         log.info("[BG] started {} for command: {}", bgId, command);
 
-        Thread t = new Thread(() -> {
+        Runnable bgWork = () -> {
             String output;
             try {
                 ToolResult r = work.get();
@@ -152,9 +172,20 @@ public class BackgroundTaskManager {
                 }
             }
             log.info("[BG] {} completed", bgId);
-        }, "marvis-bg-" + bgId);
-        t.setDaemon(true);
-        t.start();
+        };
+
+        try {
+            workerExecutor.submit(bgWork);
+        } catch (RejectedExecutionException e) {
+            // 池满 —— 把状态机回退,bg_id 不算注册
+            synchronized (lock) {
+                tasks.remove(bgId);
+            }
+            log.warn("[BG] worker pool full, rejected {}: {}", bgId, e.toString());
+            throw new RejectedExecutionException(
+                    "Background task pool full (max " +
+                    "concurrent bg/teammate tasks reached). Try again later.", e);
+        }
 
         return bgId;
     }

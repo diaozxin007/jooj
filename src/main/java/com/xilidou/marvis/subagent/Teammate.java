@@ -3,6 +3,7 @@ package com.xilidou.marvis.subagent;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xilidou.marvis.MarvisProperties;
+import com.xilidou.marvis.config.MarvisExecutors;
 import com.xilidou.marvis.hook.HookManager;
 import com.xilidou.marvis.http.AnthropicClient;
 import com.xilidou.marvis.http.dto.CreateMessageRequest;
@@ -33,6 +34,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.RejectedExecutionException;
 
 /**
  * Teammate —— s15 多 agent 队友:**daemon thread + 简化 agent loop + 异步消息通信**。
@@ -132,6 +135,7 @@ public class Teammate {
     private final HookManager hooks;
     private final MessageBus bus;
     private final ProtocolRegistry protocols;
+    private final ExecutorService workerExecutor;
 
     public Teammate(AnthropicClient client,
                     ToolRegistry registry,
@@ -139,6 +143,7 @@ public class Teammate {
                     HookManager hooks,
                     MessageBus bus,
                     ProtocolRegistry protocols,
+                    @Qualifier(MarvisExecutors.WORKER_BEAN) ExecutorService workerExecutor,
                     MarvisProperties props) {
         this.client = client;
         this.model = props.getAnthropic().getModel();
@@ -147,6 +152,7 @@ public class Teammate {
         this.hooks = hooks;
         this.bus = bus;
         this.protocols = protocols;
+        this.workerExecutor = workerExecutor;
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -173,7 +179,7 @@ public class Teammate {
             return "Error: teammate '" + name + "' already exists";
         }
 
-        Thread t = new Thread(() -> {
+        Runnable teammateWork = () -> {
             try {
                 runLoop(name, role, prompt);
             } catch (Exception e) {
@@ -184,9 +190,18 @@ public class Teammate {
                 activeTeammates.remove(name);
                 log.info("[Teammate {}] exited", name);
             }
-        }, "marvis-teammate-" + name);
-        t.setDaemon(true);
-        t.start();
+        };
+
+        try {
+            workerExecutor.submit(teammateWork);
+        } catch (RejectedExecutionException e) {
+            // 池满 —— 把注册表回退,return Error 给 caller
+            activeTeammates.remove(name);
+            log.warn("[Teammate] worker pool full, rejected spawn '{}': {}",
+                    name, e.toString());
+            return "Error: worker pool full (max concurrent bg/teammate tasks reached). " +
+                    "Try again after some teammates finish or reduce parallelism.";
+        }
 
         log.info("[Teammate] spawned {} as '{}'", name, role);
         return "Spawned " + name + " as " + role;
