@@ -60,6 +60,20 @@ marvis:
     scheduler-pool-size: 4
     bg-pool-size: 8
     teammate-pool-size: 16
+
+  # s19 MCP plugin —— 真实 SDK 配置(stdio 子进程)
+  # 默认 servers 为空(用户配置后才启用真实 SDK,未配置时全部走 mock)
+  # 启用真实 server 示例(取消注释 + 加 server 即可):
+  #   servers:
+  #     filesystem:
+  #       command: npx
+  #       args: ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/dir"]
+  #     git:
+  #       command: npx
+  #       args: ["-y", "@modelcontextprotocol/server-git", "--repo", "."]
+  mcp:
+    startup-timeout-ms: 30000
+    call-timeout-ms: 60000
   permission:
     mode: cli   # cli | always-allow | always-deny
   skills:

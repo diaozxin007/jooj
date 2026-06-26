@@ -84,6 +84,19 @@
              spring.config.import=optional:file:.env[.properties] 内置支持。
              用户原有的 .env 改成 KEY=value(无 quotes) 仍能被读取。 -->
 
+        <!-- s19: MCP 官方 Java SDK(io.modelcontextprotocol.sdk:mcp).
+             不依赖 Spring,纯 JDK 17+,跟 Boot 4.1 兼容。
+             带宽:transitively 引入 jackson 3.x(tools.jackson.*)+ reactor-core 3.7。
+             跟 marvis 现有 jackson 2.x(com.fasterxml.jackson.*)不同包名,可共存,
+             classpath +5MB 左右。
+             该 SDK 官方提供 stdio / streamable-http / sse 三种 transport,
+             marvis 当前只用 stdio(子进程)实现外部 server 接入。 -->
+        <dependency>
+            <groupId>io.modelcontextprotocol.sdk</groupId>
+            <artifactId>mcp</artifactId>
+            <version>2.0.0</version>
+        </dependency>
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>

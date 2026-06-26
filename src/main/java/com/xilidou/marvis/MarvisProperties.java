@@ -3,6 +3,11 @@ package com.xilidou.marvis;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
 /**
  * marvis 顶层配置 —— 切片 C(Spring Boot 化)的入口。
  *
@@ -65,6 +70,9 @@ public class MarvisProperties {
 
     /** 并发 / 线程池(线程重构)配置 —— 替代裸 {@code new Thread()}。 */
     private Concurrency concurrency = new Concurrency();
+
+    /** s19 MCP plugin —— 真实 SDK 配置(stdio 子进程)。 */
+    private Mcp mcp = new Mcp();
 
     @Data
     public static class Anthropic {
@@ -312,5 +320,49 @@ public class MarvisProperties {
         private int bgPoolSize = 8;
         /** Teammate spawn 池上限(s15+)。AbortPolicy 满则返 Error 给 LLM。默认 16。 */
         private int teammatePoolSize = 16;
+    }
+
+    /**
+     * MCP plugin(s19)真实 SDK 配置 —— 只描述 stdio 子进程类型的 server。
+     *
+     * <p>每个 server 一个 {@link Server} 子配置:
+     * <pre>
+     *   marvis:
+     *     mcp:
+     *       servers:
+     *         filesystem:
+     *           command: npx
+     *           args: ["-y", "@modelcontextprotocol/server-filesystem", "/Users/me/notes"]
+     *           env: { LOG_LEVEL: "info" }
+     *         git:
+     *           command: npx
+     *           args: ["-y", "@modelcontextprotocol/server-git", "--repo", "."]
+     * </pre>
+     *
+     * <p>路由规则(由 {@link com.xilidou.marvis.mcp.McpRegistry} 实施):
+     * <ul>
+     *   <li>{@code connect("filesystem")} 时,先看 yml 是否有 {@code servers.filesystem} —— 有就走真实 SDK</li>
+     *   <li>没配置则退化到 mock(原 docs / deploy 还能用)</li>
+     * </ul>
+     */
+    @Data
+    public static class Mcp {
+        /** 启动 stdio 子进程时,等待 server 进入 ready 的超时(毫秒)。默认 30s 给冷启动 npm 拉包余地。 */
+        private long startupTimeoutMs = 30_000;
+        /** 单次 listTools / callTool 调用超时(毫秒)。默认 60s。 */
+        private long callTimeoutMs = 60_000;
+        /** server 配置表,key = server name(LLM 在 connect_mcp 工具里用的 name)。 */
+        private Map<String, Server> servers = new LinkedHashMap<>();
+
+        /** 单个 stdio MCP server 配置。 */
+        @Data
+        public static class Server {
+            /** 启动命令(如 {@code npx} / {@code node} / 绝对可执行路径)。 */
+            private String command;
+            /** 命令参数列表。 */
+            private List<String> args = new ArrayList<>();
+            /** 子进程环境变量(覆盖父进程同名)。 */
+            private Map<String, String> env = new LinkedHashMap<>();
+        }
     }
 }
