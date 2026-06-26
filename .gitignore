@@ -46,3 +46,5 @@ build/
 .scheduled_tasks.test.json
 .mailboxes/
 .mailboxes.test/
+.worktrees/
+.worktrees.test/

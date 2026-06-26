@@ -45,10 +45,12 @@ marvis:
 
   # s15 Team / MessageBus 配置:文件邮箱目录,每个 agent 一个 <name>.jsonl 文件。
   # s17 加 idle 配置:autonomous teammate IDLE 阶段轮询间隔 + 超时退出。
+  # s18 加 worktree-dir:每 task 可绑定一个独立 git worktree 实现并行隔离。
   team:
     mailbox-dir: .mailboxes
     idle-poll-ms: 5000
     idle-timeout-ms: 60000
+    worktree-dir: .worktrees
 
   # 并发 / 线程池配置(线程重构):
   #   scheduler-pool-size — @Scheduled 长期任务池容量(cron scheduler/processor 各占 1)
@@ -75,7 +77,8 @@ marvis:
       todo_write, load_skill, task,
       create_task, list_tasks, get_task, claim_task, complete_task,
       schedule_cron, list_crons, cancel_cron,
-      spawn_teammate, send_message, check_inbox.
+      spawn_teammate, send_message, check_inbox,
+      create_worktree, remove_worktree, keep_worktree.
       For slow ops (build/test/deploy/install), set bash.run_in_background=true
       to keep working while it runs in the background.
     memory-header: "Memory index (long-term knowledge from past sessions):"

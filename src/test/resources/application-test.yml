@@ -36,10 +36,12 @@ marvis:
     durable-path: .scheduled_tasks.test.json
   # s15:测试 profile 用独立目录,避免污染 ./.mailboxes
   # s17:测试 profile 把 idle 调小,让 IDLE 超时退出能在测试时间内发生
+  # s18:测试 profile 用独立 worktree 目录
   team:
     mailbox-dir: .mailboxes.test
     idle-poll-ms: 50
     idle-timeout-ms: 200
+    worktree-dir: .worktrees.test
   permission:
     mode: always-allow
   skills:

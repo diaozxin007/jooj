@@ -71,4 +71,26 @@ public class TaskRecord {
      * <p>默认 {@link ArrayList} 而非 {@link List#of()},因为后者不可变,Jackson 反序列化时不便。
      */
     private List<String> blockedBy = new ArrayList<>();
+
+    /**
+     * s18:绑定的 git worktree 名(可空)。
+     *
+     * <p>由 Lead 调 {@code create_worktree(task_id, worktree_name)} 设置,或在 task 创建时直接指定。
+     * Teammate claim 此 task 时,marvis 会构造
+     * {@link com.xilidou.marvis.tool.ExecutionContext#inWorktree} 让后续工具调用切到
+     * {@code <worktreeDir>/<worktree>} 路径执行。
+     *
+     * <p>不在创建 task 时强制指定 —— task 创建后 Lead 可决定是否绑 worktree,绑了走 isolation,
+     * 没绑就跟 s17 一样在共享 workdir 里干。
+     */
+    private String worktree;
+
+    /**
+     * 6 参便利构造器(向后兼容 s17 调用点 / 测试代码)。
+     * 自动把 worktree 初始化为 null。
+     */
+    public TaskRecord(String id, String subject, String description, TaskStatus status,
+                      String owner, List<String> blockedBy) {
+        this(id, subject, description, status, owner, blockedBy, null);
+    }
 }

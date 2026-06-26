@@ -158,7 +158,8 @@ public class MarvisProperties {
                 "todo_write, load_skill, task, " +
                 "create_task, list_tasks, get_task, claim_task, complete_task, " +
                 "schedule_cron, list_crons, cancel_cron, " +
-                "spawn_teammate, send_message, check_inbox. " +
+                "spawn_teammate, send_message, check_inbox, " +
+                "create_worktree, remove_worktree, keep_worktree. " +
                 "For slow ops (build/test/deploy/install), set bash.run_in_background=true " +
                 "to keep working while it runs in the background.";
 
@@ -280,6 +281,11 @@ public class MarvisProperties {
          * 默认 60000(对齐上游 s17 IDLE_TIMEOUT=60)。测试可调小到 200ms。
          */
         private long idleTimeoutMs = 60_000;
+        /**
+         * s18 worktree 根目录(相对 marvis workdir 或绝对路径)。默认 {@code .worktrees}。
+         * 跟上游 s18 {@code WORKTREES_DIR = WORKDIR / ".worktrees"} 一致。
+         */
+        private String worktreeDir = ".worktrees";
     }
 
     /**

@@ -32,4 +32,14 @@ public class TeamConfiguration {
                                  @Qualifier("marvisObjectMapper") ObjectMapper json) {
         return new MessageBus(config, json);
     }
+
+    /**
+     * s18:Git CLI 客户端 —— 默认实现走 {@link ProcessBuilder} 调系统 git。
+     *
+     * <p>测试可以注入 mock {@link GitClient} 验业务逻辑而不真起 git 进程。
+     */
+    @Bean
+    public GitClient gitClient() {
+        return new GitClient.DefaultGitClient();
+    }
 }

@@ -79,6 +79,22 @@ public class TaskService {
         return store.read(id);
     }
 
+    /**
+     * s18:保存 task 修改 —— 给 {@link com.xilidou.marvis.team.WorktreeService#bindTask} 用。
+     *
+     * <p>不做 status 校验,调用方自己确保字段合法(目前唯一调用点是 worktree 绑定,
+     * 只改 {@code worktree} 字段,不影响状态机)。
+     *
+     * <p>未来若要增加更结构化的"字段更新"语义(setOwner / setBlockedBy / etc),
+     * 可以加专门方法替代直接 save。
+     */
+    public void save(TaskRecord task) {
+        if (task == null) {
+            throw new IllegalArgumentException("task must not be null");
+        }
+        store.write(task);
+    }
+
     public List<TaskRecord> list() {
         return store.list();
     }
