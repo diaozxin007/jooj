@@ -36,13 +36,15 @@ class TeamToolTest {
     private TeamTool tool;
     private MessageBus bus;
     private Teammate teammate;
+    private com.xilidou.marvis.team.ProtocolRegistry protocols;
 
     @BeforeEach
     void setUp() {
         ObjectMapper json = JacksonConfig.newMapper();
         bus = new MessageBus(new TeamConfig(tempDir.resolve("mailboxes")), json);
         teammate = Mockito.mock(Teammate.class);
-        tool = new TeamTool(teammate, bus);
+        protocols = new com.xilidou.marvis.team.ProtocolRegistry();
+        tool = new TeamTool(teammate, bus, protocols);
     }
 
     private ToolResult call(String name, Map<String, Object> args) {
@@ -50,14 +52,19 @@ class TeamToolTest {
     }
 
     @Test
-    @DisplayName("getTools 返回 3 个 ToolDefinition,名字严格对齐上游")
-    void exposes_three_tools() {
+    @DisplayName("getTools 返回 6 个 ToolDefinition(s15 三个 + s16 三个)")
+    void exposes_six_tools() {
         List<ToolDefinition> defs = tool.getTools();
-        assertEquals(3, defs.size());
+        assertEquals(6, defs.size());
         List<String> names = defs.stream().map(ToolDefinition::getName).toList();
+        // s15
         assertTrue(names.contains("spawn_teammate"));
         assertTrue(names.contains("send_message"));
         assertTrue(names.contains("check_inbox"));
+        // s16
+        assertTrue(names.contains("request_shutdown"));
+        assertTrue(names.contains("request_plan"));
+        assertTrue(names.contains("review_plan"));
     }
 
     @Test
@@ -149,5 +156,166 @@ class TeamToolTest {
         ToolResult r = call("not_a_tool", Map.of());
         assertFalse(r.isSuccess());
         assertTrue(r.getOutput().contains("Unknown tool"));
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    //  s16 新协议工具
+    // ─────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("request_shutdown 注册 protocol state + 发 shutdown_request 到队友")
+    void request_shutdown_registers_and_sends() {
+        ToolResult r = call("request_shutdown", Map.of("teammate", "alice"));
+        assertTrue(r.isSuccess());
+        assertTrue(r.getOutput().startsWith("Shutdown request sent to alice"));
+
+        // alice 邮箱应有一条 shutdown_request,带 request_id metadata
+        var msgs = bus.readInbox("alice");
+        assertEquals(1, msgs.size());
+        assertEquals("shutdown_request", msgs.get(0).getType());
+        String reqId = String.valueOf(msgs.get(0).getMetadata().get("request_id"));
+        assertTrue(reqId.startsWith("req_"));
+
+        // protocol registry 里应有 pending state
+        assertEquals(1, protocols.size());
+        var state = protocols.get(reqId);
+        assertEquals(com.xilidou.marvis.team.ProtocolState.PENDING, state.getStatus());
+        assertEquals(com.xilidou.marvis.team.ProtocolState.TYPE_SHUTDOWN, state.getType());
+        assertEquals("alice", state.getTarget());
+    }
+
+    @Test
+    @DisplayName("request_shutdown 缺 teammate → 友好错误")
+    void request_shutdown_missing_arg() {
+        ToolResult r = call("request_shutdown", Map.of());
+        assertFalse(r.isSuccess());
+        assertTrue(r.getOutput().toLowerCase().contains("teammate"));
+    }
+
+    @Test
+    @DisplayName("request_plan 发普通指令消息,**不**创建 protocol state(待 teammate 调 submit_plan)")
+    void request_plan_sends_message_only() {
+        ToolResult r = call("request_plan", Map.of(
+                "teammate", "alice", "task", "refactor auth"));
+        assertTrue(r.isSuccess());
+
+        var msgs = bus.readInbox("alice");
+        assertEquals(1, msgs.size());
+        assertEquals("message", msgs.get(0).getType());   // 普通消息,不是协议
+        assertTrue(msgs.get(0).getContent().contains("refactor auth"));
+
+        // registry 里**没有** pending state(等 teammate 调 submit_plan 才创建)
+        assertEquals(0, protocols.size());
+    }
+
+    @Test
+    @DisplayName("review_plan 正常:approve → registry pending → approved + 发 plan_approval_response")
+    void review_plan_approves_and_responds() {
+        // 模拟 teammate 已 submit_plan:registry 里有一条 pending plan_approval
+        String reqId = protocols.register(
+                com.xilidou.marvis.team.ProtocolState.TYPE_PLAN_APPROVAL,
+                "alice", "lead", "refactor auth: drop OAuth, use JWT");
+
+        ToolResult r = call("review_plan", Map.of(
+                "request_id", reqId,
+                "approve", true,
+                "feedback", "go ahead"));
+        assertTrue(r.isSuccess());
+        assertTrue(r.getOutput().contains("approved"));
+
+        // registry 状态应转 approved
+        assertEquals(com.xilidou.marvis.team.ProtocolState.APPROVED,
+                protocols.get(reqId).getStatus());
+
+        // alice 应收到 plan_approval_response,带 request_id + approve=true + feedback content
+        var msgs = bus.readInbox("alice");
+        assertEquals(1, msgs.size());
+        assertEquals("plan_approval_response", msgs.get(0).getType());
+        assertEquals(reqId, msgs.get(0).getMetadata().get("request_id"));
+        assertEquals(Boolean.TRUE, msgs.get(0).getMetadata().get("approve"));
+        assertEquals("go ahead", msgs.get(0).getContent());
+    }
+
+    @Test
+    @DisplayName("review_plan reject:状态变 rejected,响应带 approve=false")
+    void review_plan_rejects() {
+        String reqId = protocols.register(
+                com.xilidou.marvis.team.ProtocolState.TYPE_PLAN_APPROVAL,
+                "bob", "lead", "drop all DB");
+
+        ToolResult r = call("review_plan", Map.of(
+                "request_id", reqId,
+                "approve", false));
+        assertTrue(r.isSuccess());
+        assertTrue(r.getOutput().contains("rejected"));
+        assertEquals(com.xilidou.marvis.team.ProtocolState.REJECTED,
+                protocols.get(reqId).getStatus());
+
+        var msg = bus.readInbox("bob").get(0);
+        assertEquals(Boolean.FALSE, msg.getMetadata().get("approve"));
+    }
+
+    @Test
+    @DisplayName("review_plan 未知 request_id → success=false")
+    void review_plan_unknown_id() {
+        ToolResult r = call("review_plan", Map.of(
+                "request_id", "req_999999", "approve", true));
+        assertFalse(r.isSuccess());
+        assertTrue(r.getOutput().contains("not found"));
+    }
+
+    @Test
+    @DisplayName("review_plan 已 resolved 的请求 → success=false(防 duplicate review)")
+    void review_plan_already_resolved() {
+        String reqId = protocols.register(
+                com.xilidou.marvis.team.ProtocolState.TYPE_PLAN_APPROVAL,
+                "alice", "lead", "x");
+        // 第一次 review 通过
+        call("review_plan", Map.of("request_id", reqId, "approve", true));
+        // 第二次 review 应被拒绝
+        ToolResult r = call("review_plan", Map.of("request_id", reqId, "approve", false));
+        assertFalse(r.isSuccess());
+        assertTrue(r.getOutput().contains("already"));
+    }
+
+    @Test
+    @DisplayName("check_inbox 自动路由 shutdown_response:registry 状态更新,inbox 不展示给 LLM")
+    void check_inbox_routes_shutdown_response() {
+        // 准备:Lead 先 register 一条 shutdown 请求
+        String reqId = protocols.register(
+                com.xilidou.marvis.team.ProtocolState.TYPE_SHUTDOWN, "lead", "alice", "");
+        // 模拟 alice 回复 shutdown_response
+        bus.send("alice", "lead", "Shutting down.", "shutdown_response",
+                Map.of("request_id", reqId, "approve", true));
+
+        ToolResult r = call("check_inbox", Map.of());
+        assertTrue(r.isSuccess());
+        // 输出应说"只有协议响应,自动路由了"而不是把消息展示给 LLM
+        assertTrue(r.getOutput().contains("auto-routed") || r.getOutput().contains("empty"),
+                "实际:" + r.getOutput());
+
+        // registry 应转 approved
+        assertEquals(com.xilidou.marvis.team.ProtocolState.APPROVED,
+                protocols.get(reqId).getStatus());
+    }
+
+    @Test
+    @DisplayName("check_inbox 协议响应 + 普通消息混合:协议路由,普通展示")
+    void check_inbox_routes_mixed_messages() {
+        String reqId = protocols.register(
+                com.xilidou.marvis.team.ProtocolState.TYPE_SHUTDOWN, "lead", "alice", "");
+        bus.send("alice", "lead", "Shutting down.", "shutdown_response",
+                Map.of("request_id", reqId, "approve", true));
+        bus.send("bob", "lead", "client ready", "result");
+
+        ToolResult r = call("check_inbox", Map.of());
+        assertTrue(r.isSuccess());
+        assertTrue(r.getOutput().contains("bob"));
+        assertTrue(r.getOutput().contains("client ready"));
+        // shutdown_response 不应展示
+        assertFalse(r.getOutput().contains("Shutting down"));
+        // registry 仍被更新
+        assertEquals(com.xilidou.marvis.team.ProtocolState.APPROVED,
+                protocols.get(reqId).getStatus());
     }
 }

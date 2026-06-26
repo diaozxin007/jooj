@@ -4,6 +4,8 @@ import com.xilidou.marvis.http.dto.InputSchema;
 import com.xilidou.marvis.subagent.Teammate;
 import com.xilidou.marvis.team.Message;
 import com.xilidou.marvis.team.MessageBus;
+import com.xilidou.marvis.team.ProtocolRegistry;
+import com.xilidou.marvis.team.ProtocolState;
 import com.xilidou.marvis.tool.Tool;
 import com.xilidou.marvis.tool.ToolCall;
 import com.xilidou.marvis.tool.ToolDefinition;
@@ -12,6 +14,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -43,6 +46,7 @@ public class TeamTool implements Tool {
 
     private final Teammate teammate;
     private final MessageBus bus;
+    private final ProtocolRegistry protocols;
 
     /**
      * {@code @Lazy} 打破循环依赖,跟 {@link TaskTool} 同思路。
@@ -56,9 +60,10 @@ public class TeamTool implements Tool {
      * TeamTool 又要 Teammate,Teammate 又要 ToolRegistry — 死循环。
      * @Lazy 让 Spring 注入 Teammate 的代理,首次调用方法时才解析真身。
      */
-    public TeamTool(@Lazy Teammate teammate, MessageBus bus) {
+    public TeamTool(@Lazy Teammate teammate, MessageBus bus, ProtocolRegistry protocols) {
         this.teammate = teammate;
         this.bus = bus;
+        this.protocols = protocols;
     }
 
     @Override
@@ -87,6 +92,24 @@ public class TeamTool implements Tool {
                 "content", Map.of("type", "string",
                         "description", "Message text")
         );
+        Map<String, Object> requestShutdownSchema = Map.of(
+                "teammate", Map.of("type", "string",
+                        "description", "Teammate name to shut down")
+        );
+        Map<String, Object> requestPlanSchema = Map.of(
+                "teammate", Map.of("type", "string",
+                        "description", "Teammate name to ask for a plan"),
+                "task", Map.of("type", "string",
+                        "description", "Task description, will be sent as message asking for plan")
+        );
+        Map<String, Object> reviewPlanSchema = new java.util.LinkedHashMap<>();
+        reviewPlanSchema.put("request_id", Map.of("type", "string",
+                "description", "request_id from a previous plan_approval_request (cron-like ID 'req_xxxxxx')"));
+        reviewPlanSchema.put("approve", Map.of("type", "boolean",
+                "description", "true to approve, false to reject"));
+        reviewPlanSchema.put("feedback", Map.of("type", "string",
+                "description", "Optional feedback (especially when rejecting)"));
+
         return List.of(
                 new ToolDefinition(
                         "spawn_teammate",
@@ -96,12 +119,31 @@ public class TeamTool implements Tool {
                         InputSchema.object(spawnSchema, "name", "role", "prompt")),
                 new ToolDefinition(
                         "send_message",
-                        "Send a message to a teammate's inbox via the MessageBus.",
+                        "Send a plain message to a teammate's inbox via the MessageBus.",
                         InputSchema.object(sendSchema, "to", "content")),
                 new ToolDefinition(
                         "check_inbox",
-                        "Read all messages currently in lead's inbox (consume-on-read).",
-                        InputSchema.object(Map.of()))
+                        "Read all messages currently in lead's inbox (consume-on-read). " +
+                                "Protocol responses (shutdown_response / plan_approval_response) " +
+                                "are auto-routed to the registry.",
+                        InputSchema.object(Map.of())),
+                // s16:3 个新协议工具
+                new ToolDefinition(
+                        "request_shutdown",
+                        "Send a shutdown_request to a teammate. " +
+                                "The teammate will reply shutdown_response and exit gracefully.",
+                        InputSchema.object(requestShutdownSchema, "teammate")),
+                new ToolDefinition(
+                        "request_plan",
+                        "Ask a teammate to submit a plan first via submit_plan tool. " +
+                                "Send a plain message describing the task; teammate responds " +
+                                "with plan_approval_request which lead can review.",
+                        InputSchema.object(requestPlanSchema, "teammate", "task")),
+                new ToolDefinition(
+                        "review_plan",
+                        "Review a pending plan_approval request. Sends plan_approval_response " +
+                                "to the requesting teammate and updates the protocol registry.",
+                        InputSchema.object(reviewPlanSchema, "request_id", "approve"))
         );
     }
 
@@ -112,6 +154,9 @@ public class TeamTool implements Tool {
                 case "spawn_teammate" -> doSpawn(call);
                 case "send_message" -> doSend(call);
                 case "check_inbox" -> doCheckInbox();
+                case "request_shutdown" -> doRequestShutdown(call);
+                case "request_plan" -> doRequestPlan(call);
+                case "review_plan" -> doReviewPlan(call);
                 default -> new ToolResult(false, "Unknown tool: " + call.getToolName());
             };
         } catch (IllegalArgumentException e) {
@@ -153,19 +198,123 @@ public class TeamTool implements Tool {
     }
 
     private ToolResult doCheckInbox() {
+        // s16: 主动 check_inbox 时也要先路由协议响应,保证 pending_requests 状态正确,
+        // 然后只展示给 LLM"剩下的 / 路由完之后保留的"消息
         List<Message> msgs = bus.readInbox(LEAD_NAME);
         if (msgs.isEmpty()) {
             return new ToolResult(true, "Inbox empty.");
         }
+        List<Message> nonProtocol = routeProtocolResponses(msgs);
+        if (nonProtocol.isEmpty()) {
+            return new ToolResult(true, "Inbox contained only protocol responses (auto-routed).");
+        }
         StringBuilder sb = new StringBuilder();
-        sb.append(msgs.size()).append(" message(s) in lead's inbox:\n");
-        for (Message m : msgs) {
+        sb.append(nonProtocol.size()).append(" message(s) in lead's inbox:\n");
+        for (Message m : nonProtocol) {
             sb.append("  ✉ from ").append(m.getFrom())
-                    .append(" (").append(m.getType()).append("): ")
-                    .append(m.getContent()).append("\n");
+                    .append(" (").append(m.getType());
+            // 协议请求(plan_approval_request)的 request_id 显式给 LLM 看
+            String reqId = String.valueOf(m.getMetadata().getOrDefault("request_id", ""));
+            if (!reqId.isBlank()) sb.append(" req:").append(reqId);
+            sb.append("): ").append(m.getContent()).append("\n");
         }
         String out = sb.toString();
         if (out.endsWith("\n")) out = out.substring(0, out.length() - 1);
         return new ToolResult(true, out);
+    }
+
+    /**
+     * s16:用 ProtocolRegistry 路由响应消息,把响应消息从列表里剔除返回。
+     *
+     * <p>对应上游 {@code consume_lead_inbox(route_protocol=True)}。
+     */
+    private List<Message> routeProtocolResponses(List<Message> msgs) {
+        List<Message> nonProtocol = new ArrayList<>();
+        for (Message m : msgs) {
+            String type = m.getType();
+            if ("shutdown_response".equals(type) || "plan_approval_response".equals(type)) {
+                Map<String, Object> meta = m.getMetadata();
+                String reqId = String.valueOf(meta.getOrDefault("request_id", ""));
+                Object approveObj = meta.get("approve");
+                boolean approve = approveObj instanceof Boolean b && b;
+                protocols.match(type, reqId, approve);
+                continue;
+            }
+            nonProtocol.add(m);
+        }
+        return nonProtocol;
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    //  s16:新协议工具
+    // ─────────────────────────────────────────────────────────────
+
+    private ToolResult doRequestShutdown(ToolCall call) {
+        Object teammate = call.getArguments().get("teammate");
+        if (teammate == null) return new ToolResult(false, "Error: 'teammate' is required");
+        String name = teammate.toString();
+
+        String reqId = protocols.register(
+                ProtocolState.TYPE_SHUTDOWN, LEAD_NAME, name, "");
+        Map<String, Object> meta = new java.util.LinkedHashMap<>();
+        meta.put("request_id", reqId);
+        bus.send(LEAD_NAME, name, "Please shut down gracefully.",
+                "shutdown_request", meta);
+        String msg = "Shutdown request sent to " + name + " (req: " + reqId + ")";
+        System.out.println("  " + CYAN + "[team] " + msg + RESET);
+        return new ToolResult(true, msg);
+    }
+
+    private ToolResult doRequestPlan(ToolCall call) {
+        Object teammate = call.getArguments().get("teammate");
+        Object task = call.getArguments().get("task");
+        if (teammate == null) return new ToolResult(false, "Error: 'teammate' is required");
+        if (task == null) return new ToolResult(false, "Error: 'task' is required");
+
+        // 这里不创建 ProtocolState —— request_plan 是普通指令性消息,
+        // 真正的 protocol 在 teammate 调 submit_plan 时由 teammate 端创建。
+        // 跟上游 run_request_plan 一致。
+        bus.send(LEAD_NAME, teammate.toString(),
+                "Please submit a plan for: " + task,
+                "message");
+        return new ToolResult(true,
+                "Asked " + teammate + " to submit a plan. Wait for plan_approval_request in inbox.");
+    }
+
+    private ToolResult doReviewPlan(ToolCall call) {
+        Object reqIdArg = call.getArguments().get("request_id");
+        Object approveArg = call.getArguments().get("approve");
+        if (reqIdArg == null) return new ToolResult(false, "Error: 'request_id' is required");
+        if (approveArg == null) return new ToolResult(false, "Error: 'approve' is required");
+
+        String reqId = reqIdArg.toString();
+        boolean approve = approveArg instanceof Boolean b ? b
+                : Boolean.parseBoolean(approveArg.toString());
+        Object feedbackArg = call.getArguments().get("feedback");
+        String feedback = feedbackArg != null ? feedbackArg.toString() : "";
+
+        ProtocolState state = protocols.get(reqId);
+        if (state == null) {
+            return new ToolResult(false, "Request " + reqId + " not found");
+        }
+        if (!ProtocolState.PENDING.equals(state.getStatus())) {
+            return new ToolResult(false, "Request " + reqId + " already " + state.getStatus());
+        }
+        // 先在 registry 里更新状态(lead 主动 review 等价于 lead 收到自己的 response)
+        // 然后发 plan_approval_response 给原 sender
+        ProtocolState matched = protocols.match("plan_approval_response", reqId, approve);
+        if (matched == null) {
+            return new ToolResult(false, "Failed to match request " + reqId);
+        }
+        Map<String, Object> meta = new java.util.LinkedHashMap<>();
+        meta.put("request_id", reqId);
+        meta.put("approve", approve);
+        String content = !feedback.isBlank() ? feedback
+                : (approve ? "Approved" : "Rejected");
+        bus.send(LEAD_NAME, state.getSender(), content,
+                "plan_approval_response", meta);
+        String result = "Plan " + (approve ? "approved" : "rejected") + " (" + reqId + ")";
+        System.out.println("  " + CYAN + "[team] " + result + RESET);
+        return new ToolResult(true, result);
     }
 }

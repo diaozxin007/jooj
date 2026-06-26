@@ -15,6 +15,8 @@ import com.xilidou.marvis.http.dto.ToolResultBlock;
 import com.xilidou.marvis.http.dto.ToolUseBlock;
 import com.xilidou.marvis.team.Message;
 import com.xilidou.marvis.team.MessageBus;
+import com.xilidou.marvis.team.ProtocolRegistry;
+import com.xilidou.marvis.team.ProtocolState;
 import com.xilidou.marvis.tool.ToolCall;
 import com.xilidou.marvis.tool.ToolDefinition;
 import com.xilidou.marvis.tool.ToolRegistry;
@@ -25,6 +27,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -94,8 +97,14 @@ import java.util.concurrent.ConcurrentHashMap;
 @Slf4j
 public class Teammate {
 
-    /** 队友最大轮数(防 infinite loop)。教学版硬限,s17 改成 idle loop 后取消。 */
-    public static final int MAX_TURNS = 10;
+    /** 队友"活动轮"上限 —— 真正调 LLM 的轮数。idle 等待不计入此上限。 */
+    public static final int MAX_ACTIVE_TURNS = 30;
+
+    /** idle 状态下轮询 inbox 的间隔(毫秒)。跟上游 {@code time.sleep(1)} 严格一致。 */
+    public static final long IDLE_TICK_MS = 1000;
+
+    /** idle 等待最长时长(毫秒);超时强制退出,防 daemon thread 永不退出。 */
+    public static final long IDLE_MAX_MS = 5 * 60 * 1000L;
 
     private static final int MAX_TOKENS = 8000;
 
@@ -110,6 +119,9 @@ public class Teammate {
     /** Teammate 的 send_message 工具名 —— 跟队友间发消息共用。 */
     public static final String SEND_MESSAGE_TOOL = "send_message";
 
+    /** Teammate 的 submit_plan 工具名 —— s16 新增。 */
+    public static final String SUBMIT_PLAN_TOOL = "submit_plan";
+
     /** 注册表防重名;同名 spawn 第二次会被拒绝。{@code true} = 活着,移除 = 退出。 */
     private final Map<String, Boolean> activeTeammates = new ConcurrentHashMap<>();
 
@@ -119,12 +131,14 @@ public class Teammate {
     private final ObjectMapper json;
     private final HookManager hooks;
     private final MessageBus bus;
+    private final ProtocolRegistry protocols;
 
     public Teammate(AnthropicClient client,
                     ToolRegistry registry,
                     @Qualifier("marvisObjectMapper") ObjectMapper json,
                     HookManager hooks,
                     MessageBus bus,
+                    ProtocolRegistry protocols,
                     MarvisProperties props) {
         this.client = client;
         this.model = props.getAnthropic().getModel();
@@ -132,6 +146,7 @@ public class Teammate {
         this.json = json;
         this.hooks = hooks;
         this.bus = bus;
+        this.protocols = protocols;
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -198,6 +213,8 @@ public class Teammate {
         String system = "You are '" + name + "', a " + role + ". " +
                 "Use tools to complete tasks. " +
                 "Send results to the lead via send_message(to=\"lead\", content=...). " +
+                "When asked to plan first, call submit_plan(plan=\"...\") and wait for approval. " +
+                "Check inbox for protocol messages (shutdown_request, plan_approval_response). " +
                 "Be concise.";
 
         List<MessageParam> messages = new ArrayList<>();
@@ -205,13 +222,18 @@ public class Teammate {
 
         List<ToolDef> tools = buildTeammateTools();
         String lastText = "";
+        boolean shutdownRequested = false;
+        int activeTurn = 0;
 
-        for (int turn = 0; turn < MAX_TURNS; turn++) {
-            // 1. 每轮先收件,有 inbox 就追加成 user message
-            List<Message> inbox = bus.readInbox(name);
-            if (!inbox.isEmpty()) {
-                messages.add(MessageParam.user(formatInboxAsUserText(inbox)));
-                System.out.println(GRAY + "  [" + name + "] inbox " + inbox.size() + " msg" + RESET);
+        outer:
+        while (!shutdownRequested && activeTurn < MAX_ACTIVE_TURNS) {
+            activeTurn++;
+
+            // 1. 每轮先收件,先 dispatch 协议消息,再把非协议的注入 messages
+            DispatchResult d = consumeInboxAndDispatch(name, messages);
+            if (d.shutdown) {
+                shutdownRequested = true;
+                break;
             }
 
             // 2. 截窗口防 history 爆 token
@@ -230,15 +252,28 @@ public class Teammate {
             try {
                 response = client.createMessage(request);
             } catch (Exception e) {
-                log.warn("[Teammate {}] LLM call failed at turn {}: {}", name, turn, e.toString());
+                log.warn("[Teammate {}] LLM call failed at turn {}: {}",
+                        name, activeTurn, e.toString());
                 break;
             }
             messages.add(MessageParam.assistant(response.getContent()));
             lastText = extractLastText(response.getContent());
 
-            if (!response.needsToolExecution()) break;
+            if (!response.needsToolExecution()) {
+                // s16: end_turn 不立即退出,进入 idle 等 inbox(对齐上游 idle loop)。
+                // 收到 shutdown_request → break;收到非协议消息 → 回到 active turn;
+                // 超时 IDLE_MAX_MS → 强制退出防永生 thread。
+                System.out.println(GRAY + "  [" + name + "] idle, waiting for inbox..." + RESET);
+                IdleResult idle = idleWaitForInbox(name, messages);
+                if (idle.shutdown || idle.timeout) {
+                    shutdownRequested = true;
+                    break outer;
+                }
+                // idle 收到非协议消息(已在 messages 里),回到 active turn 继续 LLM
+                continue;
+            }
 
-            // 4. 执行工具(含 send_message 内置 + 注册表里的工具白名单)
+            // 4. 执行工具
             List<ToolResultBlock> results = new ArrayList<>();
             for (ToolUseBlock tu : response.toolUses()) {
                 Map<String, Object> args = parseToolInput(tu);
@@ -253,6 +288,8 @@ public class Teammate {
                 String output;
                 if (SEND_MESSAGE_TOOL.equals(tu.getName())) {
                     output = handleSendMessage(name, args);
+                } else if (SUBMIT_PLAN_TOOL.equals(tu.getName())) {
+                    output = handleSubmitPlan(name, args);
                 } else if (Subagent.DEFAULT_INCLUDED_TOOLS.contains(tu.getName())) {
                     ToolResult r = registry.execute(new ToolCall(tu.getName(), args));
                     output = r.getOutput();
@@ -272,7 +309,143 @@ public class Teammate {
         System.out.println(PURPLE + "[Teammate " + name + " done, summary sent to lead]" + RESET);
     }
 
-    /** 工具白名单 = Subagent 现有 + send_message。 */
+    /**
+     * 消费一次 inbox,先按 type 分发协议消息,再把非协议的揉成一条 user message 加到 messages。
+     *
+     * <p>对应上游 {@code handle_inbox_message}:
+     * <ul>
+     *   <li>{@code shutdown_request} → 自动回 {@code shutdown_response approve=true},
+     *       返回 shutdown=true 告诉调用方退出 loop</li>
+     *   <li>{@code plan_approval_response} → 把 "[Plan approved/rejected: feedback]" 注入 messages</li>
+     *   <li>其他类型(普通 message / result / 未知)→ 收集为 non-protocol</li>
+     * </ul>
+     *
+     * <p>非协议消息作为单条 {@code <inbox>...</inbox>} user message 追加到 messages,
+     * 让 LLM 下一轮看到。
+     */
+    private DispatchResult consumeInboxAndDispatch(String name, List<MessageParam> messages) {
+        List<Message> inbox = bus.readInbox(name);
+        if (inbox.isEmpty()) return new DispatchResult(false);
+
+        boolean shutdown = false;
+        List<Message> nonProtocol = new ArrayList<>();
+        for (Message msg : inbox) {
+            if (dispatchProtocolMessage(name, msg, messages)) {
+                shutdown = true;
+                // 不 break;后续协议消息仍要处理(虽然之后 loop 会退出,
+                // 但万一同 batch 里有 plan_approval_response 也想 inject)
+                continue;
+            }
+            // 非协议
+            String type = msg.getType();
+            if (!"shutdown_request".equals(type) && !"plan_approval_response".equals(type)) {
+                nonProtocol.add(msg);
+            }
+        }
+
+        if (!nonProtocol.isEmpty()) {
+            messages.add(MessageParam.user(formatInboxAsUserText(nonProtocol)));
+            System.out.println(GRAY + "  [" + name + "] inbox " + nonProtocol.size()
+                    + " non-protocol msg(s)" + RESET);
+        }
+        return new DispatchResult(shutdown);
+    }
+
+    /**
+     * 按消息 type 分发协议消息。
+     *
+     * @return true 表示这是 shutdown_request,调用方应停止 loop
+     */
+    private boolean dispatchProtocolMessage(String name, Message msg, List<MessageParam> messages) {
+        String type = msg.getType();
+        Map<String, Object> meta = msg.getMetadata() != null ? msg.getMetadata() : Map.of();
+        String reqId = String.valueOf(meta.getOrDefault("request_id", ""));
+
+        if ("shutdown_request".equals(type)) {
+            // 直接回 shutdown_response approve=true 然后退出
+            Map<String, Object> respMeta = new LinkedHashMap<>();
+            respMeta.put("request_id", reqId);
+            respMeta.put("approve", Boolean.TRUE);
+            bus.send(name, "lead", "Shutting down gracefully.",
+                    "shutdown_response", respMeta);
+            System.out.println(PURPLE + "  [protocol] " + name + " approved shutdown ("
+                    + reqId + ")" + RESET);
+            return true;
+        }
+
+        if ("plan_approval_response".equals(type)) {
+            Object approveObj = meta.get("approve");
+            boolean approved = approveObj instanceof Boolean b && b;
+            String injection;
+            if (approved) {
+                injection = "[Plan approved] (" + reqId + ") Proceed with the task.";
+            } else {
+                injection = "[Plan rejected] (" + reqId + ") Feedback: " + msg.getContent();
+            }
+            messages.add(MessageParam.user(injection));
+            System.out.println((approved ? "\033[32m" : "\033[31m") + "  [protocol] " + name
+                    + " plan " + (approved ? "approved" : "rejected") + " (" + reqId + ")" + RESET);
+            return false;
+        }
+
+        return false;
+    }
+
+    /**
+     * idle 状态下轮询 inbox,直到收到 shutdown_request、有非协议消息可继续工作、或超时。
+     *
+     * @return idle 结束的原因(shutdown / timeout / 有新消息可继续)
+     */
+    private IdleResult idleWaitForInbox(String name, List<MessageParam> messages) {
+        long deadline = System.currentTimeMillis() + IDLE_MAX_MS;
+        while (System.currentTimeMillis() < deadline) {
+            try {
+                Thread.sleep(IDLE_TICK_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return new IdleResult(true, false);   // 视为 shutdown
+            }
+
+            int prevSize = messages.size();
+            DispatchResult d = consumeInboxAndDispatch(name, messages);
+            if (d.shutdown) return new IdleResult(true, false);
+            // messages 长度增加 = 收到了非协议消息或 plan_approval_response 注入
+            if (messages.size() > prevSize) {
+                return new IdleResult(false, false);  // 回到 active turn
+            }
+        }
+        // 超时
+        log.info("[Teammate {}] idle timeout {} ms, exiting", name, IDLE_MAX_MS);
+        return new IdleResult(false, true);
+    }
+
+    /**
+     * Teammate 调 submit_plan 工具 —— 提交计划给 lead 审批。
+     *
+     * <p>注意:跟上游一致,这里**没做执行 gate** —— 队友提交完 plan 后 LLM 仍能调
+     * bash/write_file。真正阻塞要等 LLM 自己看到 [Plan approved] 注入才该动手。
+     * 后期优化清单已记录"加 plan_approval 执行 gate"。
+     */
+    private String handleSubmitPlan(String fromName, Map<String, Object> args) {
+        Object plan = args.get("plan");
+        if (plan == null || plan.toString().isBlank()) {
+            return "Error: 'plan' is required";
+        }
+        String planText = plan.toString();
+        String reqId = protocols.register(
+                ProtocolState.TYPE_PLAN_APPROVAL, fromName, "lead", planText);
+
+        Map<String, Object> meta = new LinkedHashMap<>();
+        meta.put("request_id", reqId);
+        bus.send(fromName, "lead", planText, "plan_approval_request", meta);
+        return "Plan submitted (" + reqId + "). Waiting for approval...";
+    }
+
+    /** dispatch / idle 状态机的简单返回类型。 */
+    private record DispatchResult(boolean shutdown) {}
+    private record IdleResult(boolean shutdown, boolean timeout) {}
+
+    /** 工具白名单 = Subagent 现有 + send_message + submit_plan(s16)。 */
     private List<ToolDef> buildTeammateTools() {
         List<ToolDef> out = new ArrayList<>();
         for (ToolDefinition def : registry.getAllTools()) {
@@ -290,6 +463,17 @@ public class Teammate {
         out.add(new ToolDef(SEND_MESSAGE_TOOL,
                 "Send a message to another agent (lead or teammate) via the MessageBus.",
                 InputSchema.object(sendSchema, "to", "content")));
+
+        // s16: 加 submit_plan 内置工具
+        Map<String, Object> planSchema = Map.of(
+                "plan", Map.of("type", "string",
+                        "description",
+                        "Plan text to submit to lead for approval. " +
+                                "Wait for [Plan approved] / [Plan rejected] response before acting.")
+        );
+        out.add(new ToolDef(SUBMIT_PLAN_TOOL,
+                "Submit a plan to lead for approval. Waits for response before continuing risky work.",
+                InputSchema.object(planSchema, "plan")));
         return out;
     }
 

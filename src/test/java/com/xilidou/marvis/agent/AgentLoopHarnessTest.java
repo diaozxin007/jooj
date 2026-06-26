@@ -4,6 +4,8 @@ import com.xilidou.marvis.MarvisTestConfig;
 import com.xilidou.marvis.cron.CronJob;
 import com.xilidou.marvis.cron.CronService;
 import com.xilidou.marvis.team.MessageBus;
+import com.xilidou.marvis.team.ProtocolRegistry;
+import com.xilidou.marvis.team.ProtocolState;
 import com.xilidou.marvis.tool.ToolCall;
 import com.xilidou.marvis.tool.ToolRegistry;
 import com.xilidou.marvis.tool.ToolDefinition;
@@ -61,6 +63,7 @@ class AgentLoopHarnessTest {
     @Autowired HookManager hookManager;
     @Autowired CronService cronService;
     @Autowired MessageBus messageBus;
+    @Autowired ProtocolRegistry protocolRegistry;
 
     @BeforeEach
     void setUp() {
@@ -642,6 +645,92 @@ class AgentLoopHarnessTest {
         // (memoryService 的 turn-end LLM 调用不影响 history)
         assertEquals(before + 2, after,
                 "空 inbox 时 history 只应增加 user query + assistant 回复 2 条");
+    }
+
+    // ────────────────────────────────────────────────────────────
+    //  s16 Team Protocols — drainLeadInbox 路由协议响应
+    // ────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("s16: drainLeadInbox 路由 shutdown_response 到 ProtocolRegistry,**不**注入 history")
+    void team_drain_routes_shutdown_response() {
+        mock.reset(req -> ResponseFixtures.endTurn("ok"));
+        protocolRegistry.clear();
+
+        // 模拟:lead 之前 register 一条 shutdown 请求
+        String reqId = protocolRegistry.register(
+                ProtocolState.TYPE_SHUTDOWN, "lead", "alice", "");
+        // alice 回复 shutdown_response 到 lead inbox
+        messageBus.send("alice", "lead", "Shutting down.", "shutdown_response",
+                java.util.Map.of("request_id", reqId, "approve", true));
+
+        int historyBefore = harness.getHistory().size();
+        harness.processOneQuery("hi");
+        int historyAfter = harness.getHistory().size();
+
+        // 协议响应应被 ProtocolRegistry 处理:status → approved
+        assertEquals(ProtocolState.APPROVED,
+                protocolRegistry.get(reqId).getStatus());
+
+        // history 不应包含 shutdown_response 文本(只有 user query + assistant)
+        assertEquals(historyBefore + 2, historyAfter,
+                "协议响应不应被作为 [Inbox] 注入 history,只有 user query + assistant");
+
+        // lead inbox 应被 drain 干净
+        assertEquals(0, messageBus.peekSize("lead"));
+    }
+
+    @Test
+    @DisplayName("s16: drainLeadInbox 路由协议 + 注入非协议(混合):registry 状态变 + history 含非协议")
+    void team_drain_routes_protocol_and_injects_others() {
+        mock.reset(req -> ResponseFixtures.endTurn("ok"));
+        protocolRegistry.clear();
+
+        String reqId = protocolRegistry.register(
+                ProtocolState.TYPE_SHUTDOWN, "lead", "alice", "");
+        // alice 回了 shutdown_response,bob 回了普通 result
+        messageBus.send("alice", "lead", "Shutting down.", "shutdown_response",
+                java.util.Map.of("request_id", reqId, "approve", true));
+        messageBus.send("bob", "lead", "Schema done", "result");
+
+        harness.processOneQuery("hi");
+
+        // registry 状态变 approved
+        assertEquals(ProtocolState.APPROVED,
+                protocolRegistry.get(reqId).getStatus());
+
+        // history 应有 [Inbox] 注入,但只含 bob 的消息(alice 的协议响应被路由走)
+        boolean hasBob = harness.getHistory().stream()
+                .filter(m -> "user".equals(m.getRole()))
+                .anyMatch(m -> m.getContent() instanceof String s
+                        && s.contains("[Inbox]") && s.contains("bob")
+                        && s.contains("Schema done"));
+        boolean hasAlice = harness.getHistory().stream()
+                .filter(m -> "user".equals(m.getRole()))
+                .anyMatch(m -> m.getContent() instanceof String s
+                        && s.contains("[Inbox]") && s.contains("Shutting down"));
+        assertTrue(hasBob, "bob 的非协议 result 应注入 history");
+        assertFalse(hasAlice, "alice 的 shutdown_response 不应出现在 history");
+    }
+
+    @Test
+    @DisplayName("s16: drainLeadInbox 类型不匹配的响应被 ProtocolRegistry 拒绝(状态保持 pending)")
+    void team_drain_type_mismatch_protected() {
+        mock.reset(req -> ResponseFixtures.endTurn("ok"));
+        protocolRegistry.clear();
+
+        // 注册 shutdown 请求,但收到 plan_approval_response(类型错配)
+        String reqId = protocolRegistry.register(
+                ProtocolState.TYPE_SHUTDOWN, "lead", "alice", "");
+        messageBus.send("alice", "lead", "I approve plan", "plan_approval_response",
+                java.util.Map.of("request_id", reqId, "approve", true));
+
+        harness.processOneQuery("hi");
+
+        // 状态应保持 pending(类型不匹配,registry 拒绝)
+        assertEquals(ProtocolState.PENDING,
+                protocolRegistry.get(reqId).getStatus(),
+                "shutdown 请求收到 plan_approval_response 应被拒绝(防误处理)");
     }
 
     // ────────────────────────────────────────────────────────────

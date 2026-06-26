@@ -7,7 +7,7 @@
 
 ## ✨ 当前状态
 
-✅ **s01 ~ s15 全部完成**:Agent Loop / Tool Use / Permission / Hooks / Todo / Subagent / Skill Loading / Compact / Memory / System Prompt / Error Recovery / Task System / Background Tasks / Cron Scheduler / Agent Teams。下一步 Week 9 续 — Team Protocols(s16) + Autonomous Agents(s17) + Worktree Isolation(s18)。
+✅ **s01 ~ s16 全部完成**:Agent Loop / Tool Use / Permission / Hooks / Todo / Subagent / Skill Loading / Compact / Memory / System Prompt / Error Recovery / Task System / Background Tasks / Cron Scheduler / Agent Teams / Team Protocols。下一步 Week 9 续 — Autonomous Agents(s17) + Worktree Isolation(s18)。
 
 ✅ **s01 历史**:Agent Loop(一个 loop + 一个 bash 工具,能完成多轮 self-correction)。
 
@@ -209,7 +209,7 @@ java -cp "$CP" com.xilidou.marvis.harness.http.HttpClientSmokeTest
 | s13 Background Tasks | ✅ 完成 | `agent/BackgroundTaskManager.java` |
 | s14 Cron Scheduler | ✅ 完成 | `cron/CronService.java` + `tool/impl/CronTool.java` |
 | s15 Agent Teams | ✅ 完成 | `team/MessageBus.java` + `subagent/Teammate.java` + `tool/impl/TeamTool.java` |
-| s16 Team Protocols | ⏳ Week 9 | - |
+| s16 Team Protocols | ✅ 完成 | `team/ProtocolRegistry.java` + `tool/impl/TeamTool.java` |
 | s17 Autonomous Agents | ⏳ Week 9 | - |
 | s18 Worktree Isolation | ⏳ Week 9 | - |
 | s19 MCP Plugin | 🚧 未开始(R1 删除占位 McpAdapter)| - |

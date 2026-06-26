@@ -7,6 +7,7 @@ import com.xilidou.marvis.cron.CronJob;
 import com.xilidou.marvis.cron.CronService;
 import com.xilidou.marvis.team.Message;
 import com.xilidou.marvis.team.MessageBus;
+import com.xilidou.marvis.team.ProtocolRegistry;
 import com.xilidou.marvis.tool.ToolRegistry;
 import com.xilidou.marvis.tool.ToolCall;
 import com.xilidou.marvis.compact.CompactPipeline;
@@ -148,6 +149,14 @@ public class AgentLoopHarness {
     private final MessageBus messageBus;
 
     /**
+     * s16 ProtocolRegistry —— drainLeadInbox 时先路由协议响应到 registry
+     * (更新 pending → approved/rejected),再把剩下的非协议消息注入 history。
+     *
+     * <p>对应上游 {@code consume_lead_inbox(route_protocol=True)}。
+     */
+    private final ProtocolRegistry protocols;
+
+    /**
      * s14 agentLock —— REPL user-input 流程跟 {@code CronQueueProcessor} 共享同一把锁,
      * 防 cron-fired turn 跟 user-input turn 撞 messages list。
      */
@@ -178,6 +187,7 @@ public class AgentLoopHarness {
                             BackgroundTaskManager bgManager,
                             CronService cronService,
                             MessageBus messageBus,
+                            ProtocolRegistry protocols,
                             @Qualifier("agentLock") ReentrantLock agentLock,
                             MarvisProperties props) {
         this.client = client;
@@ -194,6 +204,7 @@ public class AgentLoopHarness {
         this.bgManager = bgManager;
         this.cronService = cronService;
         this.messageBus = messageBus;
+        this.protocols = protocols;
         this.agentLock = agentLock;
         this.recoveryCfg = props.getRecovery();
     }
@@ -550,19 +561,50 @@ public class AgentLoopHarness {
      * <p>history 因为这一调用可能形成 "...assistant, user(inbox)" 末尾,
      * 下次 processOneQuery 进来时 history 末尾还会再 add 一条 user(query)——
      * Anthropic 协议允许连续两条 user message。
+     *
+     * <p>s16 升级:**先把协议响应路由到 ProtocolRegistry**(更新 pending →
+     * approved/rejected),再把剩下的非协议消息注入 history。
+     * 跟上游 {@code consume_lead_inbox(route_protocol=True)} 一致 ——
+     * 防止协议响应被消费但 registry 状态没更新的 bug。
      */
     private void drainLeadInbox() {
         List<Message> inbox = messageBus.readInbox("lead");
         if (inbox.isEmpty()) return;
-        StringBuilder sb = new StringBuilder("[Inbox] ").append(inbox.size())
-                .append(" message(s) from teammates:\n");
+
+        // s16: 先路由协议响应,从 inbox 列表中摘出去
+        List<Message> nonProtocol = new ArrayList<>();
+        int routed = 0;
         for (Message m : inbox) {
+            String type = m.getType();
+            if ("shutdown_response".equals(type) || "plan_approval_response".equals(type)) {
+                Map<String, Object> meta = m.getMetadata();
+                String reqId = String.valueOf(meta.getOrDefault("request_id", ""));
+                Object approveObj = meta.get("approve");
+                boolean approve = approveObj instanceof Boolean b && b;
+                protocols.match(type, reqId, approve);
+                routed++;
+                continue;
+            }
+            nonProtocol.add(m);
+        }
+        if (routed > 0) {
+            log.info("[Team] routed {} protocol response(s) to registry", routed);
+        }
+        if (nonProtocol.isEmpty()) return;
+
+        StringBuilder sb = new StringBuilder("[Inbox] ").append(nonProtocol.size())
+                .append(" message(s) from teammates:\n");
+        for (Message m : nonProtocol) {
             sb.append("  From ").append(m.getFrom())
-                    .append(" (").append(m.getType()).append("): ")
-                    .append(m.getContent()).append('\n');
+                    .append(" (").append(m.getType());
+            // 协议请求(plan_approval_request)的 request_id 显式给 LLM 看,方便 review_plan
+            String reqId = String.valueOf(m.getMetadata().getOrDefault("request_id", ""));
+            if (!reqId.isBlank()) sb.append(" req:").append(reqId);
+            sb.append("): ").append(m.getContent()).append('\n');
         }
         history.add(MessageParam.user(sb.toString()));
-        log.info("[Team] drained {} message(s) from lead inbox into history", inbox.size());
+        log.info("[Team] drained {} non-protocol message(s) from lead inbox into history",
+                nonProtocol.size());
     }
 
     private void printLastAssistantText(List<MessageParam> history) {
