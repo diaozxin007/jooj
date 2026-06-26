@@ -14,6 +14,8 @@ import com.xilidou.marvis.http.dto.TextBlock;
 import com.xilidou.marvis.http.dto.ToolDef;
 import com.xilidou.marvis.http.dto.ToolResultBlock;
 import com.xilidou.marvis.http.dto.ToolUseBlock;
+import com.xilidou.marvis.tasks.TaskRecord;
+import com.xilidou.marvis.team.AutonomousIdle;
 import com.xilidou.marvis.team.Message;
 import com.xilidou.marvis.team.MessageBus;
 import com.xilidou.marvis.team.ProtocolRegistry;
@@ -103,10 +105,22 @@ public class Teammate {
     /** 队友"活动轮"上限 —— 真正调 LLM 的轮数。idle 等待不计入此上限。 */
     public static final int MAX_ACTIVE_TURNS = 30;
 
-    /** idle 状态下轮询 inbox 的间隔(毫秒)。跟上游 {@code time.sleep(1)} 严格一致。 */
+    /**
+     * idle 状态轮询间隔(ms)的默认值,跟上游 {@code time.sleep(1)} 一致。
+     * 实际值由 {@link MarvisProperties.Team#idlePollMs} 注入,这里保留为常量参考。
+     *
+     * @deprecated s17 后改用配置注入,见 {@link #idlePollMs}
+     */
+    @Deprecated
     public static final long IDLE_TICK_MS = 1000;
 
-    /** idle 等待最长时长(毫秒);超时强制退出,防 daemon thread 永不退出。 */
+    /**
+     * idle 等待最长时长(ms)的默认值。
+     * 实际值由 {@link MarvisProperties.Team#idleTimeoutMs} 注入。
+     *
+     * @deprecated s17 后改用配置注入,见 {@link #idleTimeoutMs}
+     */
+    @Deprecated
     public static final long IDLE_MAX_MS = 5 * 60 * 1000L;
 
     private static final int MAX_TOKENS = 8000;
@@ -125,6 +139,17 @@ public class Teammate {
     /** Teammate 的 submit_plan 工具名 —— s16 新增。 */
     public static final String SUBMIT_PLAN_TOOL = "submit_plan";
 
+    /**
+     * s17:Teammate 可用的 task 工具白名单(从 s12 TasksTool 引入)。
+     * 让队友能自己看 / 认领 / 完成 task,实现自组织。
+     *
+     * <p>不开放 {@code create_task / get_task} —— task 创建是 Lead 职责,
+     * 队友只能在已有 task 池里挑活。
+     */
+    public static final Set<String> TEAMMATE_TASK_TOOLS = Set.of(
+            "list_tasks", "claim_task", "complete_task"
+    );
+
     /** 注册表防重名;同名 spawn 第二次会被拒绝。{@code true} = 活着,移除 = 退出。 */
     private final Map<String, Boolean> activeTeammates = new ConcurrentHashMap<>();
 
@@ -136,6 +161,12 @@ public class Teammate {
     private final MessageBus bus;
     private final ProtocolRegistry protocols;
     private final ExecutorService workerExecutor;
+    /** s17:自组织 idle 阶段的 scan + auto-claim 封装。 */
+    private final AutonomousIdle autonomousIdle;
+    /** s17:idle 轮询间隔(ms),来自 marvis.team.idle-poll-ms。 */
+    private final long idlePollMs;
+    /** s17:idle 总超时(ms),来自 marvis.team.idle-timeout-ms。 */
+    private final long idleTimeoutMs;
 
     public Teammate(AnthropicClient client,
                     ToolRegistry registry,
@@ -144,6 +175,7 @@ public class Teammate {
                     MessageBus bus,
                     ProtocolRegistry protocols,
                     @Qualifier(MarvisExecutors.TEAMMATE_BEAN) ExecutorService workerExecutor,
+                    AutonomousIdle autonomousIdle,
                     MarvisProperties props) {
         this.client = client;
         this.model = props.getAnthropic().getModel();
@@ -153,6 +185,9 @@ public class Teammate {
         this.bus = bus;
         this.protocols = protocols;
         this.workerExecutor = workerExecutor;
+        this.autonomousIdle = autonomousIdle;
+        this.idlePollMs = props.getTeam().getIdlePollMs();
+        this.idleTimeoutMs = props.getTeam().getIdleTimeoutMs();
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -229,6 +264,7 @@ public class Teammate {
                 "Use tools to complete tasks. " +
                 "Send results to the lead via send_message(to=\"lead\", content=...). " +
                 "When asked to plan first, call submit_plan(plan=\"...\") and wait for approval. " +
+                "You can list and claim tasks from the board (list_tasks/claim_task/complete_task). " +
                 "Check inbox for protocol messages (shutdown_request, plan_approval_response). " +
                 "Be concise.";
 
@@ -238,90 +274,139 @@ public class Teammate {
         List<ToolDef> tools = buildTeammateTools();
         String lastText = "";
         boolean shutdownRequested = false;
-        int activeTurn = 0;
+        int activeTurnTotal = 0;
 
+        // s17: outer WORK ↔ IDLE 循环。WORK 跑完(LLM end_turn)进 IDLE,IDLE 期间扫看板
+        // + 等 inbox。有新活回 WORK,无活超时退出。
         outer:
-        while (!shutdownRequested && activeTurn < MAX_ACTIVE_TURNS) {
-            activeTurn++;
+        while (!shutdownRequested && activeTurnTotal < MAX_ACTIVE_TURNS) {
 
-            // 1. 每轮先收件,先 dispatch 协议消息,再把非协议的注入 messages
-            DispatchResult d = consumeInboxAndDispatch(name, messages);
-            if (d.shutdown) {
-                shutdownRequested = true;
-                break;
+            // ── 身份重注入(s17)──
+            // compact 之后 messages 可能被压缩成一段摘要,LLM 失忆"我是谁"。
+            // 简单粗暴判断:messages.size() <= 3 时 prepend identity。
+            // 后期优化清单 #11:精准检测 [Conversation summary] 标记。
+            if (messages.size() <= 3) {
+                messages.add(0, MessageParam.user(
+                        "<identity>You are '" + name + "', role: " + role +
+                                ". Continue your work.</identity>"));
             }
 
-            // 2. 截窗口防 history 爆 token
-            List<MessageParam> window = trimWindow(messages);
+            // ── WORK 阶段:内层最多 10 LLM call(防一次 work 跑太久) ──
+            int workTurn = 0;
+            boolean reachedEndTurn = false;
+            while (workTurn < 10 && activeTurnTotal < MAX_ACTIVE_TURNS) {
+                workTurn++;
+                activeTurnTotal++;
 
-            // 3. 调 LLM
-            CreateMessageRequest request = CreateMessageRequest.builder()
-                    .model(model)
-                    .system(system)
-                    .messages(window)
-                    .tools(tools)
-                    .maxTokens(MAX_TOKENS)
-                    .build();
-
-            CreateMessageResponse response;
-            try {
-                response = client.createMessage(request);
-            } catch (Exception e) {
-                log.warn("[Teammate {}] LLM call failed at turn {}: {}",
-                        name, activeTurn, e.toString());
-                break;
-            }
-            messages.add(MessageParam.assistant(response.getContent()));
-            lastText = extractLastText(response.getContent());
-
-            if (!response.needsToolExecution()) {
-                // s16: end_turn 不立即退出,进入 idle 等 inbox(对齐上游 idle loop)。
-                // 收到 shutdown_request → break;收到非协议消息 → 回到 active turn;
-                // 超时 IDLE_MAX_MS → 强制退出防永生 thread。
-                System.out.println(GRAY + "  [" + name + "] idle, waiting for inbox..." + RESET);
-                IdleResult idle = idleWaitForInbox(name, messages);
-                if (idle.shutdown || idle.timeout) {
+                // 每轮先收件 + 协议分发
+                DispatchResult d = consumeInboxAndDispatch(name, messages);
+                if (d.shutdown) {
                     shutdownRequested = true;
                     break outer;
                 }
-                // idle 收到非协议消息(已在 messages 里),回到 active turn 继续 LLM
-                continue;
-            }
 
-            // 4. 执行工具
-            List<ToolResultBlock> results = new ArrayList<>();
-            for (ToolUseBlock tu : response.toolUses()) {
-                Map<String, Object> args = parseToolInput(tu);
-                System.out.println(CYAN + "  [" + name + " · " + tu.getName() + "] " + args + RESET);
+                // 调 LLM
+                List<MessageParam> window = trimWindow(messages);
+                CreateMessageRequest request = CreateMessageRequest.builder()
+                        .model(model)
+                        .system(system)
+                        .messages(window)
+                        .tools(tools)
+                        .maxTokens(MAX_TOKENS)
+                        .build();
 
-                Optional<String> blocked = hooks.triggerPreToolUse(tu);
-                if (blocked.isPresent()) {
-                    results.add(ToolResultBlock.ofText(tu.getId(), blocked.get()));
-                    continue;
+                CreateMessageResponse response;
+                try {
+                    response = client.createMessage(request);
+                } catch (Exception e) {
+                    log.warn("[Teammate {}] LLM call failed at turn {}: {}",
+                            name, activeTurnTotal, e.toString());
+                    shutdownRequested = true;
+                    break outer;
+                }
+                messages.add(MessageParam.assistant(response.getContent()));
+                lastText = extractLastText(response.getContent());
+
+                if (!response.needsToolExecution()) {
+                    reachedEndTurn = true;
+                    break;     // out of WORK,进 IDLE
                 }
 
-                String output;
-                if (SEND_MESSAGE_TOOL.equals(tu.getName())) {
-                    output = handleSendMessage(name, args);
-                } else if (SUBMIT_PLAN_TOOL.equals(tu.getName())) {
-                    output = handleSubmitPlan(name, args);
-                } else if (Subagent.DEFAULT_INCLUDED_TOOLS.contains(tu.getName())) {
-                    ToolResult r = registry.execute(new ToolCall(tu.getName(), args));
-                    output = r.getOutput();
-                } else {
-                    output = "Error: tool '" + tu.getName() + "' not available to teammates";
-                }
-                results.add(ToolResultBlock.ofText(tu.getId(), output));
+                // 执行工具
+                executeToolsInResponse(name, response, messages);
             }
-            messages.add(MessageParam.toolResults(results));
+
+            // ── IDLE 阶段(s17 升级)──
+            // 跑完一轮 WORK 后,WORK 因 end_turn 退出 → 进 IDLE 等新活;
+            // 因 10 轮上限退出 → 也进 IDLE(让队友休息 + 看看新任务,而不是直接死);
+            // 因 MAX_ACTIVE_TURNS 已耗尽 → 退出循环(收尾汇报)
+            if (activeTurnTotal >= MAX_ACTIVE_TURNS) break;
+
+            if (reachedEndTurn) {
+                System.out.println(GRAY + "  [" + name + "] WORK done, entering IDLE..." + RESET);
+            } else {
+                System.out.println(GRAY + "  [" + name + "] WORK budget reached, entering IDLE..." + RESET);
+            }
+            IdleResult idle = idlePoll(name, messages);
+            if (idle.shutdown) {
+                shutdownRequested = true;
+                break;
+            }
+            if (idle.timeout) {
+                // 超时 = 没新活,退出
+                System.out.println(GRAY + "  [" + name + "] IDLE timeout, exiting" + RESET);
+                break;
+            }
+            // idle 找到活了(inbox 或 claim 到 task),回到 outer while 继续 WORK
         }
 
-        // 5. 收尾:把 last assistant text 发给 lead 当 result
+        // 收尾:把 last assistant text 发给 lead 当 result
         if (lastText == null || lastText.isBlank()) {
             lastText = "(teammate " + name + " finished without producing text)";
         }
         bus.send(name, "lead", lastText, "result");
         System.out.println(PURPLE + "[Teammate " + name + " done, summary sent to lead]" + RESET);
+    }
+
+    /**
+     * 抽出 WORK 阶段的工具执行块,让 runLoop 主流程更清楚。
+     */
+    private void executeToolsInResponse(String name, CreateMessageResponse response,
+                                         List<MessageParam> messages) {
+        List<ToolResultBlock> results = new ArrayList<>();
+        for (ToolUseBlock tu : response.toolUses()) {
+            Map<String, Object> args = parseToolInput(tu);
+            System.out.println(CYAN + "  [" + name + " · " + tu.getName() + "] " + args + RESET);
+
+            Optional<String> blocked = hooks.triggerPreToolUse(tu);
+            if (blocked.isPresent()) {
+                results.add(ToolResultBlock.ofText(tu.getId(), blocked.get()));
+                continue;
+            }
+
+            String output;
+            if (SEND_MESSAGE_TOOL.equals(tu.getName())) {
+                output = handleSendMessage(name, args);
+            } else if (SUBMIT_PLAN_TOOL.equals(tu.getName())) {
+                output = handleSubmitPlan(name, args);
+            } else if (TEAMMATE_TASK_TOOLS.contains(tu.getName())) {
+                // s17: list_tasks / claim_task / complete_task —— 走 ToolRegistry,
+                // 但传入 owner=name 让 claim_task 用队友身份认领
+                Map<String, Object> withOwner = new HashMap<>(args);
+                if ("claim_task".equals(tu.getName())) {
+                    withOwner.put("owner", name);
+                }
+                ToolResult r = registry.execute(new ToolCall(tu.getName(), withOwner));
+                output = r.getOutput();
+            } else if (Subagent.DEFAULT_INCLUDED_TOOLS.contains(tu.getName())) {
+                ToolResult r = registry.execute(new ToolCall(tu.getName(), args));
+                output = r.getOutput();
+            } else {
+                output = "Error: tool '" + tu.getName() + "' not available to teammates";
+            }
+            results.add(ToolResultBlock.ofText(tu.getId(), output));
+        }
+        messages.add(MessageParam.toolResults(results));
     }
 
     /**
@@ -407,30 +492,55 @@ public class Teammate {
     }
 
     /**
-     * idle 状态下轮询 inbox,直到收到 shutdown_request、有非协议消息可继续工作、或超时。
+     * s17 idle poll —— 替代 s16 的 idleWaitForInbox。
      *
-     * @return idle 结束的原因(shutdown / timeout / 有新消息可继续)
+     * <p>每 {@link #idlePollMs} 毫秒做一次:
+     * <ol>
+     *   <li>消费 inbox 并 dispatch 协议消息(shutdown 直接退出)</li>
+     *   <li>inbox 有非协议消息 → 注入 messages,返回 shutdown=false / timeout=false 让 outer 进入下一轮 WORK</li>
+     *   <li>inbox 空 → {@link AutonomousIdle#tryClaim} 主动看板找任务</li>
+     *   <li>claim 到任务 → 注入 [auto-claimed Task X: ...] user message,返回继续 WORK</li>
+     *   <li>都没有 → sleep 下一轮</li>
+     * </ol>
+     *
+     * <p>累计超过 {@link #idleTimeoutMs} 没有任何活就 timeout 退出。
      */
-    private IdleResult idleWaitForInbox(String name, List<MessageParam> messages) {
-        long deadline = System.currentTimeMillis() + IDLE_MAX_MS;
+    private IdleResult idlePoll(String name, List<MessageParam> messages) {
+        long deadline = System.currentTimeMillis() + idleTimeoutMs;
         while (System.currentTimeMillis() < deadline) {
             try {
-                Thread.sleep(IDLE_TICK_MS);
+                Thread.sleep(idlePollMs);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return new IdleResult(true, false);   // 视为 shutdown
             }
 
             int prevSize = messages.size();
+
+            // 1. 收件 + 协议分发(优先于扫看板)
             DispatchResult d = consumeInboxAndDispatch(name, messages);
             if (d.shutdown) return new IdleResult(true, false);
-            // messages 长度增加 = 收到了非协议消息或 plan_approval_response 注入
             if (messages.size() > prevSize) {
-                return new IdleResult(false, false);  // 回到 active turn
+                // inbox 来了 messages 增长 → 有活了,回 WORK
+                return new IdleResult(false, false);
+            }
+
+            // 2. inbox 空 → 主动扫看板找活(s17 核心)
+            Optional<TaskRecord> claimed = autonomousIdle.tryClaim(name);
+            if (claimed.isPresent()) {
+                TaskRecord t = claimed.get();
+                String injection = "[auto-claimed] Task " + t.getId() + ": " +
+                        t.getSubject() +
+                        (t.getDescription() != null && !t.getDescription().isBlank()
+                                ? "\n" + t.getDescription() : "");
+                messages.add(MessageParam.user(injection));
+                System.out.println("\033[32m  [idle] " + name + " auto-claimed: "
+                        + t.getSubject() + RESET);
+                return new IdleResult(false, false);
             }
         }
         // 超时
-        log.info("[Teammate {}] idle timeout {} ms, exiting", name, IDLE_MAX_MS);
+        log.info("[Teammate {}] idle timeout {} ms, exiting", name, idleTimeoutMs);
         return new IdleResult(false, true);
     }
 
@@ -460,11 +570,17 @@ public class Teammate {
     private record DispatchResult(boolean shutdown) {}
     private record IdleResult(boolean shutdown, boolean timeout) {}
 
-    /** 工具白名单 = Subagent 现有 + send_message + submit_plan(s16)。 */
+    /** 工具白名单 = Subagent 现有 + send_message + submit_plan(s16) + task 三件套(s17)。 */
     private List<ToolDef> buildTeammateTools() {
         List<ToolDef> out = new ArrayList<>();
         for (ToolDefinition def : registry.getAllTools()) {
+            // s06 文件 / bash 系
             if (Subagent.DEFAULT_INCLUDED_TOOLS.contains(def.getName())) {
+                out.add(new ToolDef(def.getName(), def.getDescription(), def.getInputSchema()));
+                continue;
+            }
+            // s17:开放 list_tasks / claim_task / complete_task 给队友自组织
+            if (TEAMMATE_TASK_TOOLS.contains(def.getName())) {
                 out.add(new ToolDef(def.getName(), def.getDescription(), def.getInputSchema()));
             }
         }

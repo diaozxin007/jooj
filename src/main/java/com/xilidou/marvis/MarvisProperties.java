@@ -262,11 +262,24 @@ public class MarvisProperties {
      *
      * <p>跟上游 s15 {@code MAILBOX_DIR = WORKDIR / ".mailboxes"} 一致,
      * 每个 agent 一个 {@code <name>.jsonl} 文件。
+     *
+     * <p>s17 加 idle 配置:Teammate 进入 IDLE 阶段后每 {@code idlePollMs} 毫秒
+     * 轮询一次(看 inbox + scan TaskBoard),累计超过 {@code idleTimeoutMs} 无活就退出。
      */
     @Data
     public static class Team {
         /** mailbox 目录(相对 cwd 或绝对路径)。默认 {@code .mailboxes}。 */
         private String mailboxDir = ".mailboxes";
+        /**
+         * IDLE 阶段轮询间隔(毫秒)。默认 5000(对齐上游 s17 IDLE_POLL_INTERVAL=5)。
+         * 测试 profile 可调小到 50ms 让测试跑得快。
+         */
+        private long idlePollMs = 5000;
+        /**
+         * IDLE 阶段总超时(毫秒)—— 累计这么久没活就退出 teammate。
+         * 默认 60000(对齐上游 s17 IDLE_TIMEOUT=60)。测试可调小到 200ms。
+         */
+        private long idleTimeoutMs = 60_000;
     }
 
     /**

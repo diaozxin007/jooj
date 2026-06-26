@@ -44,8 +44,11 @@ marvis:
     durable-path: .scheduled_tasks.json
 
   # s15 Team / MessageBus 配置:文件邮箱目录,每个 agent 一个 <name>.jsonl 文件。
+  # s17 加 idle 配置:autonomous teammate IDLE 阶段轮询间隔 + 超时退出。
   team:
     mailbox-dir: .mailboxes
+    idle-poll-ms: 5000
+    idle-timeout-ms: 60000
 
   # 并发 / 线程池配置(线程重构):
   #   scheduler-pool-size — @Scheduled 长期任务池容量(cron scheduler/processor 各占 1)
