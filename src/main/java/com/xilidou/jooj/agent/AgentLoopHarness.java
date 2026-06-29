@@ -13,6 +13,7 @@ import com.xilidou.jooj.team.MessageBus;
 import com.xilidou.jooj.team.ProtocolRegistry;
 import com.xilidou.jooj.tool.ToolRegistry;
 import com.xilidou.jooj.tool.ToolCall;
+import com.xilidou.jooj.tool.ExecutionContext;
 import com.xilidou.jooj.compact.CompactPipeline;
 import com.xilidou.jooj.tool.ToolDefinition;
 import com.xilidou.jooj.tool.ToolResult;
@@ -100,8 +101,16 @@ public class AgentLoopHarness {
 
     private static final int MAX_TOKENS = 8000;
 
-    /** Nag 阈值:连续多少轮 LLM 调用没有 todo_write,就注入 reminder。 */
-    private static final int NAG_THRESHOLD = 3;
+    /**
+     * Nag 阈值:连续多少轮 LLM 调用没有 todo_write,就注入 reminder。
+     *
+     * <p>从 3 提到 10 —— 实战发现 3 轮太激进,LLM 会为了消炎抢先把 todo
+     * 全标 completed,造成"幻觉完成"(标 completed 但根本没调实际工具)。
+     * 见 s20 Demo 7 案例。
+     *
+     * <p>package-private 方便测试动态读。
+     */
+    static final int NAG_THRESHOLD = 10;
 
     /** todo 工具名(注入 reminder 时识别用)。 */
     private static final String TODO_TOOL_NAME = "todo_write";
@@ -223,13 +232,23 @@ public class AgentLoopHarness {
      */
     @PostConstruct
     void init() {
-        // 全局副作用(todoStore)— 切到任何 session 都重置一次
-        onNewSession(sid -> todoStore.clear());
+        // s20 Demo 12: todoStore 已 per-session 化。新 session 触发只清自己分区,不影响别的 session。
+        onNewSession(sid -> todoStore.clear(sid));
     }
 
     // ── 核心 Agent Loop ─────────────────────────────────────────
 
     public void agentLoop(List<MessageParam> messages) {
+        agentLoop(messages, null);
+    }
+
+    /**
+     * s20 Demo 9 重载:把 sessionId 一路线传到 {@link #executeOneTool},再到工具的
+     * {@code execute(call, ctx)},让 CronTool 这种"工具侧记 session"场景能拿到当前 session。
+     *
+     * @param sessionId 当前 session id;null = 不知道(老调用方/兼容路径)
+     */
+    public void agentLoop(List<MessageParam> messages, String sessionId) {
         List<ToolDef> tools = buildTools();
         int roundsSinceTodo = 0;
 
@@ -244,9 +263,18 @@ public class AgentLoopHarness {
         var recoveryState = new RecoveryState(model, recoveryCfg.getDefaultMaxTokens());
 
         while (true) {
-            if (roundsSinceTodo >= NAG_THRESHOLD && !messages.isEmpty()) {
+            // Nag 守卫(s20 Demo 7 修复):
+            // 1) 阈值轮数没到 → skip
+            // 2) messages 为空 → skip(没有上文可挂)
+            // 3) 没有任何 in_progress todo → skip(没事可催)。这是关键守卫——
+            //    旧逻辑无脑 nag,LLM 为了消炎抢先把 todo 全标 completed 造成幻觉完成。
+            //    只在有真正"挂着的活"时才催,反向激励 LLM 干完才标 completed。
+            boolean hasOpenWork = todoStore.countByStatus(sessionId, com.xilidou.jooj.todo.TodoStatus.IN_PROGRESS) > 0
+                    || todoStore.countByStatus(sessionId, com.xilidou.jooj.todo.TodoStatus.PENDING) > 0;
+            if (roundsSinceTodo >= NAG_THRESHOLD && !messages.isEmpty() && hasOpenWork) {
                 String nagText = "<reminder>You haven't updated your todos for " + NAG_THRESHOLD +
-                        " rounds. Use todo_write to update task statuses.</reminder>";
+                        " rounds. Use todo_write to update task statuses — but ONLY mark completed " +
+                        "after the actual tool call(s) for that task have run.</reminder>";
                 appendNagToLastUserMessage(messages, nagText);
                 log.info("[Loop] nag reminder injected after {} rounds without todo_write", roundsSinceTodo);
                 roundsSinceTodo = 0;
@@ -254,6 +282,7 @@ public class AgentLoopHarness {
 
             compactPipeline.apply(messages);
 
+            // memory catalog 全局共享(Demo 13 撤销 per-session 化 —— 见 MemoryService 类注释)
             var system = promptAssembler.assembleBlocks(promptAssembler.currentContext());
 
             RecoveryResult recoveryResult = recoveryCoordinator.call(
@@ -315,8 +344,12 @@ public class AgentLoopHarness {
                 if (BackgroundTaskManager.shouldRunBackground(toolUse.getName(), args)) {
                     Object cmd = args.get("command");
                     String command = cmd != null ? cmd.toString() : "(no command)";
-                    String bgId = bgManager.start(toolUse.getId(), command,
-                            () -> registry.execute(new ToolCall(toolUse.getName(), args)));
+                    final String sid = sessionId;
+                    // s20 Demo 12: bg 任务也带 sessionId,完成通知只回到本 session,
+                    // 不串味给其他 session 那一轮 history。
+                    String bgId = bgManager.start(sid, toolUse.getId(), command,
+                            () -> registry.execute(new ToolCall(toolUse.getName(), args),
+                                    sid != null ? ExecutionContext.leadInSession(sid) : ExecutionContext.lead()));
                     String placeholder = "[Background task " + bgId + " started] " +
                             "Result will be available when complete.";
                     System.out.println("\033[35m" + placeholder + "\033[0m");
@@ -324,7 +357,7 @@ public class AgentLoopHarness {
                     continue;
                 }
 
-                ToolResultBlock result = executeOneTool(toolUse, args);
+                ToolResultBlock result = executeOneTool(toolUse, args, sessionId);
                 hooks.triggerPostToolUse(toolUse, result.getContent().toString());
 
                 if (TODO_TOOL_NAME.equals(toolUse.getName())) {
@@ -334,9 +367,11 @@ public class AgentLoopHarness {
                 toolResults.add(result);
             }
 
-            List<TextBlock> notifications = bgManager.drainNotifications();
+            // s20 Demo 12: drain 仅 drain 当前 session 启动的 bg(其他 session 的留着等他们自己 drain)。
+            List<TextBlock> notifications = bgManager.drainNotifications(sessionId);
             if (!notifications.isEmpty()) {
-                log.info("[BG] injected {} task_notification(s) into next turn", notifications.size());
+                log.info("[BG] session={} injected {} task_notification(s) into next turn",
+                        sessionId, notifications.size());
             }
             messages.add(MessageParam.toolResultsWithNotifications(toolResults, notifications));
         }
@@ -422,13 +457,14 @@ public class AgentLoopHarness {
         }
         List<MessageParam> history = sessionService.loadHistory(sessionId);
         String enriched = query;
+        // Memory 全局共享(Demo 13:1-user 假设下 user 长期事实跨会话可见)
         String injection = memoryService.loadRelevant(history);
         if (injection != null && !injection.isBlank()) {
             enriched = injection + "\n\n" + query;
             log.info("[Memory] injected {} chars of relevant memories", injection.length());
         }
         history.add(MessageParam.user(enriched));
-        agentLoop(history);
+        agentLoop(history, sessionId);
 
         memoryService.onTurnEnd(history);
 
@@ -445,17 +481,47 @@ public class AgentLoopHarness {
      * <p>cron 触发的 LLM run 路由到 {@link Session#CRON_DEFAULT_ID} session,
      * 跟用户交互 session 完全隔离 —— 这是引入 session 抽象后的核心好处。
      */
+    /**
+     * 处理一批已 fired 的 cron job。
+     *
+     * <h3>s20 Demo 9 改动</h3>
+     *
+     * <p>旧版把所有 fired job 一律塞 {@link Session#CRON_DEFAULT_ID} 这个收容 session,
+     * 用户在 web 前端的特定 session 里调度的 cron 触发后,通知永远到不了那个 session,
+     * 前端轮询的 history 看不见。
+     *
+     * <p>现在按 {@code job.sessionId} 分组路由:有 sessionId → 注入对应 session;
+     * sessionId == null(老 cron / cli REPL 调度) → 兜底 cron-default。每个 session
+     * 一次 agentLoop。
+     */
     public void processCronTriggers(List<CronJob> firedJobs) {
         if (firedJobs == null || firedJobs.isEmpty()) return;
-        String sessionId = Session.CRON_DEFAULT_ID;
-        List<MessageParam> history = sessionService.loadHistory(sessionId);
+
+        // 按 sessionId 分组(null → cron-default)
+        Map<String, List<CronJob>> bySession = new java.util.LinkedHashMap<>();
         for (CronJob job : firedJobs) {
-            history.add(MessageParam.user("[Scheduled] " + job.getPrompt()));
-            log.info("[Cron] injected fired job {} prompt into history", job.getId());
+            String sid = job.getSessionId() != null ? job.getSessionId() : Session.CRON_DEFAULT_ID;
+            // 不存在的 session(可能用户已删) → 退回 cron-default 兜底,通知不丢
+            if (!sessionService.exists(sid)) {
+                log.warn("[Cron] job {} target session {} no longer exists, " +
+                        "falling back to cron-default", job.getId(), sid);
+                sid = Session.CRON_DEFAULT_ID;
+            }
+            bySession.computeIfAbsent(sid, k -> new java.util.ArrayList<>()).add(job);
         }
-        agentLoop(history);
-        memoryService.onTurnEnd(history);
-        sessionService.saveHistory(sessionId, history);
+
+        for (Map.Entry<String, List<CronJob>> entry : bySession.entrySet()) {
+            String sessionId = entry.getKey();
+            List<MessageParam> history = sessionService.loadHistory(sessionId);
+            for (CronJob job : entry.getValue()) {
+                history.add(MessageParam.user("[Scheduled] " + job.getPrompt()));
+                log.info("[Cron] injected fired job {} prompt into session {}",
+                        job.getId(), sessionId);
+            }
+            agentLoop(history, sessionId);
+            memoryService.onTurnEnd(history);
+            sessionService.saveHistory(sessionId, history);
+        }
     }
 
     private void printToolHeader(ToolUseBlock toolUse, Map<String, Object> args) {
@@ -464,8 +530,11 @@ public class AgentLoopHarness {
         System.out.println("\033[33m$ " + display + "\033[0m");
     }
 
-    private ToolResultBlock executeOneTool(ToolUseBlock toolUse, Map<String, Object> args) {
-        ToolResult result = registry.execute(new ToolCall(toolUse.getName(), args));
+    private ToolResultBlock executeOneTool(ToolUseBlock toolUse, Map<String, Object> args, String sessionId) {
+        ExecutionContext ctx = sessionId != null
+                ? ExecutionContext.leadInSession(sessionId)
+                : ExecutionContext.lead();
+        ToolResult result = registry.execute(new ToolCall(toolUse.getName(), args), ctx);
         String output = result.getOutput();
 
         System.out.println(output.length() > CONSOLE_PREVIEW_LIMIT
@@ -488,9 +557,23 @@ public class AgentLoopHarness {
 
     // ── 交互式 REPL ──────────────────────────────────────────────
 
+    /**
+     * 老签名:不带 slash 命令支持的 REPL。保留给老调用方 / 测试。
+     * 新 CLI 走 {@link #repl(com.xilidou.jooj.slashcmd.SlashCommandRegistry)}。
+     */
     public void repl() {
+        repl(null);
+    }
+
+    /**
+     * 带 slash 命令路由的 REPL。
+     *
+     * <p>{@code slashCommands == null} 时退化成老行为(query 全走 LLM)。
+     * 注入了 registry 时:query 以 / 开头 → 走 registry.dispatch,**不进 LLM、不进 history**。
+     */
+    public void repl(com.xilidou.jooj.slashcmd.SlashCommandRegistry slashCommands) {
         System.out.println("s01: Agent Loop (Java)");
-        System.out.println("输入问题,回车发送。输入 q 退出。\n");
+        System.out.println("输入问题,回车发送。/help 查看命令,q 退出。\n");
 
         // CLI REPL 走固定 cli-default session,跨进程重启历史保留。
         final String sessionId = Session.CLI_DEFAULT_ID;
@@ -505,6 +588,14 @@ public class AgentLoopHarness {
                 if (query.equalsIgnoreCase("q")
                         || query.equalsIgnoreCase("exit")
                         || query.isEmpty()) break;
+
+                // Slash 命令 —— 走 registry,跳过 hooks / lock / processOneQuery。
+                // 这些都是纯客户端动作,不进 LLM、不算并发请求。
+                if (slashCommands != null && slashCommands.isCommand(query)) {
+                    System.out.println(slashCommands.dispatch(query, sessionId));
+                    System.out.println();
+                    continue;
+                }
 
                 Optional<String> blocked = hooks.triggerUserPrompt(query);
                 if (blocked.isPresent()) {

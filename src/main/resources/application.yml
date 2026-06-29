@@ -120,3 +120,13 @@ jooj:
     escalated-max-tokens: 64000
     max-recovery-retries: 3
     continuation-prompt: "Your previous response was cut off. Continue from where you left off."
+
+  # s21 Demo 10/11/14: 微信渠道集成。默认 disabled,启用后 sidebar Channels panel 出现入口。
+  # token 不在这里配 —— 第一次扫码登录拿到后由 SDK 自管,落 ~/.openclaw/(可用 OPENCLAW_STATE_DIR 改路径)。
+  # active accountId 在 ~/.jooj/weixin/state.json,扫码自动写,跨重启自动读(s21 Demo 16.5)。
+  # yml 这里**不再有 accountId 字段** —— accountId 是状态不是配置,用户事先不可能知道。
+  # 详见笔记 [[jooj_改造日志_s21]] 「⚙️ 接入 weixin」节。
+  weixin:
+    enabled: ${WEIXIN_ENABLED:true}
+    bot-agent: jooj
+    dispatch-pool-size: 4               # IM 多 peer 并发度;Demo 14 压测推荐 4

@@ -1,6 +1,7 @@
 package com.xilidou.jooj;
 
 import com.xilidou.jooj.agent.AgentLoopHarness;
+import com.xilidou.jooj.slashcmd.SlashCommandRegistry;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
@@ -26,13 +27,15 @@ import org.springframework.stereotype.Component;
 public class JoojCliRunner implements CommandLineRunner {
 
     private final AgentLoopHarness harness;
+    private final SlashCommandRegistry slashCommands;
 
-    public JoojCliRunner(AgentLoopHarness harness) {
+    public JoojCliRunner(AgentLoopHarness harness, SlashCommandRegistry slashCommands) {
         this.harness = harness;
+        this.slashCommands = slashCommands;
     }
 
     @Override
     public void run(String... args) {
-        harness.repl();
+        harness.repl(slashCommands);
     }
 }

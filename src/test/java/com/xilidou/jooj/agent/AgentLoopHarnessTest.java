@@ -4,6 +4,7 @@ import com.xilidou.jooj.JoojTestConfig;
 import com.xilidou.jooj.cron.CronJob;
 import com.xilidou.jooj.cron.CronService;
 import com.xilidou.jooj.session.Session;
+import com.xilidou.jooj.session.SessionService;
 import com.xilidou.jooj.team.MessageBus;
 import com.xilidou.jooj.team.ProtocolRegistry;
 import com.xilidou.jooj.team.ProtocolState;
@@ -24,6 +25,9 @@ import com.xilidou.jooj.http.dto.ThinkingBlock;
 import com.xilidou.jooj.http.dto.ToolResultBlock;
 import com.xilidou.jooj.http.dto.ToolUseBlock;
 import com.xilidou.jooj.tool.Tool;
+import com.xilidou.jooj.todo.TodoItem;
+import com.xilidou.jooj.todo.TodoStatus;
+import com.xilidou.jooj.todo.TodoStore;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -68,11 +72,14 @@ class AgentLoopHarnessTest {
     @Autowired CronService cronService;
     @Autowired MessageBus messageBus;
     @Autowired ProtocolRegistry protocolRegistry;
+    @Autowired TodoStore todoStore;
+    @Autowired SessionService sessionService;
 
     @BeforeEach
     void setUp() {
         spyTool.reset();
         harness.clearHistory(SID);
+        todoStore.clear();   // s20 Demo 7:nag 测试预设 todo,清掉避免测试间串味
     }
 
     @AfterEach
@@ -254,20 +261,28 @@ class AgentLoopHarnessTest {
     @Test
     @DisplayName("loop should inject reminder after NAG_THRESHOLD rounds without todo_write")
     void loop_should_inject_nag_reminder_after_3_rounds_without_todo() {
-        mock.reset(
-                ResponseFixtures.toolUse("test_tool", Map.of("arg", "1"), "tu_001"),
-                ResponseFixtures.toolUse("test_tool", Map.of("arg", "2"), "tu_002"),
-                ResponseFixtures.toolUse("test_tool", Map.of("arg", "3"), "tu_003"),
-                ResponseFixtures.endTurn("done")
-        );
+        // s20 Demo 7 修复后: NAG_THRESHOLD = 10,且只在有未完成 todo 时 nag。
+        // 预设一个 in_progress todo 让 hasOpenWork=true,然后跑 NAG_THRESHOLD 轮工具调用。
+        todoStore.replace(List.of(
+                new TodoItem("dummy work", TodoStatus.IN_PROGRESS)));
+
+        com.xilidou.jooj.http.dto.CreateMessageResponse[] responses =
+                new com.xilidou.jooj.http.dto.CreateMessageResponse[AgentLoopHarness.NAG_THRESHOLD + 1];
+        for (int i = 0; i < AgentLoopHarness.NAG_THRESHOLD; i++) {
+            responses[i] = ResponseFixtures.toolUse(
+                    "test_tool", Map.of("arg", String.valueOf(i + 1)), "tu_" + i);
+        }
+        responses[AgentLoopHarness.NAG_THRESHOLD] = ResponseFixtures.endTurn("done");
+        mock.reset(responses);
 
         List<MessageParam> messages = new ArrayList<>();
         messages.add(MessageParam.user("do work"));
 
         harness.agentLoop(messages);
 
-        CreateMessageRequest fourthReq = mock.getRequests().get(3);
-        boolean hasReminder = fourthReq.getMessages().stream()
+        // 第 NAG_THRESHOLD+1 轮请求(0-indexed = NAG_THRESHOLD)应该已经携带 reminder
+        CreateMessageRequest req = mock.getRequests().get(AgentLoopHarness.NAG_THRESHOLD);
+        boolean hasReminder = req.getMessages().stream()
                 .filter(m -> "user".equals(m.getRole()))
                 .anyMatch(m -> {
                     Object c = m.getContent();
@@ -283,7 +298,7 @@ class AgentLoopHarnessTest {
                     return false;
                 });
         assertTrue(hasReminder,
-                "第 4 轮请求应该包含 nag reminder(连续 3 轮没调 todo_write)");
+                "第 " + (AgentLoopHarness.NAG_THRESHOLD + 1) + " 轮请求应该包含 nag reminder");
     }
 
     @Test
@@ -319,20 +334,26 @@ class AgentLoopHarnessTest {
     @Test
     @DisplayName("nag 注入不能造成 user 消息连续(必须揉进上一条 user 而非新增)")
     void nag_should_not_create_consecutive_user_messages() {
-        mock.reset(
-                ResponseFixtures.toolUse("test_tool", Map.of("arg", "1"), "tu_001"),
-                ResponseFixtures.toolUse("test_tool", Map.of("arg", "2"), "tu_002"),
-                ResponseFixtures.toolUse("test_tool", Map.of("arg", "3"), "tu_003"),
-                ResponseFixtures.endTurn("done")
-        );
+        // 同 loop_should_inject_nag_reminder:预设 in_progress todo + 跑 NAG_THRESHOLD 轮
+        todoStore.replace(List.of(
+                new TodoItem("dummy work", TodoStatus.IN_PROGRESS)));
+
+        com.xilidou.jooj.http.dto.CreateMessageResponse[] responses =
+                new com.xilidou.jooj.http.dto.CreateMessageResponse[AgentLoopHarness.NAG_THRESHOLD + 1];
+        for (int i = 0; i < AgentLoopHarness.NAG_THRESHOLD; i++) {
+            responses[i] = ResponseFixtures.toolUse(
+                    "test_tool", Map.of("arg", String.valueOf(i + 1)), "tu_" + i);
+        }
+        responses[AgentLoopHarness.NAG_THRESHOLD] = ResponseFixtures.endTurn("done");
+        mock.reset(responses);
 
         List<MessageParam> messages = new ArrayList<>();
         messages.add(MessageParam.user("do work"));
 
         harness.agentLoop(messages);
 
-        CreateMessageRequest fourthReq = mock.getRequests().get(3);
-        List<MessageParam> seq = fourthReq.getMessages();
+        CreateMessageRequest nagReq = mock.getRequests().get(AgentLoopHarness.NAG_THRESHOLD);
+        List<MessageParam> seq = nagReq.getMessages();
         for (int i = 0; i < seq.size() - 1; i++) {
             String currentRole = seq.get(i).getRole();
             String nextRole = seq.get(i + 1).getRole();
@@ -735,9 +756,82 @@ class AgentLoopHarnessTest {
                 "shutdown 请求收到 plan_approval_response 应被拒绝(防误处理)");
     }
 
-    // ────────────────────────────────────────────────────────────
-    //  Spy Tool 注册到容器,所有测试共享
-    // ────────────────────────────────────────────────────────────
+    @Test
+    @DisplayName("s20 Demo 9: processCronTriggers 按 job.sessionId 路由,通知去对的 session")
+    void processCronTriggers_routes_by_job_session_id() {
+        // 每个 session 触发一次 agentLoop;每次至少 endTurn + memory consolidator;
+        // 多塞几个响应避免 mock 耗尽。memory 把所有非 JSON 都当无 memory,不影响测试。
+        mock.reset(
+                ResponseFixtures.endTurn("ack-A"),
+                ResponseFixtures.endTurn("[]"),
+                ResponseFixtures.endTurn("ack-B"),
+                ResponseFixtures.endTurn("[]"),
+                ResponseFixtures.endTurn("[]"),
+                ResponseFixtures.endTurn("[]")
+        );
+
+        // 造两个 session,都创建好
+        Session sA = sessionService.create("session A");
+        Session sB = sessionService.create("session B");
+
+        // 两个 fired job,各自属于不同 session
+        CronJob jobA = new CronJob("cron_a01", "* * * * *", "wake A", false, false, sA.id());
+        CronJob jobB = new CronJob("cron_b01", "* * * * *", "wake B", false, false, sB.id());
+
+        harness.processCronTriggers(List.of(jobA, jobB));
+
+        // 各自 session 的 history 应该有自己的 [Scheduled] 注入
+        List<MessageParam> historyA = sessionService.loadHistory(sA.id());
+        List<MessageParam> historyB = sessionService.loadHistory(sB.id());
+
+        assertTrue(historyA.stream().anyMatch(m ->
+                "user".equals(m.getRole())
+                        && m.getContent() instanceof String s
+                        && s.contains("[Scheduled] wake A")),
+                "session A 的 history 应包含 [Scheduled] wake A");
+        assertTrue(historyB.stream().anyMatch(m ->
+                "user".equals(m.getRole())
+                        && m.getContent() instanceof String s
+                        && s.contains("[Scheduled] wake B")),
+                "session B 的 history 应包含 [Scheduled] wake B");
+
+        // 反向交叉检查:A 不能漏到 B,反之亦然
+        assertFalse(historyA.stream().anyMatch(m ->
+                m.getContent() instanceof String s && s.contains("wake B")),
+                "session A 不该看到 wake B");
+        assertFalse(historyB.stream().anyMatch(m ->
+                m.getContent() instanceof String s && s.contains("wake A")),
+                "session B 不该看到 wake A");
+
+        // cron-default 不该收到任何东西(都路由到了具体 session)
+        List<MessageParam> historyDefault = sessionService.loadHistory(Session.CRON_DEFAULT_ID);
+        assertTrue(historyDefault.stream().noneMatch(m ->
+                m.getContent() instanceof String s
+                        && (s.contains("wake A") || s.contains("wake B"))),
+                "cron-default 不该作为兜底收到任何 session 已存在的 cron 通知");
+    }
+
+    @Test
+    @DisplayName("s20 Demo 9: 老 cron(sessionId == null) 兜底走 cron-default")
+    void processCronTriggers_legacy_null_session_falls_back_to_cron_default() {
+        mock.reset(
+                ResponseFixtures.endTurn("ack"),
+                ResponseFixtures.endTurn("[]"),
+                ResponseFixtures.endTurn("[]")
+        );
+
+        // 老 5-arg ctor:sessionId == null
+        CronJob legacy = new CronJob("cron_legacy01", "* * * * *", "legacy job", false, false);
+
+        harness.processCronTriggers(List.of(legacy));
+
+        List<MessageParam> historyDefault = sessionService.loadHistory(Session.CRON_DEFAULT_ID);
+        assertTrue(historyDefault.stream().anyMatch(m ->
+                m.getContent() instanceof String s && s.contains("legacy job")),
+                "sessionId == null 的 cron 必须兜底注入 cron-default");
+    }
+
+
 
     @org.springframework.boot.test.context.TestConfiguration
     static class SpyToolTestConfig {

@@ -144,17 +144,27 @@ public class BackgroundTaskManager {
      * @return 新分配的 bg_id 形如 {@code bg_0001}
      */
     public String start(String toolUseId, String command, Supplier<ToolResult> work) {
+        return start(null, toolUseId, command, work);
+    }
+
+    /**
+     * s20 Demo 12: 带 sessionId 的 start —— bg 通知只回到此 session,不串味给别的 session。
+     *
+     * <p>{@code sessionId == null} 等价老行为(走 default 分区)。
+     */
+    public String start(String sessionId, String toolUseId, String command, Supplier<ToolResult> work) {
         if (work == null) {
             throw new IllegalArgumentException("work must not be null");
         }
+        String sid = (sessionId == null || sessionId.isBlank()) ? DEFAULT_SESSION : sessionId;
         // 跟上游一致:counter 递增 → bg_<4位>
         int n = counter.incrementAndGet();
         String bgId = String.format("bg_%04d", n);
 
         synchronized (lock) {
-            tasks.put(bgId, new BgTask(toolUseId, command, "running"));
+            tasks.put(bgId, new BgTask(sid, toolUseId, command, "running"));
         }
-        log.info("[BG] started {} for command: {}", bgId, command);
+        log.info("[BG] session={} started {} for command: {}", sid, bgId, command);
 
         // BG 池用 CallerRunsPolicy:满则 caller 线程同步跑,不抛异常,
         // 这里直接 submit 不需要 try-catch。降级语义对 LLM 透明 ——
@@ -172,7 +182,7 @@ public class BackgroundTaskManager {
                 results.put(bgId, output);
                 BgTask cur = tasks.get(bgId);
                 if (cur != null) {
-                    tasks.put(bgId, new BgTask(cur.toolUseId(), cur.command(), "completed"));
+                    tasks.put(bgId, new BgTask(cur.sessionId(), cur.toolUseId(), cur.command(), "completed"));
                 }
             }
             log.info("[BG] {} completed", bgId);
@@ -198,6 +208,21 @@ public class BackgroundTaskManager {
      *         (= 时间序,bg_id 自增分配)
      */
     public List<TextBlock> drainNotifications() {
+        return drainNotifications(null);
+    }
+
+    /**
+     * s20 Demo 12: drain 指定 session 已完成的 bg 任务通知。
+     *
+     * <p>{@code sessionId == null} 走 default 分区(老行为);非 null 时只 drain 该 session
+     * 启动的 bg。这样 alice 启的任务完成时,bob 那一轮不会收到 task_notification。
+     *
+     * <p><b>顺便清理 orphan</b>:某个 session 启动 bg 后该 session 被删,任务完成 results
+     * 永远没人 drain → 内存泄漏。这里不主动清,留给未来 session 删除时显式调
+     * {@link #releaseSession}(尚未实现,等需要时再加)。
+     */
+    public List<TextBlock> drainNotifications(String sessionId) {
+        String filterSid = (sessionId == null || sessionId.isBlank()) ? DEFAULT_SESSION : sessionId;
         List<TextBlock> blocks = new ArrayList<>();
         synchronized (lock) {
             // 拷贝 keys 避免 ConcurrentModificationException(removeAll 在循环里改 map)
@@ -205,8 +230,14 @@ public class BackgroundTaskManager {
             // bg_id 字典序 = 时间序(bg_0001 < bg_0002 < ...),让 LLM 按发起顺序看通知
             drainable.sort(String::compareTo);
             for (String bgId : drainable) {
+                BgTask task = tasks.get(bgId);
+                // 只 drain 跟当前 session 匹配的(老 task 没 sessionId 走 DEFAULT_SESSION)
+                String taskSid = task != null && task.sessionId() != null
+                        ? task.sessionId() : DEFAULT_SESSION;
+                if (!filterSid.equals(taskSid)) continue;
+
                 String output = results.remove(bgId);
-                BgTask task = tasks.remove(bgId);
+                tasks.remove(bgId);
                 String cmd = task != null ? task.command() : "(unknown)";
                 String text = String.format(
                         "<task_notification id=\"%s\" command=\"%s\">%n%s%n</task_notification>",
@@ -303,5 +334,14 @@ public class BackgroundTaskManager {
      * bg task 元数据 record。{@code status} 是 {@code "running"} 或 {@code "completed"}
      * 字符串(跟上游一致,不抽 enum 是为了对齐 Python dataclass 的 string 字段)。
      */
-    record BgTask(String toolUseId, String command, String status) {}
+    /**
+     * BgTask record:后台任务元数据。
+     *
+     * <p>s20 Demo 12:加 {@code sessionId} 让 drainNotifications 能按当前 session 过滤,
+     * 避免 alice 的 npm install 完成时 bob 那一轮也收到 task_notification。
+     */
+    record BgTask(String sessionId, String toolUseId, String command, String status) {}
+
+    /** 老调用点(无 sessionId)的 fallback 分区,语义同 TodoStore。 */
+    public static final String DEFAULT_SESSION = "_default";
 }

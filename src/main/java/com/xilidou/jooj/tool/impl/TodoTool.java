@@ -17,6 +17,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Map;
 
 /**
  * TodoTool - 让 LLM 能"写"待办列表的工具（s05 核心）。
@@ -110,7 +111,19 @@ public class TodoTool implements Tool {
                 "todo_write",
                 "Create and manage a task list for your current coding session. " +
                         "Call this BEFORE starting any multi-step task to plan your steps. " +
-                        "Update statuses as you go.",
+                        "Update statuses as you go.\n\n" +
+                        "**Status semantics — read carefully:**\n" +
+                        "- `pending` — not started.\n" +
+                        "- `in_progress` — actively working on it RIGHT NOW. Limit to ONE at a time.\n" +
+                        "- `completed` — the actual tool call(s) for this task have run AND succeeded. " +
+                        "If you haven't invoked the corresponding tool yet (e.g. glob/bash/read_file), " +
+                        "status MUST stay in_progress, NOT completed. Marking work complete that you " +
+                        "haven't actually done is a critical failure mode.\n\n" +
+                        "**Before marking completed, check:** Did I actually invoke the tool that does " +
+                        "this work in this session? If no — keep it in_progress and do the work first.\n\n" +
+                        "**End of turn:** If the user asked for output (a list, a file, an answer), " +
+                        "produce that output as a text block in your response. A todo update alone is " +
+                        "NOT a deliverable.",
                 InputSchema.object(
                         Map.of("todos", Map.of(
                                 "type", "array",
@@ -123,9 +136,18 @@ public class TodoTool implements Tool {
 
     @Override
     public ToolResult execute(ToolCall call) {
+        return execute(call, com.xilidou.jooj.tool.ExecutionContext.lead());
+    }
+
+    @Override
+    public ToolResult execute(ToolCall call, com.xilidou.jooj.tool.ExecutionContext ctx) {
         if (!"todo_write".equals(call.getToolName())) {
             return new ToolResult(false, "Unknown tool: " + call.getToolName());
         }
+
+        // s20 Demo 12:从 ctx 取 sessionId,所有 store 调用走该 session 分区。
+        // ctx == null 或 sessionId == null 时 fallback DEFAULT_SESSION,保留兼容。
+        String sid = ctx != null ? ctx.sessionId() : null;
 
         Object todosArg = call.getArguments().get("todos");
         if (todosArg == null) {
@@ -155,13 +177,40 @@ public class TodoTool implements Tool {
             }
         }
 
-        store.replace(todos);
+        // s20 Demo 7 修复:状态机守卫,挡两类幻觉(注释看 git blame)。Demo 12 起按 session 走。
+        boolean storeWasEmpty = store.isEmpty(sid);
+        Map<String, TodoItem> prev = new java.util.HashMap<>();
+        for (TodoItem t : store.snapshot(sid)) {
+            prev.put(t.getContent(), t);
+        }
+        List<String> illegal = new java.util.ArrayList<>();
+        for (TodoItem t : todos) {
+            if (t.getStatus() != TodoStatus.COMPLETED) continue;
+            if (storeWasEmpty) {
+                illegal.add(t.getContent() + " (first submission must not be completed)");
+                continue;
+            }
+            TodoItem old = prev.get(t.getContent());
+            if (old == null || old.getStatus() == TodoStatus.PENDING) {
+                illegal.add(t.getContent() + " (must pass through in_progress first)");
+            }
+        }
+        if (!illegal.isEmpty()) {
+            return new ToolResult(false,
+                    "Error: illegal completed transition for: " + illegal + ". " +
+                            "Mark in_progress first, ACTUALLY do the work (call the relevant tool — " +
+                            "glob / bash / read_file / etc.), then call todo_write again with " +
+                            "completed. A task is not 'done' just because you wrote it down.");
+        }
+
+        store.replace(sid, todos);
         printTodos(todos);
-        log.info("[Todo] updated {} tasks ({} pending, {} in_progress, {} completed)",
+        log.info("[Todo] session={} updated {} tasks ({} pending, {} in_progress, {} completed)",
+                sid == null ? TodoStore.DEFAULT_SESSION : sid,
                 todos.size(),
-                store.countByStatus(TodoStatus.PENDING),
-                store.countByStatus(TodoStatus.IN_PROGRESS),
-                store.countByStatus(TodoStatus.COMPLETED));
+                store.countByStatus(sid, TodoStatus.PENDING),
+                store.countByStatus(sid, TodoStatus.IN_PROGRESS),
+                store.countByStatus(sid, TodoStatus.COMPLETED));
 
         return new ToolResult(true, "Updated " + todos.size() + " tasks");
     }

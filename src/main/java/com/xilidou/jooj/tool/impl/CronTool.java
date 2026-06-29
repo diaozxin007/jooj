@@ -110,9 +110,14 @@ public class CronTool implements Tool {
 
     @Override
     public ToolResult execute(ToolCall call) {
+        return execute(call, com.xilidou.jooj.tool.ExecutionContext.lead());
+    }
+
+    @Override
+    public ToolResult execute(ToolCall call, com.xilidou.jooj.tool.ExecutionContext ctx) {
         try {
             return switch (call.getToolName()) {
-                case "schedule_cron" -> doSchedule(call);
+                case "schedule_cron" -> doSchedule(call, ctx);
                 case "list_crons" -> doList();
                 case "cancel_cron" -> doCancel(call);
                 default -> new ToolResult(false, "Unknown tool: " + call.getToolName());
@@ -129,7 +134,7 @@ public class CronTool implements Tool {
     //  Handlers
     // ─────────────────────────────────────────────────────────────
 
-    private ToolResult doSchedule(ToolCall call) {
+    private ToolResult doSchedule(ToolCall call, com.xilidou.jooj.tool.ExecutionContext ctx) {
         Object cronArg = call.getArguments().get("cron");
         Object promptArg = call.getArguments().get("prompt");
         if (cronArg == null) return new ToolResult(false, "Error: 'cron' argument is required");
@@ -138,8 +143,12 @@ public class CronTool implements Tool {
         boolean recurring = parseBoolean(call.getArguments().get("recurring"), true);
         boolean durable = parseBoolean(call.getArguments().get("durable"), false);
 
+        // ctx 带 sessionId 时,把它落到 CronJob,fire 时通知回这个 session;
+        // 否则走老兜底(注入 cron-default 收容 session)。
+        String sessionId = ctx != null ? ctx.sessionId() : null;
+
         String result = service.schedule(
-                cronArg.toString(), promptArg.toString(), recurring, durable);
+                cronArg.toString(), promptArg.toString(), recurring, durable, sessionId);
         if (result.startsWith("Error:")) {
             return new ToolResult(false, result);
         }

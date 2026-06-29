@@ -6,6 +6,7 @@ import com.xilidou.jooj.JoojProperties;
 import com.xilidou.jooj.config.JoojExecutors;
 import com.xilidou.jooj.hook.HookManager;
 import com.xilidou.jooj.http.AnthropicClient;
+import com.xilidou.jooj.http.dto.ContentBlock;
 import com.xilidou.jooj.http.dto.CreateMessageRequest;
 import com.xilidou.jooj.http.dto.CreateMessageResponse;
 import com.xilidou.jooj.http.dto.InputSchema;
@@ -346,8 +347,18 @@ public class Teammate {
                     shutdownRequested = true;
                     break outer;
                 }
-                messages.add(MessageParam.assistant(response.getContent()));
-                lastText = extractLastText(response.getContent());
+                // 守卫:LLM 偶尔返回 content == null 或空 list(thinking-only 被 strip 等场景)。
+                // 直接 append 会让下一轮 API 报 `messages.X.content: Input should be a valid list`。
+                // 跳过空响应,let 下条 user message(tool_result / auto-claim 注入)接在前一条 user 后,
+                // Anthropic 允许 user→user 连续。
+                List<ContentBlock> content = response.getContent();
+                if (content != null && !content.isEmpty()) {
+                    messages.add(MessageParam.assistant(content));
+                } else {
+                    log.debug("[Teammate {}] LLM returned empty content at turn {}, skipping history append",
+                            name, activeTurnTotal);
+                }
+                lastText = extractLastText(content);
 
                 if (!response.needsToolExecution()) {
                     reachedEndTurn = true;
@@ -721,9 +732,66 @@ public class Teammate {
         return sb.toString();
     }
 
+    /**
+     * 取 messages 尾窗口,作为单次 LLM 调用的 history。
+     *
+     * <h3>朴素切窗口的坑(s20 Demo 8 修复)</h3>
+     *
+     * <p>无脑 {@code subList(size - WINDOW, size)} 会切坏两类边界:
+     * <ol>
+     *   <li>切点是 user-tool_result(对应的 assistant-tool_use 在窗口外) → API 报
+     *       {@code unexpected `tool_use_id` found in `tool_result` blocks}</li>
+     *   <li>切点是 assistant message(history 不以 user 开头) → API 报开头角色错</li>
+     * </ol>
+     *
+     * <h3>策略</h3>
+     *
+     * <p>从理想切点起向前回退,直到 messages[start] 是"安全 user 起点":
+     * <ul>
+     *   <li>role==user</li>
+     *   <li>不含 ToolResultBlock(否则缺前置 tool_use,孤儿)</li>
+     * </ul>
+     *
+     * <p>这套规则跟 jooj 已有的 {@link com.xilidou.jooj.compact.MessageBoundary} 同源,
+     * 但 MessageBoundary 只挡 1 格,这里的窗口可能撞奇数偏移,所以用循环。
+     */
     private List<MessageParam> trimWindow(List<MessageParam> messages) {
-        if (messages.size() <= MESSAGE_WINDOW) return messages;
-        return new ArrayList<>(messages.subList(messages.size() - MESSAGE_WINDOW, messages.size()));
+        return trimWindow(messages, MESSAGE_WINDOW);
+    }
+
+    /**
+     * 包级静态版本,方便单元测试直接喂自定义 messages 列表 + 窗口大小。
+     *
+     * @param messages 完整 history
+     * @param window   理想保留尾部消息数
+     * @return 安全裁剪后的窗口(可能比 window 大,因为要回退到安全 user 起点)
+     */
+    static List<MessageParam> trimWindow(List<MessageParam> messages, int window) {
+        if (messages.size() <= window) return messages;
+        int start = messages.size() - window;
+        while (start > 0 && !isSafeStart(messages.get(start))) {
+            start--;
+        }
+        return new ArrayList<>(messages.subList(start, messages.size()));
+    }
+
+    /**
+     * 一条 message 是否能作为 history 的第一条而不让 Anthropic API 报错。
+     *
+     * <p>"安全 user 起点" = role==user 且 content 不是含 ToolResultBlock 的 list。
+     * String content / 仅含 TextBlock 的 list 都 OK;tool_result list 不行(孤儿)。
+     */
+    static boolean isSafeStart(MessageParam m) {
+        if (!"user".equals(m.getRole())) return false;
+        Object c = m.getContent();
+        if (c instanceof String) return true;
+        if (c instanceof List<?> blocks) {
+            for (Object b : blocks) {
+                if (b instanceof com.xilidou.jooj.http.dto.ToolResultBlock) return false;
+            }
+            return true;
+        }
+        return true;   // null / 其他形态:容忍,不阻断
     }
 
     private static String extractLastText(List<? extends com.xilidou.jooj.http.dto.ContentBlock> content) {

@@ -43,19 +43,25 @@ import java.nio.file.Paths;
 public record ExecutionContext(
         Path cwd,
         String agentName,
-        String worktreeName
+        String worktreeName,
+        String sessionId
 ) {
 
-    /** Lead 主路径默认 ctx —— 无 cwd 覆盖,用工具自身默认根目录。 */
+    /** Lead 主路径默认 ctx —— 无 cwd 覆盖,用工具自身默认根目录;无 sessionId(老调用点兼容)。 */
     public static ExecutionContext lead() {
-        return new ExecutionContext(null, "lead", null);
+        return new ExecutionContext(null, "lead", null, null);
+    }
+
+    /** Lead 主路径,绑定到指定 session(s20 Demo 9:cron 等"工具侧记 session"场景)。 */
+    public static ExecutionContext leadInSession(String sessionId) {
+        return new ExecutionContext(null, "lead", null, sessionId);
     }
 
     /**
      * Teammate 路径但**没绑定 worktree** —— 工具仍用默认 cwd,但审计能看到调用者是谁。
      */
     public static ExecutionContext forTeammate(String teammateName) {
-        return new ExecutionContext(null, teammateName, null);
+        return new ExecutionContext(null, teammateName, null, null);
     }
 
     /**
@@ -68,7 +74,7 @@ public record ExecutionContext(
     public static ExecutionContext inWorktree(String teammateName,
                                               String worktreeName,
                                               Path worktreePath) {
-        return new ExecutionContext(worktreePath, teammateName, worktreeName);
+        return new ExecutionContext(worktreePath, teammateName, worktreeName, null);
     }
 
     /**

@@ -61,6 +61,25 @@ class CronServiceTest {
     }
 
     @Test
+    @DisplayName("s20 Demo 9: schedule 带 sessionId 时,CronJob 记录该 sessionId")
+    void schedule_with_sessionId_recorded_on_job() {
+        String id = service.schedule("0 9 * * *", "remind", true, false, "user-session-abc");
+        CronJob job = service.list().get(0);
+        assertEquals(id, job.getId());
+        assertEquals("user-session-abc", job.getSessionId(),
+                "Job 必须记录调度时传入的 sessionId,fire 时才能路由回该 session");
+    }
+
+    @Test
+    @DisplayName("s20 Demo 9: schedule 老 4-arg 重载 → CronJob.sessionId == null(兼容)")
+    void schedule_without_sessionId_legacy_path() {
+        service.schedule("0 9 * * *", "remind", true, false);
+        CronJob job = service.list().get(0);
+        assertNull(job.getSessionId(),
+                "老 4-arg schedule 必须保持 sessionId == null,processCronTriggers 兜底走 cron-default");
+    }
+
+    @Test
     @DisplayName("schedule 失败的 cron → 返回 'Error: ...',scheduled 里没加进去")
     void schedule_invalid_cron_returns_error() {
         String result = service.schedule("60 * * * *", "do X", true, false);

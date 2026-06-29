@@ -7,6 +7,7 @@ import com.xilidou.jooj.http.dto.ToolUseBlock;
 import com.xilidou.jooj.session.AgentLockProvider;
 import com.xilidou.jooj.session.Session;
 import com.xilidou.jooj.session.SessionService;
+import com.xilidou.jooj.slashcmd.SlashCommandRegistry;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -53,13 +54,16 @@ public class ChatController {
     private final AgentLoopHarness harness;
     private final SessionService sessionService;
     private final AgentLockProvider lockProvider;
+    private final SlashCommandRegistry slashCommands;
 
     public ChatController(AgentLoopHarness harness,
                           SessionService sessionService,
-                          AgentLockProvider lockProvider) {
+                          AgentLockProvider lockProvider,
+                          SlashCommandRegistry slashCommands) {
         this.harness = harness;
         this.sessionService = sessionService;
         this.lockProvider = lockProvider;
+        this.slashCommands = slashCommands;
     }
 
     /**
@@ -82,6 +86,14 @@ public class ChatController {
         String sessionId = resolveSessionId(request.getSessionId());
         if (!sessionService.exists(sessionId)) {
             return ResponseEntity.badRequest().body(error("session not found: " + sessionId));
+        }
+
+        // Slash 命令短路 —— 不进 LLM、不抢 session lock、不写 history。
+        // 命令本身可能改 session state(如 /clear),但操作是同步即时的,无需对 LLM 互斥。
+        if (slashCommands.isCommand(request.getQuery())) {
+            String reply = slashCommands.dispatch(request.getQuery(), sessionId);
+            int size = harness.getHistory(sessionId).size();
+            return ResponseEntity.ok(new ChatResponse(reply, size, List.of()));
         }
 
         ReentrantLock lock = lockProvider.lockFor(sessionId);

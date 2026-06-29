@@ -127,6 +127,11 @@
             <artifactId>mockito-core</artifactId>
             <scope>test</scope>
         </dependency>
+
+        <!-- s21 Demo 16: 原本依赖的 cn.langchat.openclaw:openclaw-weixin-sdk:0.1.1 已经 fork 进
+             src/main/java/cn/langchat/openclaw/weixin/(50 个文件,~3700 行,从 Maven Central
+             的 -sources.jar 直接拿真源码 + 修了已知 immutable list bug)。
+             详见笔记 [[jooj_改造日志_s21]] Demo 16。 -->
     </dependencies>
 
     <build>

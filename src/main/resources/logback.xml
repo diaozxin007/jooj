@@ -22,7 +22,11 @@
     </root>
 
     <!-- 主线代码：INFO 级别 -->
-    <logger name="com.xilidou.jooj" level="INFO"/>
+    <logger name="com.xilidou.jooj" level="DEBUG"/>
+
+    <!-- s21 Demo 16.7：fork 进 jooj 的 OpenClaw weixin SDK 默认也走 INFO，
+         让 [weixin-http] 入参出参日志能输出。原本走 root WARN 就被过滤掉了。 -->
+    <logger name="cn.langchat.openclaw" level="INFO"/>
 
     <!--
       HTTP 层：默认继承上面的 INFO，但允许通过 -Djooj.log.http=DEBUG 切到 DEBUG。

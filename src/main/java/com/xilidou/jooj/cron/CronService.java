@@ -95,6 +95,15 @@ public class CronService {
      * @return 成功时 6 位 id;失败时 {@code "Error: ..."} 字符串
      */
     public String schedule(String cron, String prompt, boolean recurring, boolean durable) {
+        return schedule(cron, prompt, recurring, durable, null);
+    }
+
+    /**
+     * s20 Demo 9:带 sessionId 的 schedule —— fire 时把 prompt 注入这个 session,而不是
+     * 一律塞 cron-default。{@code sessionId == null} 等价于老行为(注入 cron-default)。
+     */
+    public String schedule(String cron, String prompt, boolean recurring, boolean durable,
+                           String sessionId) {
         if (prompt == null || prompt.isBlank()) {
             return "Error: prompt must not be blank";
         }
@@ -102,11 +111,11 @@ public class CronService {
         if (validation != null) return validation;
 
         String id = generateId();
-        CronJob job = new CronJob(id, cron, prompt, recurring, durable);
+        CronJob job = new CronJob(id, cron, prompt, recurring, durable, sessionId);
         scheduled.put(id, job);
         if (durable) persistDurable();
-        log.info("[Cron] scheduled {} '{}' → '{}' (recurring={}, durable={})",
-                id, cron, prompt, recurring, durable);
+        log.info("[Cron] scheduled {} '{}' → '{}' (recurring={}, durable={}, session={})",
+                id, cron, prompt, recurring, durable, sessionId);
         return id;
     }
 

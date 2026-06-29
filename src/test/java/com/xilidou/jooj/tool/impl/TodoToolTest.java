@@ -39,10 +39,12 @@ class TodoToolTest {
     @Test
     @DisplayName("LLM 给的标准格式：[{content, status}, ...] 能被解析")
     void parses_valid_todos() {
+        // s20 Demo 7 修复:首次提交不允许带 completed(防幻觉),
+        // 所以这里只用 pending / in_progress 两种状态测格式解析。
         ToolResult result = call(List.of(
                 Map.of("content", "step 1", "status", "pending"),
                 Map.of("content", "step 2", "status", "in_progress"),
-                Map.of("content", "step 3", "status", "completed")
+                Map.of("content", "step 3", "status", "pending")
         ));
 
         assertTrue(result.isSuccess());

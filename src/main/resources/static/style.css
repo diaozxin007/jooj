@@ -87,6 +87,7 @@ body.sidebar-open .sidebar {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   overflow: hidden;     /* 让 panel-body 滚动条不溢出圆角 */
+  flex: 0 0 auto;       /* Demo 15 修复:flex 容器里不被压缩,各自走自己的 max-height */
 }
 
 .panel-header {
@@ -392,6 +393,15 @@ main {
 }
 .markdown a:hover { color: var(--accent-hover); }
 
+/* Demo 15.1 修复:相对路径 / 内链被 sanitize hook 标记 data-inert,
+   退化成普通文字 —— 让用户一眼看出它不是可点链接,避免点了发现 404 困惑。 */
+.markdown a[data-inert] {
+  color: inherit;
+  text-decoration: none;
+  cursor: default;
+}
+.markdown a[data-inert]:hover { color: inherit; }
+
 /* 内联 code:贴底色稍亮,比正文略小,等宽字体 */
 .markdown code {
   background: rgba(192, 132, 252, 0.12);
@@ -529,3 +539,131 @@ textarea::placeholder { color: var(--text-faint); }
   text-align: center;
 }
 .hint .dot { margin: 0 6px; }
+
+/* ──────────────────────────────────────────────
+ * Channels panel(Demo 15)
+ * ────────────────────────────────────────────── */
+.channel-item {
+  border: 1px solid var(--border, #e3e3e3);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+.channel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.channel-name {
+  font-weight: 600;
+  text-transform: capitalize;
+}
+.channel-meta {
+  color: var(--text-secondary, #666);
+  font-size: 12px;
+  line-height: 1.6;
+  margin-bottom: 8px;
+}
+.channel-hint {
+  background: #fff8e1;
+  border-left: 3px solid #ffc107;
+  padding: 6px 8px;
+  font-size: 12px;
+  color: #6d4c00;
+  margin-bottom: 8px;
+  border-radius: 2px;
+}
+.channel-actions {
+  margin-top: 6px;
+}
+
+.badge-ok, .badge-warn {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 500;
+}
+.badge-ok   { background: #e6f4ea; color: #137333; }
+.badge-warn { background: #fce8e6; color: #c5221f; }
+
+.btn-primary {
+  background: #1a73e8;
+  color: #fff;
+  border: none;
+  padding: 6px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.btn-primary:hover { background: #1557b0; }
+.btn-secondary {
+  background: #f1f3f4;
+  color: #202124;
+  border: 1px solid #dadce0;
+  padding: 6px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.btn-secondary:hover { background: #e8eaed; }
+.btn-link {
+  background: none;
+  border: none;
+  color: #1a73e8;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0;
+  text-decoration: underline;
+}
+.btn-link:hover { color: #1557b0; }
+
+/* QR modal */
+.qr-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.qr-modal-box {
+  background: #fff;
+  border-radius: 8px;
+  padding: 24px;
+  max-width: 360px;
+  text-align: center;
+  box-shadow: 0 6px 30px rgba(0, 0, 0, 0.3);
+}
+.qr-modal-box h3 {
+  margin: 0 0 14px;
+  font-size: 16px;
+}
+.qr-modal-img {
+  width: 240px;
+  height: 240px;
+  border: 1px solid #eee;
+  border-radius: 4px;
+}
+.qr-modal-hint {
+  color: #666;
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 14px 0 8px;
+}
+.qr-modal-fallback {
+  color: #999;
+  font-size: 11px;
+  margin: 8px 0 14px;
+  word-break: break-all;
+}
+.qr-modal-url {
+  display: inline-block;
+  background: #f5f5f5;
+  padding: 4px 6px;
+  border-radius: 3px;
+  font-family: monospace;
+  margin-top: 4px;
+}

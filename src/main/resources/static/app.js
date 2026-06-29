@@ -154,8 +154,20 @@
   if (window.DOMPurify) {
     window.DOMPurify.addHook('afterSanitizeAttributes', (node) => {
       if (node.tagName === 'A') {
-        node.setAttribute('target', '_blank');
-        node.setAttribute('rel', 'noopener noreferrer');
+        const href = node.getAttribute('href') || '';
+        // Demo 15.1 修复:Memory panel markdown 里的链接形如 [name](xxx.md) 是相对路径,
+        // 不是真要跳页面 —— 点击会去 /xxx.md 然后 404。
+        // 解法:只对绝对 URL(http://、https://、mailto: 等带协议的)保留可点击 target=blank;
+        // 相对路径 / 锚点 / 空 href 一律降级成纯文本(去掉 href 让浏览器不当链接处理)。
+        const isAbsolute = /^(https?:|mailto:|tel:)/i.test(href);
+        if (isAbsolute) {
+          node.setAttribute('target', '_blank');
+          node.setAttribute('rel', 'noopener noreferrer');
+        } else {
+          // 去掉 href,保留文字。视觉上仍是 <a> 元素(可以加样式区分),但点击无效。
+          node.removeAttribute('href');
+          node.setAttribute('data-inert', 'true');   // CSS 钩子:让其不像可点链接
+        }
       }
     });
   }
@@ -433,6 +445,7 @@
     if (!panelLoaded.sessions) loadPanel('sessions');
     if (!panelLoaded.skills) loadPanel('skills');
     if (!panelLoaded.memory) loadPanel('memory');
+    if (!panelLoaded.channels) loadPanel('channels');
     if (!panelLoaded.status) loadPanel('status');
   }
   function closeSidebar() {
@@ -463,11 +476,27 @@
         panelLoaded.sessions = true;
         return;
       }
-      const data = (forceRescan && name === 'skills')
-          ? await postJson(`/api/skills/rescan`)
-          : await getJson(`/api/${name}`);
+      // Demo 15: channels panel 走聚合多渠道,目前只有 weixin
+      // 以后接 Discord/Telegram 时可以改成 /api/channels 一次性拿,现阶段直接打 weixin status
+      let data;
+      if (name === 'channels') {
+        // weixin 可能 disabled(jooj.weixin.enabled=false) → /api/weixin/status 返回 404 / 不存在
+        // 用 try-catch + 标志位区分,避免整个 panel 报错
+        try {
+          const weixin = await getJson('/api/weixin/status');
+          data = { channels: [{ name: 'weixin', ...weixin }] };
+        } catch (e) {
+          data = { channels: [] };   // 视作"没启用任何 channel"
+        }
+      } else {
+        data = (forceRescan && name === 'skills')
+            ? await postJson(`/api/skills/rescan`)
+            : await getJson(`/api/${name}`);
+      }
       target.innerHTML = renderPanel(name, data);
       panelLoaded[name] = true;
+      // channels panel 渲染后要绑定扫码按钮事件
+      if (name === 'channels') bindChannelActions();
     } catch (e) {
       console.error(`load ${name} failed`, e);
       target.innerHTML = `<p class="panel-error">加载失败:${escapeHtml(e.message || 'unknown')}</p>`;
@@ -506,7 +535,136 @@
           <dt>memory</dt>     <dd>${data.memoryCharCount} chars (${kbytes} KB)</dd>
         </dl>`;
     }
+    if (name === 'channels') {
+      const list = data.channels || [];
+      if (list.length === 0) {
+        return `
+          <p class="panel-empty">
+            没有启用任何 channel。<br>
+            <small>启用 weixin:application.yml 加 <code>jooj.weixin.enabled: true</code> 后重启 jooj。</small>
+          </p>`;
+      }
+      return list.map(c => renderChannelItem(c)).join('');
+    }
     return '<p class="panel-error">未知 panel</p>';
+  }
+
+  /** 单个渠道的渲染:已登录 vs 未登录两种状态。 */
+  function renderChannelItem(c) {
+    if (c.name !== 'weixin') {
+      // 未来扩展位:其他 channel 的渲染
+      return `<div class="channel-item"><div class="channel-name">${escapeHtml(c.name)}</div></div>`;
+    }
+    if (c.loggedIn) {
+      const runningBadge = c.channelRunning
+          ? '<span class="badge-ok">running</span>'
+          : '<span class="badge-warn">not running</span>';
+      return `
+        <div class="channel-item">
+          <div class="channel-header">
+            <span class="channel-name">weixin</span>
+            ${runningBadge}
+          </div>
+          <div class="channel-meta">
+            account: ${escapeHtml(c.accountId || '')}<br>
+            user: ${escapeHtml(c.userId || '(unknown)')}<br>
+            ${c.savedAt ? `since: ${escapeHtml(c.savedAt)}` : ''}
+          </div>
+          ${c.channelRunning ? '' : '<div class="channel-hint">扫码后请重启 jooj 让 channel 起来</div>'}
+          <div class="channel-actions">
+            <button class="btn-link" data-action="weixin-rescan" type="button">重新扫码登录</button>
+          </div>
+        </div>`;
+    }
+    return `
+      <div class="channel-item">
+        <div class="channel-header">
+          <span class="channel-name">weixin</span>
+          <span class="badge-warn">not logged in</span>
+        </div>
+        <div class="channel-meta">account: ${escapeHtml(c.accountId || 'default')}</div>
+        <div class="channel-actions">
+          <button class="btn-primary" data-action="weixin-login" type="button">📱 扫码登录</button>
+        </div>
+      </div>`;
+  }
+
+  /** 给 channels panel 里的扫码按钮绑事件。loadPanel 渲染后调一次。 */
+  function bindChannelActions() {
+    document.querySelectorAll('#panel-channels [data-action]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const action = btn.getAttribute('data-action');
+        if (action === 'weixin-login' || action === 'weixin-rescan') {
+          startWeixinQrFlow();
+        }
+      });
+    });
+  }
+
+  /**
+   * 启动微信扫码流程:
+   *   1. POST /api/weixin/qr/start 拿 qrcodeUrl
+   *   2. 弹层显示二维码图(用免费 QR API 把 URL 渲染成图)
+   *   3. POST /api/weixin/qr/wait 长轮询等用户扫码确认(最多 ~2min)
+   *   4. 成功 → 关弹层 + 刷新 panel
+   *
+   * 注:用户扫成功后,channelRunning 仍是 false(jooj 还没重启)。
+   * panel 上会有"请重启 jooj"提示。这跟 jooj 当前实现一致(WeixinChannel hot-start 是迭代方向 #8)。
+   */
+  async function startWeixinQrFlow() {
+    let session;
+    try {
+      session = await postJson('/api/weixin/qr/start', {});
+    } catch (e) {
+      alert('启动二维码失败:' + (e.message || 'unknown'));
+      return;
+    }
+    showQrModal(session.qrcodeUrl);
+
+    let result;
+    try {
+      result = await postJson('/api/weixin/qr/wait', {});
+    } catch (e) {
+      hideQrModal();
+      alert('扫码确认失败:' + (e.message || 'unknown'));
+      return;
+    }
+    hideQrModal();
+    if (result.connected) {
+      alert(`✓ 扫码成功(userId=${result.userId || ''})\n\n` +
+            `请重启 jooj 让 weixin channel 起来:\n  ^C 然后 ./mvnw spring-boot:run`);
+    } else {
+      alert('扫码超时或失败:' + (result.message || '请重试'));
+    }
+    // 刷新 panel 显示最新状态
+    panelLoaded.channels = false;
+    loadPanel('channels');
+  }
+
+  /** 用第三方 QR 生成 API 把 URL 渲染成图,套个 modal 显示。 */
+  function showQrModal(qrcodeUrl) {
+    let modal = document.getElementById('qr-modal');
+    if (modal) modal.remove();   // 残留清掉
+    const apiUrl = `https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(qrcodeUrl)}`;
+    modal = document.createElement('div');
+    modal.id = 'qr-modal';
+    modal.className = 'qr-modal-backdrop';
+    modal.innerHTML = `
+      <div class="qr-modal-box">
+        <h3>用微信扫码登录</h3>
+        <img src="${escapeHtml(apiUrl)}" alt="QR" class="qr-modal-img"/>
+        <p class="qr-modal-hint">手机微信 → 扫一扫 → 确认登录<br>等待中... (最多 2 分钟)</p>
+        <p class="qr-modal-fallback">扫不到?复制链接到手机:<br>
+          <code class="qr-modal-url">${escapeHtml(qrcodeUrl)}</code></p>
+        <button type="button" class="btn-secondary" id="qr-modal-cancel">取消</button>
+      </div>`;
+    document.body.appendChild(modal);
+    document.getElementById('qr-modal-cancel').addEventListener('click', hideQrModal);
+  }
+
+  function hideQrModal() {
+    const modal = document.getElementById('qr-modal');
+    if (modal) modal.remove();
   }
 
   // ── 初始化 ──
