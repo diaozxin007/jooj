@@ -63,14 +63,21 @@ body.sidebar-open .sidebar {
 .sidebar-inner {
   width: 280px;       /* 锁内容宽度,sidebar width 变化时内容不变形 */
   height: 100%;
+  min-height: 0;      /* 让 panel-body 的 overflow-y 在 flex 子项里生效 */
   overflow-y: auto;
   padding: 16px;
   display: flex; flex-direction: column; gap: 18px;
 }
 
-/* 让原来的 main 兼容新布局:layout 内的 main 占据剩余宽度 */
+/* 让原来的 main 兼容新布局:layout 内的 main 占据剩余宽度,
+   并且要继承"overflow-y: auto"(原来 main 直挂 body 的 flex column 时
+   有这条规则,套进 .layout > main 后必须显式重申,否则消息列表不能滚)。
+   min-width / min-height 同时为 0 — 双重确保 long content 不撑爆容器。 */
 .layout > main {
-  flex: 1; min-width: 0;        /* min-width: 0 防 long content 把 main 撑爆 sidebar */
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 /* ── Sidebar panel ─────────────────────────────────────────── */
