@@ -58,6 +58,14 @@
             <version>2.18.2</version>
         </dependency>
 
+        <!-- jackson-datatype-jsr310: 让 ObjectMapper 序列化 java.time.Instant 等
+             Java 8 日期时间类型。Session 有 Instant 字段需要这个。 -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.datatype</groupId>
+            <artifactId>jackson-datatype-jsr310</artifactId>
+            <version>2.18.2</version>
+        </dependency>
+
         <dependency>
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>
@@ -133,6 +141,18 @@
                             <artifactId>lombok</artifactId>
                         </exclude>
                     </excludes>
+                </configuration>
+            </plugin>
+            <!-- Surefire: JOOJ_HOME 指向项目内 .jooj-test/,
+                 让 sessions / cron / memory 等 ~/.jooj 衍生目录都隔离在测试目录,
+                 不污染开发者真实 ~/.jooj/。 -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <environmentVariables>
+                        <JOOJ_HOME>${project.build.directory}/.jooj-test</JOOJ_HOME>
+                    </environmentVariables>
                 </configuration>
             </plugin>
             <plugin>

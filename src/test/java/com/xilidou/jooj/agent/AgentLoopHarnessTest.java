@@ -3,6 +3,7 @@ package com.xilidou.jooj.agent;
 import com.xilidou.jooj.JoojTestConfig;
 import com.xilidou.jooj.cron.CronJob;
 import com.xilidou.jooj.cron.CronService;
+import com.xilidou.jooj.session.Session;
 import com.xilidou.jooj.team.MessageBus;
 import com.xilidou.jooj.team.ProtocolRegistry;
 import com.xilidou.jooj.team.ProtocolState;
@@ -56,6 +57,9 @@ import static org.junit.jupiter.api.Assertions.*;
 @Import({JoojTestConfig.class, AgentLoopHarnessTest.SpyToolTestConfig.class})
 class AgentLoopHarnessTest {
 
+    /** 默认 session ID,用于测试。所有原本调 processOneQuery(query) 的测试都用这个。 */
+    private static final String SID = Session.DEFAULT_ID;
+
     @Autowired AgentLoopHarness harness;
     @Autowired MockAnthropicClient mock;
     @Autowired ToolRegistry registry;
@@ -68,7 +72,7 @@ class AgentLoopHarnessTest {
     @BeforeEach
     void setUp() {
         spyTool.reset();
-        harness.clearHistory();
+        harness.clearHistory(SID);
     }
 
     @AfterEach
@@ -368,17 +372,17 @@ class AgentLoopHarnessTest {
         // 测试有 2 次 processOneQuery → 4 次 mock 调用(2 主 + 2 extract)
         mock.reset(req -> ResponseFixtures.endTurn("answer"));
 
-        harness.processOneQuery("question 1");
-        assertEquals(2, harness.getHistory().size(),
+        harness.processOneQuery(SID, "question 1");
+        assertEquals(2, harness.getHistory(SID).size(),
                 "query1 跑完后 history = [user1, assistant1]");
 
         // 模拟新会话(repl 会做这件事)
-        harness.clearHistory();
-        assertEquals(0, harness.getHistory().size());
+        harness.clearHistory(SID);
+        assertEquals(0, harness.getHistory(SID).size());
 
         // 找到第 1 次主 LLM 调用之后的第一次调用作为 query2 的 LLM 起点
         int callsBefore = mock.getCallCount();
-        harness.processOneQuery("question 2");
+        harness.processOneQuery(SID, "question 2");
 
         // 找到 query2 的主 LLM 请求(callsBefore + extract 之后,query2 的主调用)
         // memory extract 的 user message 不是 "question 2",可以借此过滤
@@ -395,9 +399,9 @@ class AgentLoopHarnessTest {
     void without_clear_history_accumulates_across_queries() {
         mock.reset(req -> ResponseFixtures.endTurn("answer"));
 
-        harness.processOneQuery("question 1");
+        harness.processOneQuery(SID, "question 1");
         // 不调 clearHistory
-        harness.processOneQuery("question 2");
+        harness.processOneQuery(SID, "question 2");
 
         // query2 主 LLM 调用应看到 [user1, assistant1, user2] 累积历史(3 条)
         boolean sawAccumulated = mock.getRequests().stream()
@@ -413,9 +417,9 @@ class AgentLoopHarnessTest {
     @DisplayName("onNewSession 链式 API 返回 this,支持流畅注册")
     void onNewSession_returns_this_for_chaining() {
         AgentLoopHarness returned = harness
-                .onNewSession(() -> {})
-                .onNewSession(() -> {})
-                .onNewSession(null);
+                .onNewSession((Runnable) () -> {})
+                .onNewSession((Runnable) () -> {})
+                .onNewSession((Runnable) null);
 
         assertSame(harness, returned, "onNewSession 应返回 this");
     }
@@ -425,17 +429,15 @@ class AgentLoopHarnessTest {
     void onNewSession_supports_multiple_callbacks_and_fault_isolation() throws Exception {
         AtomicInteger fired = new AtomicInteger();
         harness
-                .onNewSession(fired::incrementAndGet)
-                .onNewSession(() -> { throw new RuntimeException("intentional"); })
-                .onNewSession(fired::incrementAndGet);
+                .onNewSession((Runnable) fired::incrementAndGet)
+                .onNewSession((Runnable) () -> { throw new RuntimeException("intentional"); })
+                .onNewSession((Runnable) fired::incrementAndGet);
 
-        var method = AgentLoopHarness.class.getDeclaredMethod("fireOnNewSession");
+        var method = AgentLoopHarness.class.getDeclaredMethod("fireOnNewSession", String.class);
         method.setAccessible(true);
-        method.invoke(harness);
+        method.invoke(harness, SID);
 
         // 即使中间那个抛异常,前后两个都应该被执行
-        // 注意:harness 是容器单例,@PostConstruct 已经注册过 todoStore::clear + clearHistory,
-        // 所以 fired 至少 +2;另外被注册的 fired::incrementAndGet 又跑两次,合计 ≥ 2
         assertTrue(fired.get() >= 2, "中间回调抛异常不应影响其他回调执行");
     }
 
@@ -613,14 +615,14 @@ class AgentLoopHarnessTest {
         assertEquals(1, messageBus.peekSize("lead"));
 
         // 用户输入触发一轮
-        harness.processOneQuery("hi");
+        harness.processOneQuery(SID, "hi");
 
         // 关键断言:
         // 1. lead inbox 被 drain(peekSize=0)
         // 2. history 末尾应有一条 user message 含 "[Inbox]" + "Schema done"
         assertEquals(0, messageBus.peekSize("lead"), "lead inbox 应被 drain");
 
-        boolean injected = harness.getHistory().stream()
+        boolean injected = harness.getHistory(SID).stream()
                 .filter(m -> "user".equals(m.getRole()))
                 .anyMatch(m -> {
                     Object c = m.getContent();
@@ -637,9 +639,9 @@ class AgentLoopHarnessTest {
     void team_inbox_drain_empty_does_nothing() {
         mock.reset(req -> ResponseFixtures.endTurn("ok"));
 
-        int before = harness.getHistory().size();
-        harness.processOneQuery("hi");
-        int after = harness.getHistory().size();
+        int before = harness.getHistory(SID).size();
+        harness.processOneQuery(SID, "hi");
+        int after = harness.getHistory(SID).size();
 
         // 一轮 query: +1 user + 1 assistant = +2;不应有第 3 条 inbox user
         // (memoryService 的 turn-end LLM 调用不影响 history)
@@ -664,9 +666,9 @@ class AgentLoopHarnessTest {
         messageBus.send("alice", "lead", "Shutting down.", "shutdown_response",
                 java.util.Map.of("request_id", reqId, "approve", true));
 
-        int historyBefore = harness.getHistory().size();
-        harness.processOneQuery("hi");
-        int historyAfter = harness.getHistory().size();
+        int historyBefore = harness.getHistory(SID).size();
+        harness.processOneQuery(SID, "hi");
+        int historyAfter = harness.getHistory(SID).size();
 
         // 协议响应应被 ProtocolRegistry 处理:status → approved
         assertEquals(ProtocolState.APPROVED,
@@ -693,19 +695,19 @@ class AgentLoopHarnessTest {
                 java.util.Map.of("request_id", reqId, "approve", true));
         messageBus.send("bob", "lead", "Schema done", "result");
 
-        harness.processOneQuery("hi");
+        harness.processOneQuery(SID, "hi");
 
         // registry 状态变 approved
         assertEquals(ProtocolState.APPROVED,
                 protocolRegistry.get(reqId).getStatus());
 
         // history 应有 [Inbox] 注入,但只含 bob 的消息(alice 的协议响应被路由走)
-        boolean hasBob = harness.getHistory().stream()
+        boolean hasBob = harness.getHistory(SID).stream()
                 .filter(m -> "user".equals(m.getRole()))
                 .anyMatch(m -> m.getContent() instanceof String s
                         && s.contains("[Inbox]") && s.contains("bob")
                         && s.contains("Schema done"));
-        boolean hasAlice = harness.getHistory().stream()
+        boolean hasAlice = harness.getHistory(SID).stream()
                 .filter(m -> "user".equals(m.getRole()))
                 .anyMatch(m -> m.getContent() instanceof String s
                         && s.contains("[Inbox]") && s.contains("Shutting down"));
@@ -725,7 +727,7 @@ class AgentLoopHarnessTest {
         messageBus.send("alice", "lead", "I approve plan", "plan_approval_response",
                 java.util.Map.of("request_id", reqId, "approve", true));
 
-        harness.processOneQuery("hi");
+        harness.processOneQuery(SID, "hi");
 
         // 状态应保持 pending(类型不匹配,registry 拒绝)
         assertEquals(ProtocolState.PENDING,

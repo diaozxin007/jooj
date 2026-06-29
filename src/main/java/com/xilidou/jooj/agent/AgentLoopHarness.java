@@ -5,6 +5,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xilidou.jooj.JoojProperties;
 import com.xilidou.jooj.cron.CronJob;
 import com.xilidou.jooj.cron.CronService;
+import com.xilidou.jooj.session.AgentLockProvider;
+import com.xilidou.jooj.session.Session;
+import com.xilidou.jooj.session.SessionService;
 import com.xilidou.jooj.team.Message;
 import com.xilidou.jooj.team.MessageBus;
 import com.xilidou.jooj.team.ProtocolRegistry;
@@ -14,7 +17,6 @@ import com.xilidou.jooj.compact.CompactPipeline;
 import com.xilidou.jooj.tool.ToolDefinition;
 import com.xilidou.jooj.tool.ToolResult;
 import com.xilidou.jooj.http.AnthropicClient;
-import com.xilidou.jooj.http.AnthropicException;
 import com.xilidou.jooj.http.dto.ContentBlock;
 import com.xilidou.jooj.http.dto.CreateMessageRequest;
 import com.xilidou.jooj.http.dto.CreateMessageResponse;
@@ -41,6 +43,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Scanner;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Consumer;
 
 /**
  * AgentLoopHarness - s01_agent_loop.py 的 Java 实现。
@@ -71,6 +74,13 @@ import java.util.concurrent.locks.ReentrantLock;
  * 语义一致,扩展开闭原则纯粹。详见
  * {@link com.xilidou.jooj.tool.impl.TaskTool} 的类注释。
  *
+ * <h3>Session 抽象(本次 patch)</h3>
+ *
+ * <p>原来的全局 {@code history} 字段已被替换 —— 每个 sessionId 有自己的 history
+ * (由 {@link SessionService#loadHistory} 拿到)和自己的 lock(由
+ * {@link AgentLockProvider#lockFor} 拿到),不同 session 可以并行,
+ * 同 session 互斥防 messages list 撞车。
+ *
  * <p>典型测试模式:
  * <pre>
  *   @SpringBootTest
@@ -80,6 +90,7 @@ import java.util.concurrent.locks.ReentrantLock;
  *       @Autowired AgentLoopHarness harness;
  *       @Autowired MockAnthropicClient mock;
  *       ...
+ *       harness.processOneQuery("test", "hello");
  *   }
  * </pre>
  */
@@ -133,7 +144,7 @@ public class AgentLoopHarness {
 
     /**
      * s14 Cron Scheduler 服务。{@link #agentLoop} 顶部 drain queue,把 fired job
-     * 转成 user message 注入。{@link CronQueueProcessor} 反向调
+     * 转成 user message 注入。{@link com.xilidou.jooj.cron.CronQueueProcessor} 反向调
      * {@link #processCronTriggers} 在持锁状态下触发一轮 agent loop。
      */
     private final CronService cronService;
@@ -142,37 +153,30 @@ public class AgentLoopHarness {
      * s15 MessageBus —— Lead 在 {@link #processOneQuery} 末尾 drain 一次 lead inbox,
      * 把队友汇报作为下一轮 user message 注入 history(让 LLM 在用户下一条 query 之前
      * 看到队友结果)。
-     *
-     * <p>跟上游 s15 教学版一致 —— Lead 一轮跑完才看队友消息(对应 Q2 = 选项 a)。
-     * Real CC 用后台 1s poller(useInboxPoller)自动注入新 turn,jooj 暂不做。
      */
     private final MessageBus messageBus;
 
     /**
      * s16 ProtocolRegistry —— drainLeadInbox 时先路由协议响应到 registry
      * (更新 pending → approved/rejected),再把剩下的非协议消息注入 history。
-     *
-     * <p>对应上游 {@code consume_lead_inbox(route_protocol=True)}。
      */
     private final ProtocolRegistry protocols;
 
     /**
-     * s14 agentLock —— REPL user-input 流程跟 {@code CronQueueProcessor} 共享同一把锁,
-     * 防 cron-fired turn 跟 user-input turn 撞 messages list。
+     * Session 服务(本次 patch 引入)—— history per-session 加载 / 落盘。
      */
-    private final ReentrantLock agentLock;
+    private final SessionService sessionService;
 
-    /** 新会话回调列表。{@link #repl} 接到新 user 输入时会依次执行。 */
-    private final List<Runnable> onNewSessionListeners = new ArrayList<>();
+    /**
+     * Per-session lock 池(本次 patch 引入)—— 不同 session 可以并行,同 session 互斥。
+     */
+    private final AgentLockProvider lockProvider;
 
-    /** REPL 多轮 history(跨会话清理由 onNewSession 注册)。 */
-    private final List<MessageParam> history = new ArrayList<>();
+    /** 新会话回调列表(per-session 触发)。 */
+    private final List<Consumer<String>> onNewSessionListeners = new ArrayList<>();
 
     /**
      * 唯一构造器 —— Spring 容器装配。
-     *
-     * <p>{@code @Qualifier} 在 {@code json} 上让 Spring 解析到我们自己注册的
-     * {@code joojObjectMapper},而不是 Spring Boot 自带的 jackson auto-config 主 mapper。
      */
     public AgentLoopHarness(AnthropicClient client,
                             ToolRegistry registry,
@@ -188,7 +192,8 @@ public class AgentLoopHarness {
                             CronService cronService,
                             MessageBus messageBus,
                             ProtocolRegistry protocols,
-                            @Qualifier("agentLock") ReentrantLock agentLock,
+                            SessionService sessionService,
+                            AgentLockProvider lockProvider,
                             JoojProperties props) {
         this.client = client;
         this.model = props.getAnthropic().getModel();
@@ -205,21 +210,21 @@ public class AgentLoopHarness {
         this.cronService = cronService;
         this.messageBus = messageBus;
         this.protocols = protocols;
-        this.agentLock = agentLock;
+        this.sessionService = sessionService;
+        this.lockProvider = lockProvider;
         this.recoveryCfg = props.getRecovery();
     }
 
     /**
-     * Spring 装配完成后注册 {@code onNewSession} 回调(清空 todoStore + history)。
-     *
-     * <p>s10 之后:不再在这里计算 systemPrompt —— 改由 {@link SystemPromptAssembler}
-     * 在每轮 LLM 调用前按当前 context 动态组装,这样新写入的 memory 立刻能进 SYSTEM。
+     * Spring 装配完成后注册 {@code onNewSession} 回调(清空 todoStore)。
+     * 注:history 的 clear 现在跟着 sessionId 走,不在新会话边界统一清,
+     * 因为 cli-default 的"新会话"恰恰是用户希望保留的(REPL 多轮对话);
+     * 真要清显式调 {@link #clearHistory}。
      */
     @PostConstruct
     void init() {
-        onNewSession(todoStore::clear);
-        // 清空跨会话 history,与 todoStore::clear 一起补齐"新会话边界"两半。
-        onNewSession(this::clearHistory);
+        // 全局副作用(todoStore)— 切到任何 session 都重置一次
+        onNewSession(sid -> todoStore.clear());
     }
 
     // ── 核心 Agent Loop ─────────────────────────────────────────
@@ -229,9 +234,6 @@ public class AgentLoopHarness {
         int roundsSinceTodo = 0;
 
         // s14: 进入 agent_loop 顶部 drain cron queue,把 fired job 转成 user message。
-        // 注:CronQueueProcessor 在拿到 agentLock 后调 processCronTriggers,
-        // 那条路径已经把 prompt 注入 messages 再 agentLoop;这里 drain 是 belt-and-suspenders,
-        // 防 user-input 流程刚好夹在两次 fire 之间也能消费已 fired 的 prompt。
         List<CronJob> firedAtTop = cronService.drainQueue();
         for (CronJob job : firedAtTop) {
             messages.add(MessageParam.user("[Scheduled] " + job.getPrompt()));
@@ -239,8 +241,6 @@ public class AgentLoopHarness {
         }
 
         // s11: per-loop 错误恢复状态机。跨 agentLoop 调用不污染。
-        // 初始 model = 配置里的默认 model;初始 max_tokens = recovery.defaultMaxTokens
-        // (Path 1 触发时 currentMaxTokens 会被升级到 escalatedMaxTokens)。
         var recoveryState = new RecoveryState(model, recoveryCfg.getDefaultMaxTokens());
 
         while (true) {
@@ -254,21 +254,8 @@ public class AgentLoopHarness {
 
             compactPipeline.apply(messages);
 
-            // s10: 每轮 LLM 调用前按当前 context 组装 SYSTEM。
-            // 这是修复 turn N 写入 memory → turn N+1 SYSTEM 看不见 的关键 ——
-            // assembler 内部 size=1 缓存,context 不变时 0 成本。
-            //
-            // assembleBlocks 拆成两段:
-            //   Block 1: identity + tools + workspace (启动后不变,加 cache_control)
-            //   Block 2: memory (易变,不加 cache_control)
-            // 命中时 Block 1 跳过 prefill,memory 写入只重写 Block 2。
-            // 详见 SystemPromptAssembler.assembleBlocks 的 javadoc。
             var system = promptAssembler.assembleBlocks(promptAssembler.currentContext());
 
-            // s11: 调 LLM + 三条恢复路径(429/529 退避 + max_tokens 升级 +
-            // prompt_too_long reactive compact),封装在 RecoveryCoordinator 里。
-            // requestBuilder 是 lambda,因为 retry 中 state.currentModel /
-            // state.currentMaxTokens 可能被 mutate,request 必须每次用最新 state 重建。
             RecoveryResult recoveryResult = recoveryCoordinator.call(
                     client,
                     state -> CreateMessageRequest.builder()
@@ -286,20 +273,16 @@ public class AgentLoopHarness {
             if (recoveryResult instanceof RecoveryResult.Done d) {
                 response = d.response();
             } else if (recoveryResult instanceof RecoveryResult.EscalateAndRetry) {
-                // Path 1 第一次升级 / Path 2 reactive compact 后,直接重新跑循环
                 continue;
             } else if (recoveryResult instanceof RecoveryResult.AppendContinuation ac) {
-                // Path 1 已升级仍截断 → append 截断输出 + continuation user message
                 messages.add(MessageParam.assistant(ac.response().getContent()));
                 messages.add(MessageParam.user(ac.continuation()));
                 continue;
             } else if (recoveryResult instanceof RecoveryResult.Fatal f) {
-                // 不可恢复:把错误说明追加到对话,让 REPL 打出来给用户看
                 messages.add(MessageParam.assistant(List.of(
                         new TextBlock("[Error] " + f.reason()))));
                 return;
             } else {
-                // sealed interface 4 个分支已穷尽,理论不可达;留个兜底
                 throw new IllegalStateException("Unhandled RecoveryResult: " + recoveryResult);
             }
 
@@ -329,15 +312,6 @@ public class AgentLoopHarness {
                     continue;
                 }
 
-                // s13: 决定本次工具调用走前台还是后台。
-                // - LLM 显式 run_in_background=true 优先
-                // - 否则启发式:bash + 慢操作关键词命中 → 后台
-                // 后台路径不接 PostToolUse hook —— hook 是同步对前台结果的反应,
-                // 后台完成后通过 task_notification 注入,LLM 自己消费(跟上游一致)。
-                //
-                // 线程重构 Stage 3:bg 池用 CallerRunsPolicy,满则 caller 线程同步跑,
-                // BackgroundTaskManager.start 不会抛 RejectedExecutionException,
-                // 不需要 try-catch fallback。
                 if (BackgroundTaskManager.shouldRunBackground(toolUse.getName(), args)) {
                     Object cmd = args.get("command");
                     String command = cmd != null ? cmd.toString() : "(no command)";
@@ -360,8 +334,6 @@ public class AgentLoopHarness {
                 toolResults.add(result);
             }
 
-            // s13: drain 已完成的 bg task 通知,跟本轮 tool_results 合并到同一条 user message。
-            // notifications 为空时 toolResultsWithNotifications 退化为 toolResults,行为不变。
             List<TextBlock> notifications = bgManager.drainNotifications();
             if (!notifications.isEmpty()) {
                 log.info("[BG] injected {} task_notification(s) into next turn", notifications.size());
@@ -395,12 +367,6 @@ public class AgentLoopHarness {
         messages.set(lastIdx, merged);
     }
 
-    /**
-     * 把 {@link ToolRegistry} 里的工具转成 Anthropic 协议 ToolDef。
-     *
-     * <p>s12 Stage 1 之后,{@code task} 工具是 {@link com.xilidou.jooj.tool.impl.TaskTool}
-     * 的标准实现,自动出现在 {@code registry.getAllTools()} 里 —— 不再需要手动追加。
-     */
     private List<ToolDef> buildTools() {
         List<ToolDef> tools = new ArrayList<>();
         for (ToolDefinition def : registry.getAllTools()) {
@@ -411,32 +377,50 @@ public class AgentLoopHarness {
 
     // ── 新会话生命周期 ──────────────────────────────────────────
 
-    public AgentLoopHarness onNewSession(Runnable callback) {
+    /** 注册一个 per-session 触发的回调(给 sessionId 作为参数)。 */
+    public AgentLoopHarness onNewSession(Consumer<String> callback) {
         if (callback != null) {
             onNewSessionListeners.add(callback);
         }
         return this;
     }
 
-    private void fireOnNewSession() {
-        for (Runnable callback : onNewSessionListeners) {
+    /** 兼容老 API。回调以 {@link Session#CLI_DEFAULT_ID} 触发。 */
+    public AgentLoopHarness onNewSession(Runnable callback) {
+        if (callback != null) {
+            onNewSessionListeners.add(sid -> callback.run());
+        }
+        return this;
+    }
+
+    private void fireOnNewSession(String sessionId) {
+        for (Consumer<String> callback : onNewSessionListeners) {
             try {
-                callback.run();
+                callback.accept(sessionId);
             } catch (Exception e) {
                 log.warn("[Loop] onNewSession callback failed: {}", e.getMessage());
             }
         }
     }
 
-    public void clearHistory() {
-        history.clear();
+    /** 清空指定 session 的 history。 */
+    public void clearHistory(String sessionId) {
+        sessionService.clearHistory(sessionId);
     }
 
-    public List<MessageParam> getHistory() {
-        return history;
+    /** 拿到指定 session 的 history(可变 list 引用)。 */
+    public List<MessageParam> getHistory(String sessionId) {
+        return sessionService.loadHistory(sessionId);
     }
 
-    public void processOneQuery(String query) {
+    /**
+     * 跑一轮 agent_loop —— per-session 入口。
+     */
+    public void processOneQuery(String sessionId, String query) {
+        if (sessionId == null || sessionId.isBlank()) {
+            throw new IllegalArgumentException("sessionId must not be blank");
+        }
+        List<MessageParam> history = sessionService.loadHistory(sessionId);
         String enriched = query;
         String injection = memoryService.loadRelevant(history);
         if (injection != null && !injection.isBlank()) {
@@ -448,35 +432,30 @@ public class AgentLoopHarness {
 
         memoryService.onTurnEnd(history);
 
-        // s15: 末尾 drain lead inbox —— 把队友(spawn 出去的 daemon)发给 lead 的消息
-        // 揉成一条 user message 加到 history,**不立即跑下一轮 agent_loop**(对齐上游教学版)。
-        // 用户下次 query 进来时,LLM 看到的就是"上一轮我自己 + 队友们的回复"组合 context。
-        drainLeadInbox();
+        // 末尾 drain lead inbox(s15)
+        drainLeadInbox(history);
+
+        // 保存 history 到盘
+        sessionService.saveHistory(sessionId, history);
     }
 
     /**
-     * s14: 由 {@link com.xilidou.jooj.cron.CronQueueProcessor} 在持有 agentLock 后调用。
+     * s14: 由 {@link com.xilidou.jooj.cron.CronQueueProcessor} 在持有 lock 后调用。
      *
-     * <p>把 fired CronJob 的 prompt 各注入成一条 user message,然后跑一轮 agent_loop。
-     * <b>不</b>调 {@code fireOnNewSession} —— cron 触发不算新会话,history 不应被清。
-     *
-     * <p>跟 user-input 流程的差别:
-     * <ul>
-     *   <li>不走 hooks.triggerUserPrompt(那是 user 主动键入时才触发)</li>
-     *   <li>不走 memoryService.loadRelevant(cron prompt 通常不需要 memory 注入)</li>
-     *   <li>仍走 memoryService.onTurnEnd(让 cron 完成后能更新 memory)</li>
-     * </ul>
-     *
-     * @param firedJobs 已 drain 的 CronJob 列表
+     * <p>cron 触发的 LLM run 路由到 {@link Session#CRON_DEFAULT_ID} session,
+     * 跟用户交互 session 完全隔离 —— 这是引入 session 抽象后的核心好处。
      */
     public void processCronTriggers(List<CronJob> firedJobs) {
         if (firedJobs == null || firedJobs.isEmpty()) return;
+        String sessionId = Session.CRON_DEFAULT_ID;
+        List<MessageParam> history = sessionService.loadHistory(sessionId);
         for (CronJob job : firedJobs) {
             history.add(MessageParam.user("[Scheduled] " + job.getPrompt()));
             log.info("[Cron] injected fired job {} prompt into history", job.getId());
         }
         agentLoop(history);
         memoryService.onTurnEnd(history);
+        sessionService.saveHistory(sessionId, history);
     }
 
     private void printToolHeader(ToolUseBlock toolUse, Map<String, Object> args) {
@@ -485,12 +464,6 @@ public class AgentLoopHarness {
         System.out.println("\033[33m$ " + display + "\033[0m");
     }
 
-    /**
-     * 派发一次工具调用 —— 统一走 {@link ToolRegistry}。
-     *
-     * <p>s12 Stage 1 之后,{@code task} 工具回归 {@link com.xilidou.jooj.tool.impl.TaskTool}
-     * 标准实现,这里不再需要 task 特判。
-     */
     private ToolResultBlock executeOneTool(ToolUseBlock toolUse, Map<String, Object> args) {
         ToolResult result = registry.execute(new ToolCall(toolUse.getName(), args));
         String output = result.getOutput();
@@ -519,6 +492,10 @@ public class AgentLoopHarness {
         System.out.println("s01: Agent Loop (Java)");
         System.out.println("输入问题,回车发送。输入 q 退出。\n");
 
+        // CLI REPL 走固定 cli-default session,跨进程重启历史保留。
+        final String sessionId = Session.CLI_DEFAULT_ID;
+        ReentrantLock lock = lockProvider.lockFor(sessionId);
+
         try (Scanner scanner = new Scanner(System.in, StandardCharsets.UTF_8)) {
             while (true) {
                 System.out.print("\033[36ms01 >> \033[0m");
@@ -535,21 +512,18 @@ public class AgentLoopHarness {
                     continue;
                 }
 
-                // s14: 拿 agentLock —— 跟 CronQueueProcessor 共享。
-                // user-input 流程跟 cron-fired 流程互斥,防 messages list 撞车。
-                // tryLock 失败说明 cron 流程刚好在跑,等下一轮(用户重输即可)。
-                if (!agentLock.tryLock()) {
-                    System.out.println("\033[33m⏳ Agent busy with a scheduled task, please retry.\033[0m");
+                if (!lock.tryLock()) {
+                    System.out.println("\033[33m⏳ Agent busy, please retry.\033[0m");
                     continue;
                 }
                 try {
-                    fireOnNewSession();
-                    processOneQuery(query);
+                    fireOnNewSession(sessionId);
+                    processOneQuery(sessionId, query);
                 } finally {
-                    agentLock.unlock();
+                    lock.unlock();
                 }
 
-                printLastAssistantText(history);
+                printLastAssistantText(sessionService.loadHistory(sessionId));
                 System.out.println();
             }
         }
@@ -557,25 +531,11 @@ public class AgentLoopHarness {
 
     /**
      * s15: drain lead 的 inbox,把队友消息揉成一条 user message 加到 history。
-     *
-     * <p>仅 append 不跑 loop —— 对齐上游 s15 教学版的决策(Q2-a):
-     * 用户下次 query 来时,LLM 看到的 context 自然包含队友消息;Lead 不为
-     * 队友消息单独跑一轮(那是 real CC 的 useInboxPoller 行为,留给后续 stage)。
-     *
-     * <p>history 因为这一调用可能形成 "...assistant, user(inbox)" 末尾,
-     * 下次 processOneQuery 进来时 history 末尾还会再 add 一条 user(query)——
-     * Anthropic 协议允许连续两条 user message。
-     *
-     * <p>s16 升级:**先把协议响应路由到 ProtocolRegistry**(更新 pending →
-     * approved/rejected),再把剩下的非协议消息注入 history。
-     * 跟上游 {@code consume_lead_inbox(route_protocol=True)} 一致 ——
-     * 防止协议响应被消费但 registry 状态没更新的 bug。
      */
-    private void drainLeadInbox() {
+    private void drainLeadInbox(List<MessageParam> history) {
         List<Message> inbox = messageBus.readInbox("lead");
         if (inbox.isEmpty()) return;
 
-        // s16: 先路由协议响应,从 inbox 列表中摘出去
         List<Message> nonProtocol = new ArrayList<>();
         int routed = 0;
         for (Message m : inbox) {
@@ -601,7 +561,6 @@ public class AgentLoopHarness {
         for (Message m : nonProtocol) {
             sb.append("  From ").append(m.getFrom())
                     .append(" (").append(m.getType());
-            // 协议请求(plan_approval_request)的 request_id 显式给 LLM 看,方便 review_plan
             String reqId = String.valueOf(m.getMetadata().getOrDefault("request_id", ""));
             if (!reqId.isBlank()) sb.append(" req:").append(reqId);
             sb.append("): ").append(m.getContent()).append('\n');

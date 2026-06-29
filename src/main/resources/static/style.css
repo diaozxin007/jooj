@@ -171,6 +171,82 @@ body.sidebar-open #sidebarToggle {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
+.panel-actions {
+  display: flex; align-items: center; gap: 4px;
+}
+
+.new-session-btn {
+  font-size: 16px; padding: 2px 8px; font-weight: 600;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--accent);
+}
+.new-session-btn:hover { background: rgba(217, 119, 6, 0.12); }
+
+/* ── Sessions panel items ─────────────────────────────────── */
+
+.session-item {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 6px; margin: 0 -6px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: background .12s ease;
+  position: relative;
+}
+.session-item:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+.session-item.current {
+  background: rgba(217, 119, 6, 0.10);
+}
+.session-item.current .session-title {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.session-main {
+  flex: 1; min-width: 0; overflow: hidden;
+}
+.session-title {
+  font-size: 12.5px; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.session-meta {
+  display: flex; gap: 8px; align-items: center; margin-top: 3px;
+  font-size: 11px; color: var(--text-faint);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.session-tag {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  padding: 0 5px; border-radius: 3px;
+  font-size: 10px;
+}
+
+.session-delete {
+  opacity: 0;
+  font-size: 12px; padding: 2px 6px;
+  color: var(--text-faint);
+  transition: opacity .12s ease, color .12s ease;
+}
+.session-item:hover .session-delete {
+  opacity: 1;
+}
+.session-delete:hover {
+  color: var(--error); background: rgba(248, 113, 113, 0.08);
+}
+
+.current-session-tag {
+  font-size: 11px;
+  padding: 2px 8px; margin-left: 8px;
+  background: rgba(217, 119, 6, 0.08);
+  border: 1px solid rgba(217, 119, 6, 0.25);
+  border-radius: 999px;
+  color: var(--accent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  max-width: 160px; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ── Header ────────────────────────────────────────────────── */
 
 header {

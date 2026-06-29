@@ -19,7 +19,7 @@
 <body>
   <header>
     <div class="brand">
-      <button id="sidebarToggle" type="button" class="icon-btn" aria-label="切换菜单" title="菜单 (Skills / Memory / 状态)">
+      <button id="sidebarToggle" type="button" class="icon-btn" aria-label="切换菜单" title="菜单 (Sessions / Skills / Memory / 状态)">
         <!-- Hamburger SVG: 3 横线,跟 macOS 习惯一致 -->
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
              stroke-width="2" stroke-linecap="round" aria-hidden="true">
@@ -31,10 +31,11 @@
       <span class="logo">▸</span>
       <span class="title">jooj</span>
       <span class="subtitle">Java agent harness · s01-s14</span>
+      <span class="current-session-tag" id="currentSessionTag" title="当前 session"></span>
     </div>
     <div class="actions">
       <span id="status" class="status idle">idle</span>
-      <button id="clearBtn" type="button" title="清空对话历史">清空</button>
+      <button id="clearBtn" type="button" title="清空当前 session 的对话历史">清空</button>
     </div>
   </header>
 
@@ -43,6 +44,20 @@
   <div class="layout">
     <aside id="sidebar" class="sidebar" aria-label="信息面板">
       <div class="sidebar-inner">
+        <!-- Sessions panel — 放最上面,优先级最高 -->
+        <section class="panel">
+          <header class="panel-header">
+            <h3>Sessions</h3>
+            <div class="panel-actions">
+              <button class="icon-btn new-session-btn" id="newSessionBtn" type="button" title="新建 session">+</button>
+              <button class="icon-btn refresh-btn" data-panel="sessions" type="button" title="刷新">↻</button>
+            </div>
+          </header>
+          <div class="panel-body" id="panel-sessions">
+            <p class="panel-loading">加载中...</p>
+          </div>
+        </section>
+
         <!-- Skills panel -->
         <section class="panel">
           <header class="panel-header">
@@ -93,7 +108,7 @@
     <p class="hint">
       <span id="historySize">0 条历史</span>
       <span class="dot">·</span>
-      <span>jooj 共享 history with CLI REPL</span>
+      <span id="sessionHint">session: default</span>
     </p>
   </footer>
 

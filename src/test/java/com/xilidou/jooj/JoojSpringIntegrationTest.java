@@ -1,6 +1,7 @@
 package com.xilidou.jooj;
 
 import com.xilidou.jooj.agent.AgentLoopHarness;
+import com.xilidou.jooj.session.Session;
 import com.xilidou.jooj.tool.ToolRegistry;
 import com.xilidou.jooj.compact.CompactPipeline;
 import com.xilidou.jooj.hook.HookManager;
@@ -122,11 +123,14 @@ class JoojSpringIntegrationTest {
         Mockito.when(mockClient.createMessage(ArgumentMatchers.any(CreateMessageRequest.class)))
                 .thenReturn(ResponseFixtures.endTurn("hello from spring-wired jooj"));
 
-        harness.processOneQuery("ping");
+        // 测试隔离:从空 history 起,避免被之前残留的盘上 history 污染
+        harness.clearHistory(Session.DEFAULT_ID);
 
-        assertEquals(2, harness.getHistory().size());
-        assertEquals("user", harness.getHistory().get(0).getRole());
-        assertEquals("assistant", harness.getHistory().get(1).getRole());
+        harness.processOneQuery(Session.DEFAULT_ID, "ping");
+
+        assertEquals(2, harness.getHistory(Session.DEFAULT_ID).size());
+        assertEquals("user", harness.getHistory(Session.DEFAULT_ID).get(0).getRole());
+        assertEquals("assistant", harness.getHistory(Session.DEFAULT_ID).get(1).getRole());
 
         // mockClient 至少被调用 1 次(主 LLM 调用);
         // MemoryExtractor.extract 在 onTurnEnd 也会再调一次(LLM 用于抽取 fact),
@@ -180,8 +184,8 @@ class JoojSpringIntegrationTest {
             Mockito.when(mockClient.createMessage(ArgumentMatchers.any(CreateMessageRequest.class)))
                     .thenReturn(ResponseFixtures.endTurn("ack"));
 
-            harness.clearHistory();
-            harness.processOneQuery("any query after memory write");
+            harness.clearHistory(Session.DEFAULT_ID);
+            harness.processOneQuery(Session.DEFAULT_ID, "any query after memory write");
 
             // 用 ArgumentCaptor 抓所有调用的 request,检查 SYSTEM
             var captor = ArgumentCaptor.forClass(CreateMessageRequest.class);

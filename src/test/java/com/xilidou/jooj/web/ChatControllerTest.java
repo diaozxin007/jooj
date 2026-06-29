@@ -5,12 +5,13 @@ import com.xilidou.jooj.JoojTestConfig;
 import com.xilidou.jooj.http.MockAnthropicClient;
 import com.xilidou.jooj.http.ResponseFixtures;
 import com.xilidou.jooj.agent.AgentLoopHarness;
+import com.xilidou.jooj.session.AgentLockProvider;
+import com.xilidou.jooj.session.Session;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
@@ -32,6 +33,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  *
  * <p><b>profile = test + web</b> —— 测试时启用 web profile 让 controller 被 Spring 扫到,
  * 同时 test profile 抑制 CLI runner 不阻塞 stdin。
+ *
+ * <h3>Session 抽象 patch 后</h3>
+ *
+ * <p>每个 chat / history / clear 请求都需要带 sessionId(空白时退化到 default)。
+ * 测试统一用 {@code default} session 简化,锁也走 default 那把。
  */
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -39,17 +45,20 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @ActiveProfiles({"test", "web"})
 class ChatControllerTest {
 
+    private static final String SID = Session.DEFAULT_ID;
+
     @Autowired MockMvc mvc;
     @Autowired ObjectMapper json;
     @Autowired MockAnthropicClient mock;
     @Autowired AgentLoopHarness harness;
-    @Autowired @Qualifier("agentLock") ReentrantLock agentLock;
+    @Autowired AgentLockProvider lockProvider;
 
     @BeforeEach
     void setUp() {
-        harness.clearHistory();
+        harness.clearHistory(SID);
         // 清残留 lock 状态(上一个测试可能没释放干净)
-        while (agentLock.isHeldByCurrentThread()) agentLock.unlock();
+        ReentrantLock lock = lockProvider.lockFor(SID);
+        while (lock.isHeldByCurrentThread()) lock.unlock();
     }
 
     @AfterEach
@@ -66,7 +75,7 @@ class ChatControllerTest {
 
         mvc.perform(post("/api/chat")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(json.writeValueAsString(new ChatRequest("hi"))))
+                        .content(json.writeValueAsString(new ChatRequest(SID, "hi"))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.reply").value("Hello back"))
                 .andExpect(jsonPath("$.historySize").value(2))    // user + assistant
@@ -79,7 +88,7 @@ class ChatControllerTest {
     void chat_empty_query_returns_400() throws Exception {
         mvc.perform(post("/api/chat")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(json.writeValueAsString(new ChatRequest(""))))
+                        .content(json.writeValueAsString(new ChatRequest(SID, ""))))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error").exists());
     }
@@ -94,20 +103,32 @@ class ChatControllerTest {
     }
 
     @Test
-    @DisplayName("POST /api/chat 当 lock 被占 → 409")
+    @DisplayName("POST /api/chat 未知 sessionId → 400")
+    void chat_unknown_session_returns_400() throws Exception {
+        mvc.perform(post("/api/chat")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(
+                                new ChatRequest("non-existent-session-id-xyz", "hi"))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").exists());
+    }
+
+    @Test
+    @DisplayName("POST /api/chat 当 default session lock 被占 → 409")
     void chat_lock_busy_returns_409() throws Exception {
         // ReentrantLock 是可重入的:同一线程持有时再 tryLock 仍成功。
         // 所以必须从另一个线程拿 lock,主线程(MockMvc 同步调 controller)才会 tryLock 失败。
+        ReentrantLock targetLock = lockProvider.lockFor(SID);
         java.util.concurrent.CountDownLatch acquired = new java.util.concurrent.CountDownLatch(1);
         java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
         Thread holder = new Thread(() -> {
-            agentLock.lock();
+            targetLock.lock();
             try {
                 acquired.countDown();
                 try { release.await(5, java.util.concurrent.TimeUnit.SECONDS); }
                 catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
             } finally {
-                agentLock.unlock();
+                targetLock.unlock();
             }
         }, "lock-holder");
         holder.setDaemon(true);
@@ -117,7 +138,7 @@ class ChatControllerTest {
         try {
             mvc.perform(post("/api/chat")
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content(json.writeValueAsString(new ChatRequest("hi"))))
+                            .content(json.writeValueAsString(new ChatRequest(SID, "hi"))))
                     .andExpect(status().isConflict())
                     .andExpect(jsonPath("$.error").exists());
         } finally {
@@ -134,15 +155,14 @@ class ChatControllerTest {
         // 先跑一轮聊天
         mvc.perform(post("/api/chat")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(json.writeValueAsString(new ChatRequest("hi"))))
+                        .content(json.writeValueAsString(new ChatRequest(SID, "hi"))))
                 .andExpect(status().isOk());
 
-        mvc.perform(get("/api/history"))
+        mvc.perform(get("/api/history?sessionId=" + SID))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.messages").isArray())
                 .andExpect(jsonPath("$.messages.length()").value(2))
                 .andExpect(jsonPath("$.messages[0].role").value("user"))
-                // user 消息可能被 memory 丰富过(injection),只断言含 "hi"
                 .andExpect(jsonPath("$.messages[0].text").exists())
                 .andExpect(jsonPath("$.messages[1].role").value("assistant"))
                 .andExpect(jsonPath("$.messages[1].text").value("hello"));
@@ -155,14 +175,14 @@ class ChatControllerTest {
 
         mvc.perform(post("/api/chat")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(json.writeValueAsString(new ChatRequest("hi"))))
+                        .content(json.writeValueAsString(new ChatRequest(SID, "hi"))))
                 .andExpect(status().isOk());
 
-        mvc.perform(post("/api/clear"))
+        mvc.perform(post("/api/clear?sessionId=" + SID))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.historySize").value(0));
 
-        mvc.perform(get("/api/history"))
+        mvc.perform(get("/api/history?sessionId=" + SID))
                 .andExpect(jsonPath("$.messages.length()").value(0));
     }
 
@@ -176,7 +196,7 @@ class ChatControllerTest {
 
         mvc.perform(post("/api/chat")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(json.writeValueAsString(new ChatRequest("read x.txt"))))
+                        .content(json.writeValueAsString(new ChatRequest(SID, "read x.txt"))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.reply").value("read it"))
                 .andExpect(jsonPath("$.toolCalls").isArray())

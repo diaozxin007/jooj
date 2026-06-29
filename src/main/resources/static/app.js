@@ -1,5 +1,9 @@
 // jooj WebUI — vanilla JS,无前端框架。
-// 三个 endpoint:POST /api/chat / GET /api/history / POST /api/clear
+// 端点:
+//   - POST /api/chat            { sessionId, query }
+//   - GET  /api/history?sessionId=xxx
+//   - POST /api/clear?sessionId=xxx
+//   - POST/GET/PATCH/DELETE /api/sessions[/{id}]
 
 (function () {
   const $ = (id) => document.getElementById(id);
@@ -10,6 +14,15 @@
   const clearBtn = $('clearBtn');
   const status = $('status');
   const histSizeEl = $('historySize');
+  const sessionHint = $('sessionHint');
+  const currentSessionTag = $('currentSessionTag');
+  const newSessionBtn = $('newSessionBtn');
+
+  // 当前 sessionId(从 localStorage 恢复;默认 "default")
+  const SESSION_KEY = 'jooj.sessionId';
+  let currentSessionId = localStorage.getItem(SESSION_KEY) || 'default';
+  // session 列表 cache,渲染 + 找 title 用
+  let sessionsCache = [];
 
   // ── 状态切换 ──
 
@@ -23,6 +36,13 @@
     sendBtn.disabled = busy;
     clearBtn.disabled = busy;
     setStatus(busy ? 'busy' : 'idle', busy ? 'thinking' : 'idle');
+  }
+
+  function updateSessionDisplay() {
+    const found = sessionsCache.find(s => s.id === currentSessionId);
+    const label = found ? found.title : currentSessionId;
+    if (sessionHint) sessionHint.textContent = `session: ${label}`;
+    if (currentSessionTag) currentSessionTag.textContent = label;
   }
 
   // ── 渲染 ──
@@ -46,7 +66,6 @@
   }
 
   function appendBubble({ role, text, toolCalls = [], isError = false }) {
-    // 双重保险:空文本不渲染气泡(后端 /api/history 已过滤一次,但 reply 路径可能也空)
     const hasText = text != null && String(text).trim().length > 0;
     const hasToolCalls = toolCalls && toolCalls.length > 0;
     if (!hasText && !hasToolCalls && !isError) return null;
@@ -63,13 +82,8 @@
         '</div>';
     }
 
-    // 只有 hasToolCalls 没文本时,把工具列表当 content 显示;
-    // 大部分场景仍是 text + meta(tool tags)分两行
     const displayText = hasText ? text : (hasToolCalls ? '(调用了工具)' : '');
 
-    // 关键:assistant 文本走 markdown 渲染(LLM 经常用 ** ` ``` # 等),
-    // user 输入保留 plain text(用户没写 markdown 习惯,意外 ** 也别被加粗)。
-    // error 气泡也走 plain,错误信息直白比较好。
     const contentHtml = (role === 'assistant' && !isError && hasText)
       ? `<div class="content markdown">${renderMarkdown(displayText)}</div>`
       : `<div class="content">${escapeHtml(displayText)}</div>`;
@@ -113,35 +127,30 @@
     return div.innerHTML;
   }
 
-  // ── Markdown 渲染(只对 assistant 用,防 XSS) ──
-  // 配置 marked:GFM(table、strikethrough)+ breaks(单换行=<br>,贴近 LLM 输出习惯)
+  // ── Markdown 渲染 ──
   if (window.marked) {
     window.marked.setOptions({
       gfm: true,
       breaks: true,
-      headerIds: false,    // 不生成 id,避免气泡里 anchor 链接干扰
-      mangle: false,       // 关闭 email 混淆(GFM 没要求)
+      headerIds: false,
+      mangle: false,
     });
   }
 
-  /** 渲染 markdown 到 HTML 字符串。CDN 没加载时 fallback 到 escapeHtml + 保留换行。 */
   function renderMarkdown(text) {
     if (!text) return '';
     if (!window.marked || !window.DOMPurify) {
-      // 降级:CDN 挂了就 plain text + 保换行
       return escapeHtml(text).replace(/\n/g, '<br>');
     }
     const rawHtml = window.marked.parse(String(text));
-    // 关键:DOMPurify 清洗,白名单标签 + 强制链接安全
     const clean = window.DOMPurify.sanitize(rawHtml, {
-      ADD_ATTR: ['target', 'rel'],          // 允许 target/rel(下面 hook 加上)
+      ADD_ATTR: ['target', 'rel'],
       FORBID_TAGS: ['style', 'iframe', 'form', 'input'],
       FORBID_ATTR: ['onerror', 'onload', 'onclick', 'style'],
     });
     return clean;
   }
 
-  // 给所有 markdown 链接强制加 target=_blank + rel=noopener noreferrer
   if (window.DOMPurify) {
     window.DOMPurify.addHook('afterSanitizeAttributes', (node) => {
       if (node.tagName === 'A') {
@@ -179,11 +188,32 @@
     return res.json();
   }
 
-  // ── 启动:加载历史 ──
+  async function patchJson(url, body) {
+    const res = await fetch(url, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
+    return data;
+  }
+
+  async function deleteReq(url) {
+    const res = await fetch(url, { method: 'DELETE' });
+    if (res.status === 204) return null;
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    return data;
+  }
+
+  // ── 加载历史 ──
 
   async function loadHistory() {
     try {
-      const data = await getJson('/api/history');
+      const data = await getJson(`/api/history?sessionId=${encodeURIComponent(currentSessionId)}`);
       messages.innerHTML = '';
       if (!data.messages || data.messages.length === 0) {
         renderEmptyState();
@@ -200,14 +230,17 @@
     }
   }
 
-  // ── 提交一条对话 ──
+  // ── 提交对话 ──
 
   async function sendQuery(query) {
     appendBubble({ role: 'user', text: query });
     const loading = appendLoadingBubble();
     setBusy(true);
     try {
-      const data = await postJson('/api/chat', { query });
+      const data = await postJson('/api/chat', {
+        sessionId: currentSessionId,
+        query,
+      });
       loading.remove();
       appendBubble({
         role: 'assistant',
@@ -215,6 +248,8 @@
         toolCalls: data.toolCalls || [],
       });
       updateHistorySize(data.historySize);
+      // 发完一条更新一下 session list(messageCount 变了)
+      loadSessionsList();
     } catch (e) {
       loading.remove();
       appendBubble({
@@ -248,13 +283,14 @@
   });
 
   clearBtn.addEventListener('click', async () => {
-    if (!confirm('清空对话历史?(jooj 共享同一份 history,CLI 那边也会被清)')) return;
+    if (!confirm(`清空当前 session (${currentSessionId}) 的对话历史?`)) return;
     setBusy(true);
     try {
-      await postJson('/api/clear');
+      await postJson(`/api/clear?sessionId=${encodeURIComponent(currentSessionId)}`);
       messages.innerHTML = '';
       renderEmptyState();
       updateHistorySize(0);
+      loadSessionsList();
     } catch (e) {
       console.error(e);
       alert('清空失败:' + (e.message || 'unknown'));
@@ -264,17 +300,137 @@
     }
   });
 
-  // ── Sidebar (Skills / Memory / 状态) ──
-  // 默认收起。点 hamburger 切 body.sidebar-open。第一次打开时 lazy 加载 3 个 panel,
-  // 之后不主动重抓 — 用户点 ↻ 或重启页面才刷新。
+  // ── Sessions panel ──
+
+  /** 切换到指定 sessionId,重新加载 history。 */
+  async function switchSession(sessionId) {
+    if (!sessionId || sessionId === currentSessionId) return;
+    currentSessionId = sessionId;
+    localStorage.setItem(SESSION_KEY, sessionId);
+    updateSessionDisplay();
+    messages.innerHTML = '';
+    await loadHistory();
+    renderSessionsPanel();
+  }
+
+  /** 创建新 session 并切过去。 */
+  async function createNewSession() {
+    try {
+      const created = await postJson('/api/sessions', {});
+      sessionsCache.push(created);
+      await switchSession(created.id);
+    } catch (e) {
+      alert('创建失败:' + (e.message || 'unknown'));
+    }
+  }
+
+  /** 删除 session。如果删的是当前 session,切回 default。 */
+  async function deleteSession(sessionId) {
+    if (!confirm(`删除 session "${sessionLabel(sessionId)}" 及其所有对话历史?`)) return;
+    try {
+      await deleteReq(`/api/sessions/${encodeURIComponent(sessionId)}`);
+      sessionsCache = sessionsCache.filter(s => s.id !== sessionId);
+      if (sessionId === currentSessionId) {
+        await switchSession('default');
+      } else {
+        renderSessionsPanel();
+      }
+    } catch (e) {
+      alert('删除失败:' + (e.message || 'unknown'));
+    }
+  }
+
+  function sessionLabel(sessionId) {
+    const found = sessionsCache.find(s => s.id === sessionId);
+    return found ? found.title : sessionId;
+  }
+
+  /** 拉取 session 列表 + 重渲染 panel。 */
+  async function loadSessionsList() {
+    try {
+      const list = await getJson('/api/sessions');
+      sessionsCache = Array.isArray(list) ? list : [];
+      renderSessionsPanel();
+      updateSessionDisplay();
+    } catch (e) {
+      const target = $('panel-sessions');
+      if (target) target.innerHTML = `<p class="panel-error">加载失败:${escapeHtml(e.message)}</p>`;
+    }
+  }
+
+  /** 把 sessionsCache 渲染到 #panel-sessions。 */
+  function renderSessionsPanel() {
+    const target = $('panel-sessions');
+    if (!target) return;
+    if (sessionsCache.length === 0) {
+      target.innerHTML = '<p class="panel-empty">还没有 session</p>';
+      return;
+    }
+    target.innerHTML = sessionsCache.map(s => {
+      const isCurrent = s.id === currentSessionId;
+      const reserved = isReserved(s.id);
+      const lastActive = s.lastActiveAt ? formatTime(s.lastActiveAt) : '';
+      return `
+        <div class="session-item ${isCurrent ? 'current' : ''}" data-id="${escapeHtml(s.id)}">
+          <div class="session-main">
+            <div class="session-title" title="${escapeHtml(s.title)}">${escapeHtml(s.title)}</div>
+            <div class="session-meta">
+              <span class="session-count">${s.messageCount || 0} 条</span>
+              ${lastActive ? `<span class="session-time">${escapeHtml(lastActive)}</span>` : ''}
+              ${reserved ? '<span class="session-tag">reserved</span>' : ''}
+            </div>
+          </div>
+          ${reserved ? '' : `<button class="icon-btn session-delete" data-id="${escapeHtml(s.id)}" type="button" title="删除">✕</button>`}
+        </div>
+      `;
+    }).join('');
+
+    // 绑定点击
+    target.querySelectorAll('.session-item').forEach(el => {
+      el.addEventListener('click', (ev) => {
+        if (ev.target.classList.contains('session-delete')) return;
+        switchSession(el.dataset.id);
+      });
+    });
+    target.querySelectorAll('.session-delete').forEach(btn => {
+      btn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        deleteSession(btn.dataset.id);
+      });
+    });
+  }
+
+  function isReserved(id) {
+    return id === 'default' || id === 'cli-default' || id === 'cron-default';
+  }
+
+  function formatTime(iso) {
+    try {
+      const d = new Date(iso);
+      const now = new Date();
+      const sameDay = d.toDateString() === now.toDateString();
+      if (sameDay) {
+        return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+      }
+      return d.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' });
+    } catch (_) {
+      return '';
+    }
+  }
+
+  if (newSessionBtn) {
+    newSessionBtn.addEventListener('click', createNewSession);
+  }
+
+  // ── Sidebar 主开关(Sessions / Skills / Memory / Status)──
 
   const sidebarToggle = $('sidebarToggle');
   const sidebar = $('sidebar');
-  const panelLoaded = { skills: false, memory: false, status: false };
+  const panelLoaded = { sessions: false, skills: false, memory: false, status: false };
 
   function openSidebar() {
     document.body.classList.add('sidebar-open');
-    // 第一次打开时把 3 个 panel 都拉一遍(并发,不阻塞 UI)
+    if (!panelLoaded.sessions) loadPanel('sessions');
     if (!panelLoaded.skills) loadPanel('skills');
     if (!panelLoaded.memory) loadPanel('memory');
     if (!panelLoaded.status) loadPanel('status');
@@ -288,29 +444,25 @@
 
   sidebarToggle.addEventListener('click', toggleSidebar);
 
-  // 刷新按钮:每个 panel-header 里的 ↻ 都走这条
-  // skills 走 POST /api/skills/rescan(强制重扫盘),其他走默认 GET
   document.querySelectorAll('.refresh-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const which = btn.dataset.panel;
-      panelLoaded[which] = false;   // 强制重拉
+      panelLoaded[which] = false;
       loadPanel(which, /*forceRescan=*/ which === 'skills');
     });
   });
 
-  /**
-   * 加载一个 panel 的内容到 #panel-<name>。
-   * 每个 panel 独立失败:网络错或 5xx 时显示 error 文字,不影响其他 panel。
-   *
-   * @param name      panel 名(skills / memory / status)
-   * @param forceRescan true 时调对应 rescan 接口(POST + side effect),
-   *                  仅 skills 支持;false 走默认 GET。用户点 ↻ 时传 true。
-   */
+  /** 加载一个 panel 的内容到 #panel-<name>。 */
   async function loadPanel(name, forceRescan = false) {
     const target = $(`panel-${name}`);
     if (!target) return;
     target.innerHTML = '<p class="panel-loading">加载中...</p>';
     try {
+      if (name === 'sessions') {
+        await loadSessionsList();
+        panelLoaded.sessions = true;
+        return;
+      }
       const data = (forceRescan && name === 'skills')
           ? await postJson(`/api/skills/rescan`)
           : await getJson(`/api/${name}`);
@@ -322,10 +474,6 @@
     }
   }
 
-  /**
-   * 把后端 JSON 渲染成 HTML 片段。
-   * Skills / Memory / Status 三种格式分别处理。
-   */
   function renderPanel(name, data) {
     if (name === 'skills') {
       const list = data.skills || [];
@@ -344,11 +492,9 @@
       if (!catalog) {
         return '<p class="panel-empty">还没有 memory(LLM 在对话中会逐步沉淀)</p>';
       }
-      // memory catalog 本来就是 markdown,直接用 .markdown 样式
       return `<div class="markdown">${renderMarkdown(catalog)}</div>`;
     }
     if (name === 'status') {
-      // 平铺 dt/dd 网格。memoryCharCount 显示成"~K chars"更易读
       const kbytes = (data.memoryCharCount / 1024).toFixed(1);
       return `
         <dl class="status-grid">
@@ -363,7 +509,8 @@
     return '<p class="panel-error">未知 panel</p>';
   }
 
-  // 初始
+  // ── 初始化 ──
+  loadSessionsList().then(() => updateSessionDisplay());
   loadHistory();
   input.focus();
 })();

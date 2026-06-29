@@ -27,10 +27,19 @@ class JoojHomeTest {
 
     @Test
     void getHomePath_defaultsToUserHomeDotJooj() {
-        // 默认情况(没设 JOOJ_HOME): ~/.jooj
+        // 默认情况(没设 JOOJ_HOME):~/.jooj
+        // 测试时 surefire 会注入 JOOJ_HOME=target/.jooj-test 做隔离,
+        // 所以这里只能在 env 为空时才严格断言 user.home 默认路径。
         Path got = JoojHome.getHomePath();
-        Path expected = Paths.get(System.getProperty("user.home"), JoojHome.DIR_NAME);
-        assertThat(got).isEqualTo(expected);
+        String envOverride = System.getenv(JoojHome.HOME_ENV_VAR);
+        if (envOverride != null && !envOverride.isBlank()) {
+            // 走的是 env override 分支 —— 验证 path 跟 env 一致
+            assertThat(got).isEqualTo(Paths.get(envOverride));
+        } else {
+            // 没 env 时走默认分支
+            Path expected = Paths.get(System.getProperty("user.home"), JoojHome.DIR_NAME);
+            assertThat(got).isEqualTo(expected);
+        }
     }
 
     @Test
