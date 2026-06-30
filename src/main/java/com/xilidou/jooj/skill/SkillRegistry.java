@@ -247,10 +247,51 @@ public class SkillRegistry {
         String raw = Files.readString(manifest);
         Map<String, Object> meta = parseFrontmatter(raw);
 
-        String name = (String) meta.getOrDefault("name", subdir.getFileName().toString());
+        // s21 Demo 17:对齐 agentskills.io spec,读全 6 个 frontmatter 字段。
+        String dirName = subdir.getFileName().toString();
+        String name = (String) meta.getOrDefault("name", dirName);
         String description = (String) meta.getOrDefault("description", firstNonEmptyLine(raw));
+        String license = stringOrNull(meta.get("license"));
+        String compatibility = stringOrNull(meta.get("compatibility"));
+        String allowedTools = stringOrNull(meta.get("allowed-tools"));
+        Map<String, String> metadata = stringMapOrNull(meta.get("metadata"));
 
-        return new Skill(name, description, raw);
+        // 校验:不合规直接抛,scanDir 的 try-catch 会 log.warn 跳过该 skill
+        String err;
+        if ((err = SkillFrontmatterValidator.validateName(name, dirName)) != null) {
+            throw new IOException("SKILL.md frontmatter invalid (" + manifest + "): " + err);
+        }
+        if ((err = SkillFrontmatterValidator.validateDescription(description)) != null) {
+            throw new IOException("SKILL.md frontmatter invalid (" + manifest + "): " + err);
+        }
+        if ((err = SkillFrontmatterValidator.validateCompatibility(compatibility)) != null) {
+            throw new IOException("SKILL.md frontmatter invalid (" + manifest + "): " + err);
+        }
+
+        return new Skill(name, description, raw, license, compatibility, metadata, allowedTools);
+    }
+
+    /** 把 frontmatter 里的对象转成 String;null / 空白 都返 null。 */
+    private static String stringOrNull(Object value) {
+        return (value instanceof String s && !s.isBlank()) ? s : null;
+    }
+
+    /**
+     * 把 frontmatter 里的 metadata 块转成 String→String map。
+     * spec 说"map from string keys to string values",但 YAML 反序列化里 value 可能是
+     * Integer / Double / Boolean(如 {@code version: 1.0} 不带引号会被解析成 Double 1.0)。
+     * 这里统一 toString,容忍。null / 非 Map / 空 Map 都返 null。
+     */
+    private static Map<String, String> stringMapOrNull(Object value) {
+        if (!(value instanceof Map<?, ?> m) || m.isEmpty()) return null;
+        Map<String, String> out = new java.util.LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : m.entrySet()) {
+            if (entry.getKey() == null) continue;
+            String key = entry.getKey().toString();
+            String val = entry.getValue() == null ? "" : entry.getValue().toString();
+            out.put(key, val);
+        }
+        return out.isEmpty() ? null : out;
     }
 
     /**

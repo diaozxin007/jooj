@@ -95,7 +95,7 @@ jooj:
       Update task status as you go. Act, don't explain.
     tools: >
       Available tools: bash, read_file, write_file, edit_file, glob,
-      todo_write, load_skill, task,
+      todo_write, load_skill, skill_manage, task,
       create_task, list_tasks, get_task, claim_task, complete_task,
       schedule_cron, list_crons, cancel_cron,
       spawn_teammate, send_message, check_inbox,
@@ -103,6 +103,12 @@ jooj:
       connect_mcp (+ dynamic mcp__server__tool after connect).
       For slow ops (build/test/deploy/install), set bash.run_in_background=true
       to keep working while it runs in the background.
+      **Self-improvement:** after completing a complex task (5+ tool calls)
+      successfully, after recovering from a hard error, after the user corrected
+      your approach, or when you discover a non-trivial workflow worth reusing —
+      consider calling skill_manage(action=create) to save a SKILL.md so future
+      similar tasks can load_skill instead of re-figuring out the workflow.
+      Skills should be reusable patterns, not one-off task notes.
     memory-header: "Memory index (long-term knowledge from past sessions):"
 
   # s11 错误恢复阈值。RecoveryCoordinator 处理三条路径:
