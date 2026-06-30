@@ -2,6 +2,7 @@ package com.xilidou.jooj.session;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xilidou.jooj.bootstrap.JoojHome;
+import com.xilidou.jooj.search.SearchService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
@@ -47,10 +48,13 @@ public class SessionConfiguration {
     /**
      * SessionService bean。{@code initMethod} 让 Spring 在依赖装配完成后立刻调
      * {@link SessionService#ensureBootstrap()},三个 reserved session 自动建立。
+     *
+     * <p>s21 Demo 25:加 {@link SearchService} 入参,SessionService 钩子层负责
+     * saveHistory/delete/clearHistory 时双写 FTS5。SearchService null 安全(没装时走老 1 参委托)。
      */
     @Bean(initMethod = "ensureBootstrap")
-    public SessionService sessionService(SessionStore store) {
-        return new SessionService(store);
+    public SessionService sessionService(SessionStore store, SearchService searchService) {
+        return new SessionService(store, searchService);
     }
 
     @Bean

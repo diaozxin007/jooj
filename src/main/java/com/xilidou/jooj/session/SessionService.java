@@ -1,6 +1,7 @@
 package com.xilidou.jooj.session;
 
 import com.xilidou.jooj.http.dto.MessageParam;
+import com.xilidou.jooj.search.SearchService;
 import lombok.extern.slf4j.Slf4j;
 
 import java.time.Instant;
@@ -44,6 +45,12 @@ public class SessionService {
 
     private final SessionStore store;
 
+    /**
+     * s21 Demo 25:SQLite + FTS5 search index 钩子。可空(测试 / CLI 单测可选)。
+     * SessionService 不强依赖 SearchService —— 老 1 参 ctor 仍合法,内部 null 守卫。
+     */
+    private final SearchService searchService;
+
     /** 内存索引(单例,启动期从 {@link SessionStore#readIndex()} 加载)。 */
     private final Map<String, Session> sessions = new LinkedHashMap<>();
 
@@ -54,8 +61,16 @@ public class SessionService {
     private final Map<String, List<MessageParam>> historyCache = new ConcurrentHashMap<>();
 
     public SessionService(SessionStore store) {
+        this(store, null);
+    }
+
+    /**
+     * s21 Demo 25 加 2 参构造器:同时接 SearchService。null 安全(老调用方仍走 1 参委托)。
+     */
+    public SessionService(SessionStore store, SearchService searchService) {
         if (store == null) throw new IllegalArgumentException("store must not be null");
         this.store = store;
+        this.searchService = searchService;
     }
 
     /**
@@ -207,6 +222,10 @@ public class SessionService {
         } finally {
             indexLock.unlock();
         }
+        // s21 Demo 25:SearchService 钩子放 indexLock 外,不让 SQLite IO 拖住 sessions map 锁
+        if (searchService != null) {
+            searchService.onDeleteSession(id);
+        }
     }
 
     // ── History API ─────────────────────────────────────────────
@@ -262,6 +281,11 @@ public class SessionService {
         } finally {
             indexLock.unlock();
         }
+        // s21 Demo 25:SearchService 钩子放 indexLock 外,不让 SQLite IO 拖住 sessions map 锁。
+        // 同步双写:LLM 在下一轮 turn 调 session_search 时立即能搜到本轮新内容(语义跟 Hermes 一致)。
+        if (searchService != null) {
+            searchService.onSaveHistory(sessionId, history);
+        }
     }
 
     /**
@@ -272,5 +296,11 @@ public class SessionService {
         List<MessageParam> hist = loadHistory(sessionId);
         hist.clear();
         saveHistory(sessionId, hist);
+        // s21 Demo 25:saveHistory 已经把空 list 同步到 FTS5(replaceSession 整盘覆盖,
+        // DELETE WHERE session_id=? 后没有 INSERT 的话效果跟 clear 一样)。
+        // 显式调 onClearHistory 是防御性的 —— 如果未来 saveHistory 钩子改语义,这里仍兜底。
+        if (searchService != null) {
+            searchService.onClearHistory(sessionId);
+        }
     }
 }
