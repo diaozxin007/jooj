@@ -81,6 +81,18 @@ jooj:
   mcp:
     startup-timeout-ms: 30000
     call-timeout-ms: 60000
+
+  # s21 Demo 25: Session 全文搜索 (SQLite + FTS5),对齐 Hermes Tier 2 P2.4。
+  # JSON (~/.jooj/sessions/<id>.json) 是事实源,SQLite 是衍生 view,SessionService 同步双写。
+  # db 落 ~/.jooj/search.db(跟 sessions/ 平级);失败 warn 不挡 JSON 主流程;
+  # 损坏可调 SearchService.rebuildAll() 重建。详见笔记 [[jooj_改造日志_s21]] Demo 25。
+  search:
+    db-filename: search.db
+    schema-version: 1
+    default-limit: 10
+    max-limit: 50
+    busy-timeout-ms: 5000
+    startup-check: light    # none / light / strict
   permission:
     mode: cli   # cli | always-allow | always-deny
   skills:
@@ -100,7 +112,8 @@ jooj:
       schedule_cron, list_crons, cancel_cron,
       spawn_teammate, send_message, check_inbox,
       create_worktree, remove_worktree, keep_worktree,
-      connect_mcp (+ dynamic mcp__server__tool after connect).
+      connect_mcp (+ dynamic mcp__server__tool after connect),
+      session_search.
       For slow ops (build/test/deploy/install), set bash.run_in_background=true
       to keep working while it runs in the background.
       **Self-improvement:** after completing a complex task (5+ tool calls)
@@ -109,6 +122,9 @@ jooj:
       consider calling skill_manage(action=create) to save a SKILL.md so future
       similar tasks can load_skill instead of re-figuring out the workflow.
       Skills should be reusable patterns, not one-off task notes.
+      **Cross-session memory:** when the user references a past discussion
+      ("we agreed last time", "remember when X"), call session_search to find
+      the actual exchange instead of guessing — memory is for facts, search is for context.
     memory-header: "Memory index (long-term knowledge from past sessions):"
 
   # s11 错误恢复阈值。RecoveryCoordinator 处理三条路径:

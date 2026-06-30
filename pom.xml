@@ -138,6 +138,20 @@
              src/main/java/cn/langchat/openclaw/weixin/(50 个文件,~3700 行,从 Maven Central
              的 -sources.jar 直接拿真源码 + 修了已知 immutable list bug)。
              详见笔记 [[jooj_改造日志_s21]] Demo 16。 -->
+
+        <!-- s21 Demo 25: SQLite + FTS5 for cross-session full-text search.
+             3.47.2.0 是 Java 17 兼容的稳定版,jar 内置 macOS arm64 + linux x86_64/arm64 +
+             win x86_64 的 native lib(zero-config 解压到 tmpdir 加载)。
+             不引 spring-boot-starter-jdbc —— FTS5 SQL 本身就是 SQLite 特有
+             (CREATE VIRTUAL TABLE USING fts5 / MATCH ? / snippet()),
+             JdbcTemplate 救不了几行代码反而让 SearchStore 强依赖 Spring 跟其他 Store 不一致。
+             SearchStore 走纯 JDBC + 单连接 + WAL 模式,跟 SessionStore / TaskStore / MemoryStore
+             "测试可以 new 不依赖容器" 的惯例一致。 -->
+        <dependency>
+            <groupId>org.xerial</groupId>
+            <artifactId>sqlite-jdbc</artifactId>
+            <version>3.47.2.0</version>
+        </dependency>
     </dependencies>
 
     <build>

@@ -74,6 +74,12 @@ public class JoojProperties {
     /** s19 MCP plugin —— 真实 SDK 配置(stdio 子进程)。 */
     private Mcp mcp = new Mcp();
 
+    /**
+     * s21 Demo 25: Session 全文搜索(SQLite + FTS5)配置。
+     * SearchStore 在 jooj home 下建一个 search.db,跟 sessions/ 目录平级。
+     */
+    private Search search = new Search();
+
     @Data
     public static class Anthropic {
         /** API 根 URL,默认 https://api.anthropic.com。 */
@@ -168,7 +174,8 @@ public class JoojProperties {
                 "schedule_cron, list_crons, cancel_cron, " +
                 "spawn_teammate, send_message, check_inbox, " +
                 "create_worktree, remove_worktree, keep_worktree, " +
-                "connect_mcp (+ dynamic mcp__server__tool after connect). " +
+                "connect_mcp (+ dynamic mcp__server__tool after connect), " +
+                "session_search. " +
                 "For slow ops (build/test/deploy/install), set bash.run_in_background=true " +
                 "to keep working while it runs in the background.";
 
@@ -374,5 +381,53 @@ public class JoojProperties {
             /** 子进程环境变量(覆盖父进程同名)。 */
             private Map<String, String> env = new LinkedHashMap<>();
         }
+    }
+
+    /**
+     * Session 全文搜索(s21 Demo 25):SQLite + FTS5 索引子系统配置。
+     *
+     * <p>JSON 仍是 history 的 source-of-truth({@code ~/.jooj/sessions/&lt;id&gt;.json}),
+     * SQLite 是衍生 view —— SessionService.saveHistory 主流程同步双写,失败 warn 不挡 JSON 主流程。
+     * SQLite 损坏可重建({@link com.xilidou.jooj.search.SearchService#rebuildAll} 入口扫所有 JSON 重灌 FTS5)。
+     *
+     * <h3>FTS5 schema</h3>
+     *
+     * <p>contentful 单 virtual table:索引列 {@code content},UNINDEXED 元数据列
+     * {@code session_id / msg_index / block_index / role / kind / tool_name / tool_use_id / saved_at}。
+     * tokenize 用 {@code unicode61 remove_diacritics 2}(Hermes 同款,中文按字切英文不词干)。
+     */
+    @Data
+    public static class Search {
+        /**
+         * SQLite 数据库文件名,放在 {@link com.xilidou.jooj.bootstrap.JoojHome} 下。
+         * 默认 {@code search.db}。
+         */
+        private String dbFilename = "search.db";
+
+        /**
+         * Schema 版本 —— SearchStore.ensureSchema 启动期校验
+         * {@code schema_meta.version},不匹配走 startupCheck 策略。
+         * 改 schema 时 +1。
+         */
+        private int schemaVersion = 1;
+
+        /** session_search tool 默认 limit(LLM 不传 limit 时使用)。 */
+        private int defaultLimit = 10;
+
+        /** session_search tool 最大 limit clamp(防 LLM 传超大值压垮 LLM 输出)。 */
+        private int maxLimit = 50;
+
+        /** SQLite busy timeout(毫秒)—— 写并发时其他连接等的最长时间。WAL 模式下基本用不到。 */
+        private int busyTimeoutMs = 5000;
+
+        /**
+         * 启动期一致性检查模式:
+         * <ul>
+         *   <li>{@code none} — 不查,直接用现有 db</li>
+         *   <li>{@code light}(默认)— 查 schema_meta.version,不一致 → drop + recreate(空索引,**不自动重建数据**),log warn 提示用户必要时调 rebuildAll API</li>
+         *   <li>{@code strict} — 遍历所有 session 对 countSession(sid) vs JSON 中可索引 message 数</li>
+         * </ul>
+         */
+        private String startupCheck = "light";
     }
 }
