@@ -71,18 +71,25 @@ class CompactPipelineTest {
         List<MessageParam> messages = new ArrayList<>();
         messages.add(userText("query"));
         messages.add(assistantText("ok"));
+        // s21 Demo 25:fixture 改成成对 (tool_use, tool_result),让 boundary walk
+        // 不会因孤儿 tool_result 触发 "不裁" 兜底。
         for (int i = 0; i < 12; i++) {
+            messages.add(assistantToolUse("tu_" + i));
             messages.add(userToolResult("tu_" + i, longContent(200)));
         }
 
         boolean changed = pipeline.apply(messages);
 
         assertTrue(changed, "L1 或 L2 至少有一层应该触发");
+        // total=2+24=26, max=8, headKeep=2 → tailStart=20. boundary 不动.
+        // snipped=18, result = head 2 + placeholder + tail 6 = 9
         assertEquals(9, messages.size(), "L1 snip 后总 9 条");
 
         assertEquals("user", messages.get(2).getRole());
-        assertEquals("[snipped 6 messages]", messages.get(2).getContent());
+        assertEquals("[snipped 18 messages]", messages.get(2).getContent());
 
+        // tail 6 条 = 3 对 (tu_9_use, tu_9_result, tu_10_use, tu_10_result, tu_11_use, tu_11_result)
+        // 含 3 个 tool_result, keepRecent=2 → L2 替换 1 个
         int placeholderCount = 0;
         for (MessageParam m : messages) {
             if (m.getContent() instanceof List<?> blocks) {
@@ -94,7 +101,7 @@ class CompactPipelineTest {
                 }
             }
         }
-        assertEquals(4, placeholderCount, "L2 应替换 6-2=4 个 tool_result");
+        assertEquals(1, placeholderCount, "L2 应替换 3-2=1 个 tool_result");
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -107,23 +114,33 @@ class CompactPipelineTest {
         CompactPipeline pipeline = new CompactPipeline(new CompactConfig(6, 1, 2, 50));
         List<MessageParam> messages = new ArrayList<>();
         messages.add(userText("query"));
+        // s21 Demo 25:成对 fixture
         for (int i = 0; i < 8; i++) {
+            messages.add(assistantToolUse("tu_" + i));
             messages.add(userToolResult("tu_" + i, longContent(150)));
         }
 
         pipeline.apply(messages);
 
-        assertEquals(7, messages.size());
-        assertEquals("[snipped 3 messages]", messages.get(1).getContent());
+        // total=1+16=17, max=6, headKeep=1 → tailStart=12.
+        // tail [12..17)=5 条 (tu_5_result, tu_6_use, tu_6_result, tu_7_use, tu_7_result),
+        // openResults={5,6,7},tu_use 6,7 配对,tu_5 unmatched → 退到 11.
+        // tail [11..17) 6 条 = 3 对配对 → 停。snipped=11-1=10
+        // result = head 1 + placeholder + tail 6 = 8
+        assertEquals(8, messages.size());
+        assertEquals("[snipped 10 messages]", messages.get(1).getContent());
 
+        // tail 6 条 = 3 对 → 3 个 tool_result, keepRecent=2 → replace 1
         int placeholderCount = 0;
         for (int i = 2; i < messages.size(); i++) {
-            ToolResultBlock trb = (ToolResultBlock) ((List<?>) messages.get(i).getContent()).get(0);
-            if (MicroCompactor.PLACEHOLDER.equals(trb.getContent())) {
+            if (messages.get(i).getContent() instanceof List<?> blocks
+                    && !blocks.isEmpty()
+                    && blocks.get(0) instanceof ToolResultBlock trb
+                    && MicroCompactor.PLACEHOLDER.equals(trb.getContent())) {
                 placeholderCount++;
             }
         }
-        assertEquals(3, placeholderCount, "L2 在 snip 之后看到 5 个 tool_result, 替换 3 个");
+        assertEquals(1, placeholderCount, "L2 在 snip 之后看到 3 个 tool_result, 替换 1 个");
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -178,7 +195,9 @@ class CompactPipelineTest {
         List<MessageParam> messages = new ArrayList<>();
         messages.add(userText("query"));
         messages.add(assistantText("ok"));
+        // s21 Demo 25:成对 fixture(每个 result 都有对应的 use)
         for (int i = 0; i < 20; i++) {
+            messages.add(assistantToolUse("tu_" + i));
             messages.add(userToolResult("tu_" + i, longContent(500)));
         }
 
@@ -191,6 +210,8 @@ class CompactPipelineTest {
                     "L3 应落盘 tu_" + i);
         }
 
+        // total=2+40=42, max=10, headKeep=2 → tailStart=34. boundary 配对完整 → 不动.
+        // result = head 2 + placeholder + tail 8 = 11
         assertTrue(messages.size() <= 12,
                 "L1 应裁到 ≤ 12 条(maxMessages=10 + 边界保护),实际=" + messages.size());
 

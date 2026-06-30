@@ -250,7 +250,18 @@ public class SessionService {
             // 第一次访问时也能成功。
             createWithId(sessionId, sessionId);
         }
-        return historyCache.computeIfAbsent(sessionId, store::readHistory);
+        return historyCache.computeIfAbsent(sessionId, sid -> {
+            // s21 Demo 25 副作用:磁盘上的 session JSON 可能含孤儿 tool_use / tool_result
+            // (历史 SnipCompactor 切坏 / 进程崩溃半截 / 倒入的不完整 history),
+            // Anthropic 收到立刻 400。读盘后做一次 self-consistent scrub 兜底,
+            // 把孤儿块过滤掉再塞 cache,后续 saveHistory 自然把净化结果写回 JSON。
+            List<MessageParam> raw = store.readHistory(sid);
+            // scrub 出来要是个 mutable ArrayList,因为 AgentLoopHarness 直接 add 到这个引用
+            List<MessageParam> scrubbed = HistoryScrubber.scrub(raw);
+            // scrub 可能返回原引用(无变化时),也可能返回新 ArrayList。
+            // 都包成 ArrayList 保证可变。
+            return scrubbed instanceof ArrayList<MessageParam> al ? al : new ArrayList<>(scrubbed);
+        });
     }
 
     /**
