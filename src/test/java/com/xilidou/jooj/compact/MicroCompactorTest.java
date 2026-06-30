@@ -200,4 +200,63 @@ class MicroCompactorTest {
         assertEquals(longContent(150), r2.getContent());
         assertEquals(longContent(150), r3.getContent());
     }
+
+    // ─────────────────────────────────────────────────────────────
+    //  s21 Demo 25 副作用 v5:placeholder 文案 + 反诱导循环
+    // ─────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("PLACEHOLDER 文案明确指示 LLM 不要重跑 (反死循环邀请函)")
+    void placeholder_text_does_not_invite_rerun() {
+        // 关键不变量:placeholder 必须含显式禁止重跑的措辞
+        // (跟老文案 "Re-run the tool if needed" 形成对比 — 那条是死循环邀请函)
+        String p = MicroCompactor.PLACEHOLDER;
+        assertTrue(p.toLowerCase().contains("do not") || p.toLowerCase().contains("don't"),
+                "PLACEHOLDER 必须显式禁止重跑(用 'Do NOT' / 'Don't')。实际:" + p);
+        // 兜底:不能含老文案的"Re-run if needed"措辞
+        assertFalse(p.toLowerCase().contains("re-run the tool if needed"),
+                "PLACEHOLDER 不能含老文案 'Re-run the tool if needed'(死循环邀请函)。实际:" + p);
+        // 兜底 2:LEGACY_PLACEHOLDER 字面值跟新 PLACEHOLDER 必须不同
+        assertNotEquals(MicroCompactor.LEGACY_PLACEHOLDER, p,
+                "PLACEHOLDER 跟 LEGACY_PLACEHOLDER 必须是两个字面值,否则 idempotent check 退化");
+    }
+
+    @Test
+    @DisplayName("LEGACY_PLACEHOLDER 仍被识别为已压缩(防 jooj 重启加载老 history 后无限替换)")
+    void legacy_placeholder_idempotent() {
+        // 给 ToolResultBlock 直接塞老文案,模拟磁盘上残留的老 history
+        MicroCompactor compactor = new MicroCompactor(new CompactConfig(50, 3, 1, 50));
+        List<MessageParam> messages = new ArrayList<>();
+        // 4 个 user 各带一个老 placeholder 的 tool_result
+        for (int i = 0; i < 4; i++) {
+            messages.add(new MessageParam("user", new ArrayList<>(List.of(
+                    ToolResultBlock.ofText("tu_" + i, MicroCompactor.LEGACY_PLACEHOLDER)
+            ))));
+        }
+        boolean changed = compactor.apply(messages);
+        // 老 placeholder 都不应被再次替换(idempotent)
+        assertFalse(changed, "已是老 placeholder 不应再触发替换 - 防加载老 history 后无限替换");
+        for (MessageParam m : messages) {
+            ToolResultBlock trb = (ToolResultBlock) ((List<?>) m.getContent()).get(0);
+            assertEquals(MicroCompactor.LEGACY_PLACEHOLDER, trb.getContent(),
+                    "老 placeholder 应保持不变。如需升级走 HistoryScrubber 路径");
+        }
+    }
+
+    @Test
+    @DisplayName("二次 apply 不重复替换 (新 PLACEHOLDER 自身幂等)")
+    void new_placeholder_idempotent() {
+        MicroCompactor compactor = new MicroCompactor(new CompactConfig(50, 3, 1, 50));
+        List<MessageParam> messages = new ArrayList<>();
+        for (int i = 0; i < 4; i++) {
+            messages.add(new MessageParam("user", new ArrayList<>(List.of(
+                    ToolResultBlock.ofText("tu_" + i, "x".repeat(200))
+            ))));
+        }
+
+        boolean first = compactor.apply(messages);
+        assertTrue(first, "第一次 apply 应替换 3 个 (4 - keepRecent=1)");
+        boolean second = compactor.apply(messages);
+        assertFalse(second, "第二次 apply 看到的全是 PLACEHOLDER 应跳过 - 这是反诱导死循环的最后一道防线");
+    }
 }

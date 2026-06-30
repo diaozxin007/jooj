@@ -180,4 +180,53 @@ class HistoryScrubberTest {
         });
         assertTrue(stillHasUse);
     }
+
+    // ─────────────────────────────────────────────────────────────
+    //  s21 Demo 25 副作用 v5:老 placeholder 升级 + 跨边界一致性
+    // ─────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("legacy placeholder 升级到新文案(防加载老 history 后 LLM 看到 'Re-run' 邀请陷入死循环)")
+    void scrub_upgrades_legacy_placeholder() {
+        // 模拟老 history:1 对完整 (tool_use + tool_result),tool_result content
+        // 是老 placeholder
+        List<MessageParam> hist = new ArrayList<>();
+        hist.add(userText("q"));
+        hist.add(new MessageParam("assistant", List.of(
+                new ToolUseBlock("u1", "test", JsonNodeFactory.instance.objectNode())
+        )));
+        ToolResultBlock legacy = ToolResultBlock.ofText("u1",
+                HistoryScrubber.LEGACY_TOOL_RESULT_PLACEHOLDER);
+        hist.add(new MessageParam("user", new ArrayList<>(List.of(legacy))));
+
+        List<MessageParam> out = HistoryScrubber.scrub(hist);
+        assertEquals(3, out.size(), "完整对应保留");
+
+        // tool_result 的 content 应被升级到新文案
+        ToolResultBlock outBlock = (ToolResultBlock) ((List<?>) out.get(2).getContent()).get(0);
+        assertEquals(HistoryScrubber.NEW_TOOL_RESULT_PLACEHOLDER, outBlock.getContent(),
+                "scrub 应把老 placeholder 升级成新文案");
+
+        // 升级后再 scrub 一次:应是 no-op
+        List<MessageParam> out2 = HistoryScrubber.scrub(out);
+        ToolResultBlock outBlock2 = (ToolResultBlock) ((List<?>) out2.get(2).getContent()).get(0);
+        assertEquals(HistoryScrubber.NEW_TOOL_RESULT_PLACEHOLDER, outBlock2.getContent(),
+                "已升级后再 scrub 应是 no-op");
+    }
+
+    @Test
+    @DisplayName("HistoryScrubber 跟 MicroCompactor 的 placeholder 文案常量必须一致")
+    void placeholder_consistency_across_packages() {
+        // session 包不应反向依赖 compact 包,所以两边各自定义同款字面量。
+        // 这个测试守门:任一边改了字面量另一边也得跟 — 否则老 history 加载后会出现
+        // "scrub 升级到 X,MicroCompactor 不认 X 又当新 longContent 替换" 的灾难。
+        assertEquals(
+                com.xilidou.jooj.compact.MicroCompactor.PLACEHOLDER,
+                HistoryScrubber.NEW_TOOL_RESULT_PLACEHOLDER,
+                "MicroCompactor.PLACEHOLDER ↔ HistoryScrubber.NEW_TOOL_RESULT_PLACEHOLDER 必须严格相等");
+        assertEquals(
+                com.xilidou.jooj.compact.MicroCompactor.LEGACY_PLACEHOLDER,
+                HistoryScrubber.LEGACY_TOOL_RESULT_PLACEHOLDER,
+                "MicroCompactor.LEGACY_PLACEHOLDER ↔ HistoryScrubber.LEGACY_TOOL_RESULT_PLACEHOLDER 必须严格相等");
+    }
 }

@@ -45,6 +45,24 @@ import java.util.Set;
 @Slf4j
 public final class HistoryScrubber {
 
+    /**
+     * MicroCompactor 老 placeholder 文案(s21 Demo 25 之前)。
+     *
+     * <p>老文案"Re-run if needed"诱导 LLM 重跑工具 → 新 tool_result 又被 L2 压缩 → 死循环。
+     * scrub 加载时把磁盘上残留的老 placeholder 升级到新文案,堵死老 history 已经被
+     * 写过老文案的 corner case。
+     *
+     * <p>跟 {@code com.xilidou.jooj.compact.MicroCompactor#PLACEHOLDER} 的新文案重复,
+     * 但 session 不应反向依赖 compact 包(违反 Demo 8 / Demo 25 一直坚持的"分层"),
+     * 这里冗余两个常量字面量,用专门测试守门保证两边不脱节。
+     */
+    static final String LEGACY_TOOL_RESULT_PLACEHOLDER =
+            "[Earlier tool result compacted. Re-run the tool if needed.]";
+
+    /** 升级目标文案。跟 {@code MicroCompactor.PLACEHOLDER} 完全一致。 */
+    static final String NEW_TOOL_RESULT_PLACEHOLDER =
+            "[Earlier tool result omitted to save context. Do NOT re-run the tool unless the user explicitly asks.]";
+
     private HistoryScrubber() {
         // utility class
     }
@@ -62,28 +80,33 @@ public final class HistoryScrubber {
         // Pass 1: 收集所有 tool_use id 和所有 tool_result 引用的 id
         Set<String> useIds = new HashSet<>();
         Set<String> resultIds = new HashSet<>();
+        boolean hasLegacyPlaceholder = false;
         for (MessageParam m : history) {
             if (m == null) continue;
             if (m.getContent() instanceof List<?> blocks) {
                 for (Object b : blocks) {
                     if (b instanceof ToolUseBlock tu && tu.getId() != null) {
                         useIds.add(tu.getId());
-                    } else if (b instanceof ToolResultBlock tr && tr.getToolUseId() != null) {
-                        resultIds.add(tr.getToolUseId());
+                    } else if (b instanceof ToolResultBlock tr) {
+                        if (tr.getToolUseId() != null) resultIds.add(tr.getToolUseId());
+                        if (LEGACY_TOOL_RESULT_PLACEHOLDER.equals(tr.getContent())) {
+                            hasLegacyPlaceholder = true;
+                        }
                     }
                 }
             }
         }
 
-        // 没任何配对相关的块 → 啥都不用做
-        if (useIds.isEmpty() && resultIds.isEmpty()) {
+        // 既无 tool 配对相关块,也没老 placeholder → 啥都不用做
+        if (useIds.isEmpty() && resultIds.isEmpty() && !hasLegacyPlaceholder) {
             return history;
         }
 
-        // Pass 2: 过滤孤儿
+        // Pass 2: 过滤孤儿 + 升级老 placeholder
         List<MessageParam> out = new ArrayList<>(history.size());
         int droppedBlocks = 0;
         int droppedMessages = 0;
+        int upgradedPlaceholders = 0;
         for (MessageParam m : history) {
             if (m == null) {
                 out.add(null);
@@ -96,17 +119,27 @@ public final class HistoryScrubber {
                 continue;
             }
             List<ContentBlock> kept = new ArrayList<>(blocks.size());
+            boolean changed = false;
             for (Object b : blocks) {
                 if (b instanceof ToolResultBlock tr) {
                     String tid = tr.getToolUseId();
                     if (tid == null || !useIds.contains(tid)) {
                         droppedBlocks++;
+                        changed = true;
                         continue;
+                    }
+                    // 升级老 placeholder 到新文案 —— 原地 mutate(ToolResultBlock 是 @Data Lombok,
+                    // setContent 公开,跟 MicroCompactor.apply 同模式)
+                    if (LEGACY_TOOL_RESULT_PLACEHOLDER.equals(tr.getContent())) {
+                        tr.setContent(NEW_TOOL_RESULT_PLACEHOLDER);
+                        upgradedPlaceholders++;
+                        // changed 不置 true:还是同一个 block 引用,只是字段被改了
                     }
                 } else if (b instanceof ToolUseBlock tu) {
                     String tid = tu.getId();
                     if (tid == null || !resultIds.contains(tid)) {
                         droppedBlocks++;
+                        changed = true;
                         continue;
                     }
                 }
@@ -120,17 +153,17 @@ public final class HistoryScrubber {
                 continue;
             }
             // block 数量没变 → 复用原 message 引用,避免无谓拷贝
-            if (kept.size() == blocks.size()) {
+            if (!changed) {
                 out.add(m);
             } else {
                 out.add(new MessageParam(m.getRole(), kept));
             }
         }
 
-        if (droppedBlocks > 0 || droppedMessages > 0) {
-            log.warn("[HistoryScrub] dropped {} orphan tool block(s) + {} now-empty message(s) " +
-                            "from history of size {}",
-                    droppedBlocks, droppedMessages, history.size());
+        if (droppedBlocks > 0 || droppedMessages > 0 || upgradedPlaceholders > 0) {
+            log.warn("[HistoryScrub] dropped {} orphan tool block(s) + {} now-empty message(s) + " +
+                            "upgraded {} legacy tool_result placeholder(s) (history size {})",
+                    droppedBlocks, droppedMessages, upgradedPlaceholders, history.size());
         }
         return out;
     }

@@ -35,9 +35,27 @@ import java.util.List;
 public class MicroCompactor {
 
     /**
-     * 替换占位符。约 60 字符,确保 minPlaceholderLen 默认 120 不会被自身触发(幂等防护)。
+     * 替换占位符。
+     *
+     * <p>s21 Demo 25 副作用 v5:**绝不诱导 LLM 重跑工具**。
+     * 老文案 {@code "Earlier tool result compacted. Re-run the tool if needed."} 是
+     * 个**死循环邀请函** —— LLM 看到 "Re-run if needed" 会真的重跑 → 新 tool_result 又
+     * 被 L2 压缩 → LLM 看到 placeholder 又重跑 → 死循环烧钱。实战撞过(微信里问"讲解
+     * hermes 异常恢复",LLM 4 秒一轮重跑同样 cat / sed,几分钟烧 30K+ tokens)。
+     *
+     * <p>新文案显式禁止重跑(除非用户明确要求),让 LLM 把 placeholder 当 "已知不可见
+     * 内容" 处理而不是 "需要补一刀" 的暗示。
+     *
+     * <p>幂等:同时识别 {@link #PLACEHOLDER}(新文案)和 {@link #LEGACY_PLACEHOLDER}
+     * (老文案,磁盘上的 history 可能仍带这个值)—— 两者都不再触发替换,避免老 history
+     * 加载后被无限替换成新 placeholder。
      */
-    static final String PLACEHOLDER =
+    public static final String PLACEHOLDER =
+            "[Earlier tool result omitted to save context. Do NOT re-run the tool unless the user explicitly asks.]";
+
+    /** 老文案(s21 Demo 25 之前)— 仅用于幂等识别,不再写入新数据。public 是为了让
+     *  HistoryScrubber 的跨边界一致性测试能直接对照。 */
+    public static final String LEGACY_PLACEHOLDER =
             "[Earlier tool result compacted. Re-run the tool if needed.]";
 
     private final CompactConfig config;
@@ -63,9 +81,10 @@ public class MicroCompactor {
         for (int i = 0; i < compactRange; i++) {
             ToolResultBlock b = all.get(i);
             String s = String.valueOf(b.getContent());
-            // 长度阈值过滤微小输出 + 幂等性防护(L2 自身) + 不动 L3 stub(交互边界)
+            // 长度阈值过滤微小输出 + 幂等性防护(同时认新老文案) + 不动 L3 stub(交互边界)
             if (s.length() > config.minPlaceholderLen()
                     && !PLACEHOLDER.equals(s)
+                    && !LEGACY_PLACEHOLDER.equals(s)
                     && !s.startsWith(BudgetCompactor.STUB_PREFIX)) {
                 b.setContent(PLACEHOLDER);
                 compacted++;
