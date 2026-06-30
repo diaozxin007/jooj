@@ -150,6 +150,55 @@ class InboundDispatcherTest {
                         new ChannelMessage("weixin", "用户中文ID", null, "x", null)));
     }
 
+    // ─────────────────────────────────────────────────────────────
+    //  s21 Demo 25 副作用 v4:slash 命令路由(不喂 LLM)
+    // ─────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("slash 命令(/clear)走客户端路由 + 回写 channel,不喂 LLM")
+    void slash_clear_handled_without_llm() {
+        // 先建立一些 history,使 /clear 真有事可清
+        mock.reset(
+                ResponseFixtures.endTurn("first"),
+                ResponseFixtures.endTurn("[]")
+        );
+        dispatcher.dispatch(new ChannelMessage("weixin", "peerSlash", null, "warmup", null));
+        assertEquals(2, sessionService.loadHistory("chat_weixin_peerSlash").size(),
+                "warmup 后 history 应该有 user + assistant 两条");
+
+        // /clear 来了 —— 准备空 mock。如果代码错把 /clear 喂给 LLM,因为没有 stub
+        // mock 行为(根据 mock 实现)可能 NPE 或返默认 —— 这里只验证 history + reply,
+        // 间接验证 slash 路径(因为如果走 LLM,reply 不会是 "history cleared")
+        mock.reset();
+        fake.outbound.clear();
+
+        dispatcher.dispatch(new ChannelMessage("weixin", "peerSlash", null, "/clear", null));
+
+        // history 真被清空
+        assertEquals(0, sessionService.loadHistory("chat_weixin_peerSlash").size(),
+                "/clear 应真清空 history");
+
+        // reply 已回写到 channel
+        assertEquals(1, fake.outbound.size(), "应回写一条 ack");
+        assertTrue(fake.outbound.get(0).text().contains("history cleared")
+                        || fake.outbound.get(0).text().contains("✓"),
+                "回写内容应是 /clear ack,实际:" + fake.outbound.get(0).text());
+    }
+
+    @Test
+    @DisplayName("/help 走客户端路由列出可用命令")
+    void slash_help_handled() {
+        mock.reset();
+        fake.outbound.clear();
+
+        dispatcher.dispatch(new ChannelMessage("weixin", "peerHelp", null, "/help", null));
+
+        assertEquals(1, fake.outbound.size());
+        String reply = fake.outbound.get(0).text();
+        assertTrue(reply.contains("/clear") && reply.contains("/help"),
+                "/help 输出应列出 /clear + /help,实际:" + reply);
+    }
+
     /** 简易 channel 实现:把出站记录到 list,测试用。 */
     static class FakeChannel implements MessageChannel {
         record Out(String peer, String text) {}

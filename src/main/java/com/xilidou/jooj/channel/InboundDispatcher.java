@@ -5,6 +5,7 @@ import com.xilidou.jooj.http.dto.MessageParam;
 import com.xilidou.jooj.http.dto.TextBlock;
 import com.xilidou.jooj.session.AgentLockProvider;
 import com.xilidou.jooj.session.SessionService;
+import com.xilidou.jooj.slashcmd.SlashCommandRegistry;
 import com.xilidou.jooj.tool.ExecutionContext;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -43,14 +44,21 @@ public class InboundDispatcher implements ChannelDeliverer {
     private final AgentLoopHarness harness;
     private final SessionService sessionService;
     private final AgentLockProvider lockProvider;
+    /**
+     * s21 Demo 25 副作用 v4:slash 命令路由 —— IM 用户在微信里发 {@code /clear} / {@code /help}
+     * 也走纯客户端命令,不喂 LLM。null 安全(SlashCommandRegistry 没装时 dispatcher 仍能跑)。
+     */
+    private final SlashCommandRegistry slashCommands;
     private final Map<String, MessageChannel> channels = new HashMap<>();
 
     public InboundDispatcher(AgentLoopHarness harness,
                              SessionService sessionService,
-                             AgentLockProvider lockProvider) {
+                             AgentLockProvider lockProvider,
+                             SlashCommandRegistry slashCommands) {
         this.harness = harness;
         this.sessionService = sessionService;
         this.lockProvider = lockProvider;
+        this.slashCommands = slashCommands;
     }
 
     /** Channel 启动时主动注册自己 —— 出站要靠这张表。 */
@@ -73,6 +81,17 @@ public class InboundDispatcher implements ChannelDeliverer {
     public void dispatch(ChannelMessage msg) {
         String sessionId = sessionIdFor(msg);
         ensureSession(sessionId, msg);
+
+        // s21 Demo 25 副作用 v4:slash 命令优先走客户端路由,不喂 LLM、不进 history。
+        // 跟 ChatController + JoojCliRunner 同款。这样 IM 用户发 /clear 真的清 history,
+        // 不会被 LLM 当成普通文本礼貌响应"已清空"但实际啥也没清。
+        if (slashCommands != null && slashCommands.isCommand(msg.text())) {
+            String reply = slashCommands.dispatch(msg.text(), sessionId);
+            log.info("[Channel:{}] slash command handled: {} (session={})",
+                    msg.channel(), msg.text().strip(), sessionId);
+            sendReply(msg, reply);
+            return;
+        }
 
         ReentrantLock lock = lockProvider.lockFor(sessionId);
         if (!lock.tryLock()) {
@@ -102,7 +121,12 @@ public class InboundDispatcher implements ChannelDeliverer {
             log.info("[Channel:{}] no assistant text to reply (peer={})", msg.channel(), msg.peerId());
             return;
         }
+        sendReply(msg, reply);
+    }
 
+    /** 通过已注册 channel 把回复发回 peer。失败仅 warn,不抛。 */
+    private void sendReply(ChannelMessage msg, String reply) {
+        if (reply == null || reply.isBlank()) return;
         MessageChannel ch = channels.get(msg.channel());
         if (ch == null) {
             log.warn("[Channel:{}] not registered, dropping reply to peer={}",
