@@ -45,16 +45,41 @@ public class MemoryService {
     private final MemoryConsolidator consolidator;
     private final MemoryConfig config;
 
+    /**
+     * s21 Demo 26 / Hermes Tier 3 P3.1:Background reviewer + 异步执行池。
+     * 都可空(没装时 onTurnEnd 不调 review,主路径不变)。
+     */
+    private final BackgroundReviewer reviewer;
+    private final java.util.concurrent.Executor reviewExecutor;
+
     public MemoryService() {
         this(new MemoryConfig(), null, null);
     }
 
+    /**
+     * 老 3 参 ctor —— 不接 BackgroundReviewer,等价旧行为。测试 / 不需要 review 的场景走这条。
+     */
     public MemoryService(MemoryConfig config, AnthropicClient client, String model) {
+        this(config, client, model, null, null);
+    }
+
+    /**
+     * 5 参 ctor —— 接 BackgroundReviewer + 异步 executor。{@code reviewer} / {@code reviewExecutor}
+     * 任一为 null,onTurnEnd 都跳过 review(主路径仍正常)。
+     *
+     * <p>典型生产装配在 {@link MemoryConfiguration} 里:Spring 注入 {@code joojBgExecutor}
+     * + new BackgroundReviewer(store, client, model)。
+     */
+    public MemoryService(MemoryConfig config, AnthropicClient client, String model,
+                         BackgroundReviewer reviewer,
+                         java.util.concurrent.Executor reviewExecutor) {
         this.config = config;
         this.store = new MemoryStore(config);
         this.selector = new MemorySelector(store, client, model);
         this.extractor = new MemoryExtractor(store, client, model);
         this.consolidator = new MemoryConsolidator(store, config, client, model);
+        this.reviewer = reviewer;
+        this.reviewExecutor = reviewExecutor;
     }
 
     /**
@@ -73,6 +98,17 @@ public class MemoryService {
 
     /**
      * Turn 结束后调用 —— 抽取本轮新事实落盘 + 必要时合并旧 memory。
+     *
+     * <p>s21 Demo 26 / Hermes Tier 3 P3.1:接背景 reviewer 异步触发 ——
+     * Extractor + Consolidator 仍同步跑(主路径,LLM 下一轮立即看到新 fact),
+     * Reviewer 在 BgExecutor 里**异步**跑(turn 不阻塞,replay 找重复模式 / 工作流教训)。
+     *
+     * <p>三者职责互补:
+     * <ul>
+     *   <li>Extractor —— 抽本轮 fact("用户偏好 tabs")</li>
+     *   <li>Consolidator —— memory 文件数超阈值合并旧 entry</li>
+     *   <li>Reviewer —— 找跨 turn 模式("用户两次纠正我用 ripgrep 不要用 grep")</li>
+     * </ul>
      */
     public void onTurnEnd(List<MessageParam> messages) {
         try {
@@ -84,6 +120,26 @@ public class MemoryService {
             consolidator.consolidate();
         } catch (Exception e) {
             log.warn("[Memory] consolidate failed: {}", e.toString());
+        }
+        // s21 Demo 26:异步 background review。null 安全,任一组件没装就跳过。
+        if (reviewer != null && reviewExecutor != null && messages != null && !messages.isEmpty()) {
+            // 拷一份 immutable snapshot:reviewer 在另一个线程跑,主线程后续可能再 mutate messages
+            // (Demo 25 副作用 v3 的 send-time scrub 等),不能让两边竞争同一个 list
+            final List<MessageParam> snapshot = List.copyOf(messages);
+            try {
+                reviewExecutor.execute(() -> {
+                    try {
+                        reviewer.review(snapshot);
+                    } catch (Throwable t) {
+                        // 双层 try:executor 内部任何异常都吞,不让 bg 线程死
+                        log.warn("[Memory:Review] async review threw: {}", t.toString());
+                    }
+                });
+            } catch (java.util.concurrent.RejectedExecutionException e) {
+                // 池满 + AbortPolicy 才会触发;BgExecutor 用 CallerRunsPolicy 不会到这里,
+                // 但万一未来换 executor 仍兜底 —— review 不能挡 onTurnEnd 主路径
+                log.warn("[Memory:Review] executor rejected, skipping review: {}", e.toString());
+            }
         }
     }
 
