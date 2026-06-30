@@ -72,8 +72,14 @@ public class MemoryStore {
      *
      * <p>body 超过 {@link MemoryConfig#maxBodyBytes()} 会截断 + 加 "..." 提示。
      *
+     * <p><b>容量保护(s21 Demo 21)</b>:写入后总字符数会超过
+     * {@link MemoryConfig#totalMaxBytes()} 时抛 {@link MemoryQuotaExceededException}。
+     * 同名覆盖时把"旧 entry 的 body 字符数"从 current 减掉,只算 net 增量;否则一条
+     * 老 entry 改一字也会被拒。
+     *
      * @param mem 要写入的 memory(filename 字段被忽略,由 slug(name) 计算)
      * @return 落盘后的完整路径
+     * @throws MemoryQuotaExceededException 写入会让总量超过 totalMaxBytes 时
      */
     public Path write(MemoryFile mem) {
         if (mem == null) throw new IllegalArgumentException("mem must not be null");
@@ -97,6 +103,20 @@ public class MemoryStore {
             }
 
             String body = truncateBody(mem.getBody());
+
+            // s21 Demo 21:容量检查 —— 算 net 增量(覆盖时减掉旧 entry body)
+            // 计量口径:统一按 stripTrailing() 长度,跟 read 回来后的 body 一致
+            // (renderFrontmatter 总会给 body 末尾加 '\n',如果不 strip,read 出的 body
+            //  比写入时多 1,导致计量不一致)
+            int currentTotal = totalBodyChars();
+            int oldEntryBytes = readBodyChars(filename);  // 不存在返回 0
+            int incoming = body.stripTrailing().length();
+            int netAfter = currentTotal - oldEntryBytes + incoming;
+            if (netAfter > config.totalMaxBytes()) {
+                throw new MemoryQuotaExceededException(
+                        currentTotal - oldEntryBytes, incoming, config.totalMaxBytes());
+            }
+
             String content = renderFrontmatter(mem, body);
             Files.writeString(file, content, StandardCharsets.UTF_8);
 
@@ -106,7 +126,8 @@ public class MemoryStore {
             // 重建索引
             rebuildIndex();
 
-            log.info("[Memory] wrote {} ({})", filename, mem.getType().slug());
+            log.info("[Memory] wrote {} ({}, {}/{} chars after)",
+                    filename, mem.getType().slug(), netAfter, config.totalMaxBytes());
             return file;
         } catch (IOException e) {
             throw new UncheckedIOException("Failed to write memory: " + mem.getName(), e);
@@ -200,6 +221,35 @@ public class MemoryStore {
         } catch (IOException e) {
             throw new UncheckedIOException("Failed to read index", e);
         }
+    }
+
+    /**
+     * 累加所有 memory 文件的 body 字符数(s21 Demo 21,容量配额计量)。
+     *
+     * <p>不算 frontmatter / 索引文件 —— 它们对 LLM 不可见配额,只算"真信息密度"。
+     * 解析失败的文件按 0 计(跟 {@link #list} 行为一致)。
+     *
+     * <p>计量口径:对 body 调 {@code stripTrailing()},跟 {@link #write} 入口一致。
+     */
+    public int totalBodyChars() {
+        int total = 0;
+        for (MemoryFile m : list()) {
+            String body = m.getBody();
+            if (body != null) total += body.stripTrailing().length();
+        }
+        return total;
+    }
+
+    /**
+     * 读取一个文件的 body 字符数(不存在返回 0)。s21 Demo 21 算"覆盖时旧 entry 释放的字符"用。
+     *
+     * <p>计量口径:对 body 调 {@code stripTrailing()},跟 {@link #write} 入口一致。
+     */
+    int readBodyChars(String filename) {
+        return read(filename)
+                .map(MemoryFile::getBody)
+                .map(s -> s.stripTrailing().length())
+                .orElse(0);
     }
 
     // ─────────────────────────────────────────────────────────────

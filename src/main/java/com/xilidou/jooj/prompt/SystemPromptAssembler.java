@@ -112,7 +112,7 @@ public class SystemPromptAssembler {
         // 自动可见,不需要重启 jooj。force=false → 1s 内重复调用 no-op,IO 安全。
         skillRegistry.rescan(false);
         return new PromptContext(toolNames, workspace,
-                memoryService.catalog(), skillRegistry.catalog());
+                memoryService.catalogForSystemPrompt(), skillRegistry.catalog());
     }
 
     /**

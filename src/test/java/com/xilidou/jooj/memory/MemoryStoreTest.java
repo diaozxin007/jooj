@@ -318,4 +318,84 @@ class MemoryStoreTest {
         assertEquals(MemoryFile.Type.USER, MemoryFile.Type.parse(null));
         assertEquals(MemoryFile.Type.USER, MemoryFile.Type.parse(""));
     }
+
+    // ─────────────────────────────────────────────────────────────
+    //  s21 Demo 21:容量配额(P1.4)
+    // ─────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("totalBodyChars should sum body chars across all entries")
+    void totalBodyChars_sums_bodies(@TempDir Path tempDir) {
+        MemoryStore store = new MemoryStore(configForDir(tempDir));
+        store.write(sample("a", "desc-a", "12345"));         // body 5
+        store.write(sample("b", "desc-b", "1234567890"));    // body 10
+        assertEquals(15, store.totalBodyChars());
+    }
+
+    @Test
+    @DisplayName("write should throw quota exception when total would exceed limit")
+    void write_throws_when_quota_exceeded(@TempDir Path tempDir) {
+        // totalMaxBytes=20,maxBodyBytes=100(单条不限,只总量限)
+        MemoryConfig config = new MemoryConfig(tempDir, "MEMORY.md", 100, 10, 20);
+        MemoryStore store = new MemoryStore(config);
+
+        // 第一条 body 15 char,通过(15 <= 20)
+        store.write(sample("a", "desc", "123456789012345"));
+        assertEquals(15, store.totalBodyChars());
+
+        // 第二条 body 10 char,加起来 25 > 20 → 抛
+        MemoryQuotaExceededException ex = assertThrows(
+                MemoryQuotaExceededException.class,
+                () -> store.write(sample("b", "desc", "1234567890")));
+        assertEquals(15, ex.currentBytes());
+        assertEquals(10, ex.incomingBytes());
+        assertEquals(20, ex.limitBytes());
+        // 错误消息包含建议
+        assertTrue(ex.getMessage().contains("memory_replace") || ex.getMessage().contains("memory_delete"),
+                "Error message should suggest replace/delete: " + ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("write should compute net delta — overwrite same name does NOT count old body twice")
+    void write_overwrite_uses_net_delta(@TempDir Path tempDir) {
+        // totalMaxBytes=20
+        MemoryConfig config = new MemoryConfig(tempDir, "MEMORY.md", 100, 10, 20);
+        MemoryStore store = new MemoryStore(config);
+
+        // 第一条 body 18 char
+        store.write(sample("a", "desc", "123456789012345678"));
+        assertEquals(18, store.totalBodyChars());
+
+        // 同名覆盖:body 仍 18 char(净增量 0,不该被拒)
+        assertDoesNotThrow(() -> store.write(sample("a", "desc-2", "abcdefghijklmnopqr")));
+        assertEquals(18, store.totalBodyChars());
+
+        // 同名覆盖:body 缩小到 5(净减少,正常)
+        assertDoesNotThrow(() -> store.write(sample("a", "desc-3", "12345")));
+        assertEquals(5, store.totalBodyChars());
+
+        // 现在加新条 body 16,加起来 21 > 20 → 抛
+        assertThrows(MemoryQuotaExceededException.class,
+                () -> store.write(sample("b", "desc", "1234567890123456")));
+    }
+
+    @Test
+    @DisplayName("rebuilt index format is unchanged (raw markdown link list, not §)")
+    void rebuildIndex_keeps_markdown_format(@TempDir Path tempDir) {
+        // s21 Demo 21:rebuildIndex 输出不变(给 SidebarController Markdown 渲染),
+        // §  + 容量头由 MemoryService.catalogForSystemPrompt() 在外层加
+        MemoryStore store = new MemoryStore(configForDir(tempDir));
+        store.write(sample("alpha", "first", "body1"));
+        store.write(sample("beta", "second", "body2"));
+
+        String idx = store.readIndex();
+        assertTrue(idx.contains("- [alpha](alpha.md) — first"),
+                "raw index should still be Markdown link format: " + idx);
+        assertTrue(idx.contains("- [beta](beta.md) — second"),
+                "raw index should still be Markdown link format: " + idx);
+        assertFalse(idx.startsWith("[Memory"),
+                "raw catalog should NOT contain quota header (that's catalogForSystemPrompt's job)");
+        assertFalse(idx.contains("§"),
+                "raw catalog should NOT use §  separator (that's catalogForSystemPrompt's job)");
+    }
 }

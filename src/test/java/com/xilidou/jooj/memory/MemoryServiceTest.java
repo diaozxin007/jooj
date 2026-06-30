@@ -224,4 +224,64 @@ class MemoryServiceTest {
         assertEquals(sizeBefore, service.store().list().size(),
                 "无 client 时 Extractor 不应写入");
     }
+
+    // ─────────────────────────────────────────────────────────────
+    //  s21 Demo 21:catalogForSystemPrompt(P1.3)
+    // ─────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("catalogForSystemPrompt should emit §  format with quota header")
+    void catalogForSystemPrompt_emits_section_separator_and_header(@TempDir Path tempDir) {
+        // totalMaxBytes=200,让百分比可见(默认 20000 的话很少 memory 都是 0%)
+        MemoryConfig config = new MemoryConfig(tempDir, "MEMORY.md", 4096, 10, 200);
+        MemoryService service = new MemoryService(config, null, null);
+
+        service.store().write(MemoryFile.of("user-tabs", MemoryFile.Type.USER,
+                "User prefers tabs", "Use tabs not spaces."));      // body 20 char
+        service.store().write(MemoryFile.of("project-x", MemoryFile.Type.PROJECT,
+                "Project X uses Spring", "Project X uses Spring Boot 3."));  // body 29 char
+
+        String catalog = service.catalogForSystemPrompt();
+        // 顶部容量头(20+29=49 / 200 = 25%)
+        assertTrue(catalog.startsWith("[Memory  49/200 chars (25%)]"),
+                "catalog 应以容量头开始: " + catalog);
+
+        // 每行 §  分隔 + name + filename + desc(file 名按字典序 — project 在前 user 在后)
+        assertTrue(catalog.contains("§  project-x (project-x.md) — Project X uses Spring"),
+                "每行应是 §  format with file: " + catalog);
+        assertTrue(catalog.contains("§  user-tabs (user-tabs.md) — User prefers tabs"),
+                "每行应是 §  format with file: " + catalog);
+
+        // 不应保留旧的 markdown 链接格式
+        assertFalse(catalog.contains("- ["),
+                "catalogForSystemPrompt 不应再使用 markdown 链接格式: " + catalog);
+    }
+
+    @Test
+    @DisplayName("catalogForSystemPrompt should return empty string when no entries")
+    void catalogForSystemPrompt_empty_when_no_entries(@TempDir Path tempDir) {
+        MemoryService service = new MemoryService(
+                new MemoryConfig(tempDir, "MEMORY.md", 4096, 10, 200),
+                null, null);
+        // 不写任何 entry
+        assertEquals("", service.catalogForSystemPrompt(),
+                "无 entry 时返回空字符串(让 SystemPromptAssembler 跳过整段 memory section)");
+    }
+
+    @Test
+    @DisplayName("catalog (raw) should remain markdown link format for sidebar")
+    void catalog_raw_unchanged_for_sidebar(@TempDir Path tempDir) {
+        MemoryService service = new MemoryService(
+                new MemoryConfig(tempDir, "MEMORY.md", 4096, 10, 200),
+                null, null);
+        service.store().write(MemoryFile.of("a", MemoryFile.Type.USER, "desc-a", "body"));
+
+        String raw = service.catalog();
+        assertTrue(raw.contains("- [a](a.md) — desc-a"),
+                "raw catalog 应保留 markdown 链接格式给 SidebarController: " + raw);
+        assertFalse(raw.contains("§"),
+                "raw catalog 不应包含 §  分隔符: " + raw);
+        assertFalse(raw.contains("[Memory"),
+                "raw catalog 不应包含容量头: " + raw);
+    }
 }
