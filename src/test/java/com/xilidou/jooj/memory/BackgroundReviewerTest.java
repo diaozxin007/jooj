@@ -202,4 +202,70 @@ class BackgroundReviewerTest {
                 "tool_result 内容应该被跳过(太长 + 不是模式来源)");
         assertTrue(rendered.contains("find foo") && rendered.contains("now find bar"));
     }
+
+    // ─────────────────────────────────────────────────────────────
+    //  s21 Demo 27 / Hermes Tier 3 P3.2 — staged write_approval
+    // ─────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("writeApproval=true → 提案进 pendingStore,store 不写")
+    void write_approval_routes_to_pending(@TempDir Path tempDir) {
+        MemoryStore store = freshStore(tempDir);
+        PendingMemoryStore pending = new PendingMemoryStore(tempDir);
+        String llmJson =
+                "[{\"name\":\"feedback-prefer-ripgrep\"," +
+                        "\"description\":\"User prefers ripgrep\"," +
+                        "\"body\":\"Always rg.\"}]";
+        MockAnthropicClient mock = MockAnthropicClient.ofResponses(
+                ResponseFixtures.endTurn(llmJson));
+        BackgroundReviewer reviewer = new BackgroundReviewer(
+                store, mock, "test-model", pending, true);
+
+        int written = reviewer.review(longishConversation());
+
+        assertEquals(1, written);
+        // store 不应该有任何写入
+        assertEquals(0, store.list().size(), "writeApproval=true 时正式 store 不该被写");
+        // pending pool 应该有一条
+        assertEquals(1, pending.count());
+        var entry = pending.readAll().get(0);
+        assertEquals("feedback-prefer-ripgrep", entry.getMemory().getName());
+        assertEquals("reviewer", entry.getSource());
+    }
+
+    @Test
+    @DisplayName("writeApproval=false → 直接写 store(Demo 26 等价行为)")
+    void write_approval_disabled_writes_store_directly(@TempDir Path tempDir) {
+        MemoryStore store = freshStore(tempDir);
+        PendingMemoryStore pending = new PendingMemoryStore(tempDir);
+        String llmJson =
+                "[{\"name\":\"feedback-x\"," +
+                        "\"description\":\"x\"," +
+                        "\"body\":\"y\"}]";
+        MockAnthropicClient mock = MockAnthropicClient.ofResponses(
+                ResponseFixtures.endTurn(llmJson));
+        // 5 参 ctor 但 writeApproval=false:即使 pendingStore 存在也不走 staged
+        BackgroundReviewer reviewer = new BackgroundReviewer(
+                store, mock, "test-model", pending, false);
+
+        reviewer.review(longishConversation());
+        assertEquals(1, store.list().size(), "writeApproval=false 时直接写 store");
+        assertEquals(0, pending.count(), "pending pool 不该有内容");
+    }
+
+    @Test
+    @DisplayName("3 参 ctor(老 Demo 26 兼容):pendingStore=null → 直接写 store")
+    void legacy_ctor_writes_store_directly(@TempDir Path tempDir) {
+        MemoryStore store = freshStore(tempDir);
+        String llmJson =
+                "[{\"name\":\"feedback-x\"," +
+                        "\"description\":\"x\"," +
+                        "\"body\":\"y\"}]";
+        MockAnthropicClient mock = MockAnthropicClient.ofResponses(
+                ResponseFixtures.endTurn(llmJson));
+        // 3 参 ctor,等价 (store, mock, model, null, false)
+        BackgroundReviewer reviewer = new BackgroundReviewer(store, mock, "test-model");
+        reviewer.review(longishConversation());
+        assertEquals(1, store.list().size(), "3 参 ctor 应等价 Demo 26 行为(直接写 store)");
+    }
 }

@@ -120,6 +120,17 @@ public class JoojProperties {
 
         /** memory 文件数 ≥ 此阈值时触发 consolidate。 */
         private int consolidateThreshold = 10;
+
+        /**
+         * s21 Demo 27 / Hermes Tier 3 P3.2:write_approval staged 写。
+         * <ul>
+         *   <li>{@code false}(默认)— Reviewer 提案直接 store.write 生效(Demo 26 行为)</li>
+         *   <li>{@code true} — Reviewer 提案进 pending pool,等用户 {@code /memory approve}</li>
+         * </ul>
+         *
+         * <p>实战建议:Reviewer 跑稳之前先开 true 看提案质量,稳定后再切 false。
+         */
+        private boolean writeApproval = false;
     }
 
     @Data

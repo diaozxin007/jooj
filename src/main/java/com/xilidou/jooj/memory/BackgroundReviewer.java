@@ -87,7 +87,29 @@ public class BackgroundReviewer {
     private final String model;
     private final ObjectMapper json;
 
+    /**
+     * s21 Demo 27 / Hermes Tier 3 P3.2:可选 staged-write 通道。
+     * null = 直接 store.write(老 Demo 26 行为);非 null + writeApproval=true = 走 staged。
+     */
+    private final PendingMemoryStore pendingStore;
+
+    /** s21 Demo 27:true → 提案进 pending pool 等用户 approve;false → 直接生效。 */
+    private final boolean writeApproval;
+
+    /** 老 3 参 ctor —— 不接 staged,直接生效(Demo 26 等价行为)。 */
     public BackgroundReviewer(MemoryStore store, AnthropicClient client, String model) {
+        this(store, client, model, null, false);
+    }
+
+    /**
+     * 5 参 ctor —— Demo 27 起生产装配走这条。
+     *
+     * @param pendingStore   非 null 时启用 staged 路径(配合 writeApproval=true)
+     * @param writeApproval  true → 提案进 pending pool;false → 直接 store.write
+     */
+    public BackgroundReviewer(MemoryStore store, AnthropicClient client, String model,
+                              PendingMemoryStore pendingStore,
+                              boolean writeApproval) {
         if (store == null) throw new IllegalArgumentException("store must not be null");
         if (client != null && (model == null || model.isBlank())) {
             throw new IllegalArgumentException("model required when client provided");
@@ -96,6 +118,8 @@ public class BackgroundReviewer {
         this.client = client;
         this.model = model;
         this.json = JacksonConfig.newMapper();
+        this.pendingStore = pendingStore;
+        this.writeApproval = writeApproval;
     }
 
     /**
@@ -142,14 +166,22 @@ public class BackgroundReviewer {
             try {
                 MemoryFile mem = toMemoryFile(item);
                 if (mem == null) continue;
-                store.write(mem);
+                // s21 Demo 27 / P3.2:writeApproval=true + pendingStore 非 null →
+                // 走 staged 路径,等用户 /memory approve。否则直接 store.write(Demo 26 行为)
+                if (writeApproval && pendingStore != null) {
+                    pendingStore.propose(mem, "reviewer");
+                } else {
+                    store.write(mem);
+                }
                 written++;
             } catch (Exception e) {
                 log.warn("[Memory:Review] failed to write proposal {}: {}", item, e.toString());
             }
         }
         if (written > 0) {
-            log.info("[Memory:Review] background review proposed {} new lessons", written);
+            log.info("[Memory:Review] background review {} {} new lessons",
+                    writeApproval && pendingStore != null ? "proposed (staged)" : "wrote",
+                    written);
         }
         return written;
     }
