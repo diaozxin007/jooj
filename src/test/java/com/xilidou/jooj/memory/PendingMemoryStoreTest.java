@@ -55,15 +55,17 @@ class PendingMemoryStoreTest {
     }
 
     @Test
-    @DisplayName("approve 已存在 id → 移除 + 返原 MemoryFile")
+    @DisplayName("approve 已存在 id → 移除 + 返完整 PendingMemory(含原 id / proposedAt / source)")
     void approve_removes_and_returns(@TempDir Path tempDir) {
         PendingMemoryStore store = new PendingMemoryStore(tempDir);
         store.propose(sample("a", MemoryFile.Type.FEEDBACK, "first"), "reviewer");
         store.propose(sample("b", MemoryFile.Type.FEEDBACK, "second"), "reviewer");
 
-        Optional<MemoryFile> approved = store.approve(1);
+        Optional<PendingMemoryStore.PendingMemory> approved = store.approve(1);
         assertTrue(approved.isPresent());
-        assertEquals("a", approved.get().getName());
+        assertEquals(1, approved.get().getId(), "返 PendingMemory 含原 id 给 caller 失败时 restore");
+        assertEquals("a", approved.get().getMemory().getName());
+        assertEquals("reviewer", approved.get().getSource());
         assertEquals(1, store.count(), "approve 后只剩 #2");
     }
 
@@ -151,5 +153,81 @@ class PendingMemoryStoreTest {
 
         var p3 = store.propose(sample("c", MemoryFile.Type.FEEDBACK, "z"), "extractor");
         assertEquals("extractor", p3.getSource(), "显式传 source 不被 default 覆盖");
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    //  s21 Demo 27 review 修复(BUG #1 + #4)
+    // ─────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("BUG #1 修复:propose 写盘失败时 nextId 不 increment(下次 propose 不漏号)")
+    void propose_write_fail_does_not_burn_id(@TempDir Path tempDir) throws Exception {
+        // 触发 writeAll 失败:把 .pending.json 设成只读目录(memoryDir 整个 readonly 太狠,
+        // 这里改成 .pending.json 已是目录,Files.write 必抛 IOException)
+        PendingMemoryStore store = new PendingMemoryStore(tempDir);
+        // 先正常 propose 一条,nextId 已经 → 2
+        var p1 = store.propose(sample("a", MemoryFile.Type.FEEDBACK, "x"), "reviewer");
+        assertEquals(1, p1.getId());
+
+        // 删原 .pending.json,创建同名目录 → Files.write 必抛
+        Path pending = tempDir.resolve(PendingMemoryStore.PENDING_FILE);
+        java.nio.file.Files.delete(pending);
+        java.nio.file.Files.createDirectory(pending);
+
+        // propose 失败必须抛 UncheckedIOException
+        assertThrows(java.io.UncheckedIOException.class,
+                () -> store.propose(sample("b", MemoryFile.Type.FEEDBACK, "y"), "reviewer"));
+
+        // 拆掉障碍恢复
+        java.nio.file.Files.delete(pending);
+
+        // 关键:nextId 没 increment,下次 propose 应仍是 id=2(不是 id=3)
+        var p3 = store.propose(sample("c", MemoryFile.Type.FEEDBACK, "z"), "reviewer");
+        assertEquals(2, p3.getId(), "写盘失败不应 burn id —— 否则一段时间后 id 跳号严重");
+    }
+
+    @Test
+    @DisplayName("BUG #4 修复:approve 后调 restore 用原 id 把 entry 放回(给 store.write 失败回滚用)")
+    void approve_then_restore_preserves_id(@TempDir Path tempDir) {
+        PendingMemoryStore store = new PendingMemoryStore(tempDir);
+        store.propose(sample("a", MemoryFile.Type.FEEDBACK, "x"), "reviewer");
+        var approved = store.approve(1);
+        assertTrue(approved.isPresent());
+        assertEquals(0, store.count());
+
+        // 模拟 store.write 失败 → caller 走 restore 回滚
+        store.restore(approved.get());
+
+        assertEquals(1, store.count(), "restore 后 pool 又有 1 条");
+        var entry = store.readAll().get(0);
+        assertEquals(1, entry.getId(), "原 id=1 保留(用户可重试 /memory approve 1)");
+        assertEquals("a", entry.getMemory().getName());
+    }
+
+    @Test
+    @DisplayName("restore 幂等:重复 restore 同 id 不重复添加")
+    void restore_idempotent_for_same_id(@TempDir Path tempDir) {
+        PendingMemoryStore store = new PendingMemoryStore(tempDir);
+        store.propose(sample("a", MemoryFile.Type.FEEDBACK, "x"), "reviewer");
+        var approved = store.approve(1).orElseThrow();
+        store.restore(approved);
+        store.restore(approved);  // 第二次应该 no-op
+        assertEquals(1, store.count(), "重复 restore 不应造成 pool 里出现两条 id=1");
+    }
+
+    @Test
+    @DisplayName("restore 不动 nextId:之后 propose 仍按 max+1 走")
+    void restore_does_not_advance_next_id(@TempDir Path tempDir) {
+        PendingMemoryStore store = new PendingMemoryStore(tempDir);
+        store.propose(sample("a", MemoryFile.Type.FEEDBACK, "x"), "reviewer");
+        store.propose(sample("b", MemoryFile.Type.FEEDBACK, "y"), "reviewer");
+        // approve 1 + restore — pool 又回到 [#1, #2]
+        var approved = store.approve(1).orElseThrow();
+        store.restore(approved);
+        assertEquals(2, store.count());
+
+        // 下条 propose 应该 id=3(不 reuse 已 restore 的 1)
+        var p3 = store.propose(sample("c", MemoryFile.Type.FEEDBACK, "z"), "reviewer");
+        assertEquals(3, p3.getId(), "restore 不动 nextId,新 propose 仍 max+1");
     }
 }

@@ -157,4 +157,40 @@ class MemoryCommandTest {
         assertNotNull(cmd.description());
         assertFalse(cmd.description().isBlank());
     }
+
+    // ─────────────────────────────────────────────────────────────
+    //  s21 Demo 27 review 修复(BUG #4):store.write 失败时回滚到 pending pool
+    // ─────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("BUG #4:approve 时 store quota 超 → 回滚到 pending pool 保留原 id")
+    void approve_quota_failure_restores_to_pending() {
+        // 用一个超小 quota 的 store(totalMaxBytes=10)让 write 必抛 MemoryQuotaExceededException
+        MemoryStore tinyQuotaStore = new MemoryStore(
+                new MemoryConfig(tempDir, "MEMORY.md", 4096, 10, 10));
+        MemoryCommand cmdWithTinyStore = new MemoryCommand(pendingStore, tinyQuotaStore);
+
+        // 提一个 body 比 quota 大的提案
+        pendingStore.propose(MemoryFile.of("feedback-big", MemoryFile.Type.FEEDBACK,
+                "big lesson", "this body is way longer than 10 chars allowed by quota"),
+                "reviewer");
+        assertEquals(1, pendingStore.count());
+
+        String out = cmdWithTinyStore.execute("approve 1", "s");
+
+        // 期望:store quota 抛,但 entry 已 restore 回 pending pool
+        assertTrue(out.startsWith("✗ Approved #1"));
+        assertTrue(out.contains("Restored to pending pool"),
+                "应该明确告知用户已 restore,鼓励重试。实际:" + out);
+        assertTrue(out.contains("retry /memory approve 1"));
+
+        // 关键不变量:pool 仍有这条 + 仍是 id=1
+        assertEquals(1, pendingStore.count(), "restore 后 pool 又回到 1 条");
+        var entry = pendingStore.readAll().get(0);
+        assertEquals(1, entry.getId(), "原 id=1 保留,用户可 /memory approve 1 重试");
+        assertEquals("feedback-big", entry.getMemory().getName());
+
+        // store 没写入
+        assertEquals(0, tinyQuotaStore.list().size());
+    }
 }

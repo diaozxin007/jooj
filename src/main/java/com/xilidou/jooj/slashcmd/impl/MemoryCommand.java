@@ -101,19 +101,33 @@ public class MemoryCommand implements SlashCommand {
         if (id == null) {
             return "Error: /memory approve needs a numeric id. Try /memory pending first.";
         }
-        Optional<MemoryFile> approved = pendingStore.approve(id);
+        Optional<PendingMemory> approved = pendingStore.approve(id);
         if (approved.isEmpty()) {
             return "Error: pending proposal #" + id + " not found.";
         }
+        PendingMemory entry = approved.get();
         try {
-            memoryStore.write(approved.get());
-            return "✓ Approved #" + id + " → memory: " + approved.get().getName();
+            memoryStore.write(entry.getMemory());
+            return "✓ Approved #" + id + " → memory: " + entry.getMemory().getName();
         } catch (Exception e) {
-            // 写到正式 store 失败(quota / IO)—— pending 已经 remove,但 store 没写成功。
-            // 给用户清晰反馈,记 warn,不抛
+            // store.write 失败(quota 超 / IO 错)—— 回滚把 entry 放回 pending pool
+            // (Demo 27 review 修复:之前直接 return error 让 entry 永久丢,LLM 不会
+            // re-create;现在保留原 id,用户可重试 /memory approve <id>)
             log.warn("[Memory:Cmd] approve id={} failed at store.write: {}", id, e.toString());
-            return "✗ Approved #" + id + " removed from pending, but store.write failed: "
-                    + e.getMessage() + " (memory NOT persisted; you may need to re-create manually)";
+            try {
+                pendingStore.restore(entry);
+                return "✗ Approved #" + id + " failed: " + e.getMessage()
+                        + ". Restored to pending pool — fix the issue and retry /memory approve "
+                        + id + ".";
+            } catch (Exception restoreErr) {
+                // 双重失败:store.write 失败 + restore 也失败(磁盘满 / FS 只读等极端)
+                log.error("[Memory:Cmd] approve id={} double failure (write + restore): write={} restore={}",
+                        id, e.toString(), restoreErr.toString());
+                return "✗ Approved #" + id + " removed from pending, store.write failed: "
+                        + e.getMessage() + ", AND restore failed: " + restoreErr.getMessage()
+                        + ". Memory NOT persisted — manual recovery needed (entry: name="
+                        + entry.getMemory().getName() + ").";
+            }
         }
     }
 
