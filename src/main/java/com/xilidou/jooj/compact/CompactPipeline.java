@@ -2,6 +2,7 @@ package com.xilidou.jooj.compact;
 
 import com.xilidou.jooj.http.AnthropicClient;
 import com.xilidou.jooj.http.dto.MessageParam;
+import com.xilidou.jooj.memory.MemoryService;
 
 import java.util.List;
 import java.util.Objects;
@@ -54,25 +55,39 @@ public class CompactPipeline {
     private final MicroCompactor micro;
     /** L4 是 reactive 的,client=null 时不可用。*/
     private final HistoryCompactor history;
+    /**
+     * Pre-compression extraction(s21 Demo 24 / P2.2)—— L4 触发前先抢救永久 fact。
+     * <p>可空(纯 CLI / 老配置 / 无 client 时不启用),null 时 reactiveCompact 跳过抢救阶段。
+     */
+    private final MemoryService memoryService;
 
     /** 默认配置 + 无 L4(client=null,reactive 不可用)。*/
     public CompactPipeline() {
-        this(new CompactConfig(), null, null);
+        this(new CompactConfig(), null, null, null);
     }
 
     /** L1+L2+L3 配置(L4 不可用,常用于测试)。*/
     public CompactPipeline(CompactConfig config) {
-        this(config, null, null);
+        this(config, null, null, null);
     }
 
     /**
-     * 完整构造器:L1+L2+L3+L4。
-     *
-     * @param config 配置
-     * @param client LLM 客户端(L4 摘要用),null = 禁用 L4
-     * @param model  L4 摘要用模型(client 非 null 时必填)
+     * L1+L2+L3+L4 配置,**无 pre-compression extraction**(向后兼容,Demo 24 之前的 ctor 签名)。
      */
     public CompactPipeline(CompactConfig config, AnthropicClient client, String model) {
+        this(config, client, model, null);
+    }
+
+    /**
+     * 完整构造器:L1+L2+L3+L4 + 可选 pre-compression extraction。
+     *
+     * @param config        配置
+     * @param client        LLM 客户端(L4 摘要用),null = 禁用 L4
+     * @param model         L4 摘要用模型(client 非 null 时必填)
+     * @param memoryService 可选,L4 触发前抢救永久 fact 用 —— null 时跳过抢救阶段
+     */
+    public CompactPipeline(CompactConfig config, AnthropicClient client, String model,
+                           MemoryService memoryService) {
         Objects.requireNonNull(config, "config");
         this.budget = new BudgetCompactor(config);
         this.snip = new SnipCompactor(config);
@@ -83,6 +98,7 @@ public class CompactPipeline {
         } else {
             this.history = null;
         }
+        this.memoryService = memoryService;
     }
 
     /**
@@ -109,6 +125,22 @@ public class CompactPipeline {
      * <p>L4 不可用(client=null)或失败时返回 false——调用方应该把原 400 错误
      * 重新抛出,而不是无限循环。
      *
+     * <p><b>s21 Demo 24 / P2.2:pre-compression extraction</b>
+     * 在 L4 摘要 *之前* 先调 {@link MemoryExtractor#extract},把 messages 中
+     * "值得永久记的事实"先抢救进 MEMORY.md。这跟 onTurnEnd 的 extract 区别:
+     * <ul>
+     *   <li>onTurnEnd extract:每轮自然停顿点都跑,捕捉持续状态变化(每轮成本)</li>
+     *   <li>pre-compression extract:只在 L4 触发(危机时刻)才跑,
+     *       抢救即将被摘要 lossy 替换的对话内容(单次成本但价值高 —— 即将被丢)</li>
+     * </ul>
+     *
+     * <p>对应 ByteRover memory provider 的设计:
+     * <blockquote>"Automatic pre-compression extraction (saves insights before context
+     * compression discards them)."</blockquote>
+     *
+     * <p>Extractor 失败时跳过抢救阶段直接走 L4 —— 抢救是锦上添花,L4 才是主救命路径,
+     * extractor 不该挡住 L4。
+     *
      * @param messages 对话历史
      * @return 是否成功摘要
      */
@@ -116,11 +148,29 @@ public class CompactPipeline {
         if (history == null) {
             return false;
         }
+        // s21 Demo 24:抢救阶段(锦上添花,失败不挡 L4)
+        // 双层防御 —— MemoryService.preCompressionExtract 内部已 try/catch warn,
+        // 这里再裹一层防"service 实现变 contract 时 pipeline 不连带挂掉"。
+        // L4 是 prompt_too_long 危机救命路径,extract 失败必须不挡 summary 继续走。
+        if (memoryService != null) {
+            try {
+                memoryService.preCompressionExtract(messages);
+            } catch (Throwable t) {
+                org.slf4j.LoggerFactory.getLogger(CompactPipeline.class)
+                        .warn("[Compact L4] pre-compression extract threw, proceeding to summary: {}",
+                                t.toString());
+            }
+        }
         return history.apply(messages);
     }
 
     /** 测试用:是否启用了 L4(client 已注入)。*/
     public boolean hasReactiveSupport() {
         return history != null;
+    }
+
+    /** 测试用:是否启用了 pre-compression extraction(s21 Demo 24)。*/
+    public boolean hasPreCompressionExtraction() {
+        return memoryService != null;
     }
 }

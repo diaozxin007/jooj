@@ -230,7 +230,7 @@ class MemoryServiceTest {
     // ─────────────────────────────────────────────────────────────
 
     @Test
-    @DisplayName("catalogForSystemPrompt should emit §  format with quota header")
+    @DisplayName("catalogForSystemPrompt should emit § format with quota header")
     void catalogForSystemPrompt_emits_section_separator_and_header(@TempDir Path tempDir) {
         // totalMaxBytes=200,让百分比可见(默认 20000 的话很少 memory 都是 0%)
         MemoryConfig config = new MemoryConfig(tempDir, "MEMORY.md", 4096, 10, 200);
@@ -246,11 +246,12 @@ class MemoryServiceTest {
         assertTrue(catalog.startsWith("[Memory  49/200 chars (25%)]"),
                 "catalog 应以容量头开始: " + catalog);
 
-        // 每行 §  分隔 + name + filename + desc(file 名按字典序 — project 在前 user 在后)
-        assertTrue(catalog.contains("§  project-x (project-x.md) — Project X uses Spring"),
-                "每行应是 §  format with file: " + catalog);
-        assertTrue(catalog.contains("§  user-tabs (user-tabs.md) — User prefers tabs"),
-                "每行应是 §  format with file: " + catalog);
+        // 每行 § 分隔 + name + filename + desc
+        // s21 Demo 22:type 分组后 user / project 在不同 section
+        assertTrue(catalog.contains("§ project-x (project-x.md) — Project X uses Spring"),
+                "每行应是 § format with file: " + catalog);
+        assertTrue(catalog.contains("§ user-tabs (user-tabs.md) — User prefers tabs"),
+                "每行应是 § format with file: " + catalog);
 
         // 不应保留旧的 markdown 链接格式
         assertFalse(catalog.contains("- ["),
@@ -280,8 +281,68 @@ class MemoryServiceTest {
         assertTrue(raw.contains("- [a](a.md) — desc-a"),
                 "raw catalog 应保留 markdown 链接格式给 SidebarController: " + raw);
         assertFalse(raw.contains("§"),
-                "raw catalog 不应包含 §  分隔符: " + raw);
+                "raw catalog 不应包含 § 分隔符: " + raw);
         assertFalse(raw.contains("[Memory"),
                 "raw catalog 不应包含容量头: " + raw);
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    //  s21 Demo 22:catalogForSystemPrompt 按 type 分组(P2.3)
+    // ─────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("catalogForSystemPrompt should group entries by type with semantic headers")
+    void catalogForSystemPrompt_groups_by_type(@TempDir Path tempDir) {
+        MemoryConfig config = new MemoryConfig(tempDir, "MEMORY.md", 4096, 10, 2000);
+        MemoryService service = new MemoryService(config, null, null);
+
+        service.store().write(MemoryFile.of("user-tabs", MemoryFile.Type.USER,
+                "User prefers tabs", "Use tabs"));
+        service.store().write(MemoryFile.of("feedback-no-mock-db", MemoryFile.Type.FEEDBACK,
+                "Don't mock the database", "Use real db"));
+        service.store().write(MemoryFile.of("project-x-uses-spring", MemoryFile.Type.PROJECT,
+                "Project X uses Spring", "Spring Boot 3"));
+        service.store().write(MemoryFile.of("linear-ingest-bugs", MemoryFile.Type.REFERENCE,
+                "Pipeline bugs are in Linear INGEST", "Look there first"));
+
+        String catalog = service.catalogForSystemPrompt();
+        // 4 个 type 标题都出现,顺序固定:USER → FEEDBACK → PROJECT → REFERENCE
+        int idxUser      = catalog.indexOf("User preferences:");
+        int idxFeedback  = catalog.indexOf("Workflow lessons:");
+        int idxProject   = catalog.indexOf("Project facts:");
+        int idxReference = catalog.indexOf("Reference pointers:");
+        assertTrue(idxUser > 0,      "应含 User preferences: " + catalog);
+        assertTrue(idxFeedback > 0,  "应含 Workflow lessons: " + catalog);
+        assertTrue(idxProject > 0,   "应含 Project facts: " + catalog);
+        assertTrue(idxReference > 0, "应含 Reference pointers: " + catalog);
+        assertTrue(idxUser < idxFeedback,    "顺序 USER < FEEDBACK");
+        assertTrue(idxFeedback < idxProject, "顺序 FEEDBACK < PROJECT");
+        assertTrue(idxProject < idxReference, "顺序 PROJECT < REFERENCE");
+    }
+
+    @Test
+    @DisplayName("catalogForSystemPrompt should skip type headers with no entries")
+    void catalogForSystemPrompt_skips_empty_type_groups(@TempDir Path tempDir) {
+        MemoryConfig config = new MemoryConfig(tempDir, "MEMORY.md", 4096, 10, 2000);
+        MemoryService service = new MemoryService(config, null, null);
+        // 只写 USER + PROJECT
+        service.store().write(MemoryFile.of("u1", MemoryFile.Type.USER, "user-1", "body"));
+        service.store().write(MemoryFile.of("p1", MemoryFile.Type.PROJECT, "proj-1", "body"));
+
+        String catalog = service.catalogForSystemPrompt();
+        assertTrue(catalog.contains("User preferences:"),    "USER 段应出现");
+        assertTrue(catalog.contains("Project facts:"),       "PROJECT 段应出现");
+        assertFalse(catalog.contains("Workflow lessons:"),   "无 FEEDBACK entry → 段不该出现");
+        assertFalse(catalog.contains("Reference pointers:"), "无 REFERENCE entry → 段不该出现");
+    }
+
+    @Test
+    @DisplayName("typeHeader should map each type to a stable semantic label")
+    void typeHeader_maps_correctly() {
+        // 锁定标题文本不要被未来重构悄悄改变(LLM 行为依赖这些 keyword)
+        assertEquals("User preferences:",   MemoryService.typeHeader(MemoryFile.Type.USER));
+        assertEquals("Workflow lessons:",   MemoryService.typeHeader(MemoryFile.Type.FEEDBACK));
+        assertEquals("Project facts:",      MemoryService.typeHeader(MemoryFile.Type.PROJECT));
+        assertEquals("Reference pointers:", MemoryService.typeHeader(MemoryFile.Type.REFERENCE));
     }
 }

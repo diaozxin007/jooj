@@ -136,10 +136,13 @@ public class HistoryCompactor {
             return false;
         }
 
-        // 2) 调 LLM 摘要
+        // s21 Demo 23 (P2.1):增量摘要 —— 中段是否含上次摘要 message
+        String prevSummary = extractPreviousSummary(middle);
+
+        // 2) 调 LLM 摘要(update vs from-scratch)
         String summary;
         try {
-            summary = callLlmForSummary(middle);
+            summary = callLlmForSummary(middle, prevSummary);
         } catch (Exception e) {
             log.warn("[Compact L4] LLM summary call failed: {}", e.toString());
             return false;
@@ -159,10 +162,56 @@ public class HistoryCompactor {
         messages.clear();
         messages.addAll(rebuilt);
 
-        log.info("[Compact L4] history summarized: archived {} middle messages, total {} → {}, " +
+        log.info("[Compact L4] history summarized ({}): archived {} middle messages, total {} → {}, " +
                 "summary len={}",
+                prevSummary != null ? "update" : "fresh",
                 middle.size(), total, rebuilt.size(), summary.length());
         return true;
+    }
+
+    /**
+     * 扫中段 messages 看有没有上次的摘要 user message(以 {@link #SUMMARY_PREFIX} 开头)。
+     *
+     * <p>有则提取它的核心摘要文本(去掉 {@code "[Conversation summary] (N messages archived to /path/to/X): "}
+     * 前缀),让下一次 LLM 调用做 incremental update 而非 from-scratch。
+     *
+     * <p>对应 Hermes 设计:
+     * <blockquote>"the previous summary is passed to the LLM with instructions to
+     * **update** it rather than summarize from scratch."</blockquote>
+     *
+     * <p>如果有多条(不该出现,但容错),取第一条 —— 更靠前的摘要包含更早的事实,
+     * update 时让 LLM 在它基础上叠新内容更稳。
+     *
+     * @param middle 中段 messages
+     * @return 上次摘要文本(去前缀),无则 null
+     */
+    static String extractPreviousSummary(List<MessageParam> middle) {
+        for (MessageParam m : middle) {
+            if (!"user".equals(m.getRole())) continue;
+            Object content = m.getContent();
+            String text = null;
+            if (content instanceof String s) {
+                text = s;
+            } else if (content instanceof List<?> blocks) {
+                for (Object b : blocks) {
+                    if (b instanceof TextBlock tb && tb.getText() != null
+                            && tb.getText().startsWith(SUMMARY_PREFIX)) {
+                        text = tb.getText();
+                        break;
+                    }
+                }
+            }
+            if (text != null && text.startsWith(SUMMARY_PREFIX)) {
+                // 去掉 "[Conversation summary] (... archived to ...): " 前缀
+                int colon = text.indexOf("): ");
+                if (colon > 0 && colon + 3 < text.length()) {
+                    return text.substring(colon + 3);
+                }
+                // 退化情况:格式不标准,整段当 prevSummary
+                return text.substring(SUMMARY_PREFIX.length()).strip();
+            }
+        }
+        return null;
     }
 
     /** 归档中段到 .transcripts/transcript-<ts>.jsonl,失败返回 null。*/
@@ -190,10 +239,15 @@ public class HistoryCompactor {
      *
      * <p>关键:不直接把 messages 塞进新请求的 messages 字段(那会让 LLM 当成对话延续来推理,
      * 触发 tool_use 等行为)。改用 user message 包裹完整对话文本,LLM 把它当数据看。
+     *
+     * <p>s21 Demo 23 (P2.1):增量摘要 —— 如果 prevSummary 非 null,prompt 模板切到
+     * update 分支,要求 LLM 在已有摘要上叠新事实而非 from-scratch 重做。
      */
-    private String callLlmForSummary(List<MessageParam> middle) {
+    private String callLlmForSummary(List<MessageParam> middle, String prevSummary) {
         String conversation = renderMiddle(middle);
-        String prompt = buildSummaryPrompt(conversation, config.summaryMaxChars());
+        String prompt = prevSummary != null
+                ? buildUpdatePrompt(prevSummary, conversation, config.summaryMaxChars())
+                : buildSummaryPrompt(conversation, config.summaryMaxChars());
 
         CreateMessageRequest req = CreateMessageRequest.builder()
                 .model(model)
@@ -251,5 +305,29 @@ public class HistoryCompactor {
                 "3. What's the current state / what's left to do?\n\n" +
                 "Output a single paragraph, no bullet points, no preamble.\n\n" +
                 "<conversation>\n" + conversation + "</conversation>";
+    }
+
+    /**
+     * Update 分支 prompt(s21 Demo 23 / P2.1)—— 增量更新已有摘要,而非 from-scratch。
+     *
+     * <p>关键指令:让 LLM <b>建立在</b> existing summary <b>之上</b> 加入新事实,
+     * 不是重做。这样多次 L4 触发时摘要质量稳定积累而不是震荡。
+     *
+     * <p>对应 Hermes:
+     * <blockquote>"the previous summary is passed to the LLM with instructions to
+     * **update** it rather than summarize from scratch."</blockquote>
+     */
+    private static String buildUpdatePrompt(String prevSummary, String conversation, int maxChars) {
+        return "You are updating an existing conversation summary with new content. " +
+                "Output a single updated summary in <= " + maxChars + " characters. " +
+                "Build ON TOP OF the existing summary —— do NOT discard facts already captured, " +
+                "but REVISE / EXTEND it with anything new from the conversation. " +
+                "Focus on:\n" +
+                "1. What task is the agent working on?\n" +
+                "2. What tools were called, with what outcomes?\n" +
+                "3. What's the current state / what's left to do?\n\n" +
+                "Output a single paragraph, no bullet points, no preamble.\n\n" +
+                "<existing_summary>\n" + prevSummary + "\n</existing_summary>\n\n" +
+                "<new_conversation>\n" + conversation + "\n</new_conversation>";
     }
 }

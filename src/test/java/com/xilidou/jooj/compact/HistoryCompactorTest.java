@@ -333,4 +333,161 @@ class HistoryCompactorTest {
                 "无 client 时 reactiveCompact 应优雅返回 false");
         assertEquals(100, messages.size(), "messages 不应被修改");
     }
+
+    // ─────────────────────────────────────────────────────────────
+    //  s21 Demo 23 (P2.1):增量摘要 — update vs from-scratch
+    // ─────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("L4 second call should reuse previous summary as update prompt")
+    void second_l4_uses_update_prompt(@TempDir Path tempDir) {
+        // 第一次 fresh,第二次 update
+        MockAnthropicClient client = MockAnthropicClient.ofResponses(
+                ResponseFixtures.endTurn("first summary, working on task X"),
+                ResponseFixtures.endTurn("updated summary, X done, now on Y"));
+        HistoryCompactor h = new HistoryCompactor(
+                configWithDir(tempDir, 2, 3, 500), client, "test-model");
+
+        // 第一次:中段没摘要 → fresh
+        List<MessageParam> messages = new ArrayList<>();
+        for (int i = 0; i < 20; i++) messages.add(userText("m" + i));
+        assertTrue(h.apply(messages));
+
+        // 此时 messages 含 [head ... summary placeholder ... tail]
+        // 验证第一次 prompt 是 fresh 模板
+        String firstPrompt = extractUserPromptText(client.getRequests().get(0));
+        assertTrue(firstPrompt.contains("Summarize the following agent conversation"),
+                "第一次应走 fresh 摘要 prompt: " + firstPrompt);
+        assertFalse(firstPrompt.contains("<existing_summary>"),
+                "第一次不该有 existing_summary 块");
+
+        // 给 messages 加一堆新对话再触发 L4
+        for (int i = 0; i < 20; i++) messages.add(userText("new" + i));
+        assertTrue(h.apply(messages));
+
+        // 第二次的 prompt 应走 update 分支(prevSummary 提取自第一次替换的摘要 message)
+        String secondPrompt = extractUserPromptText(client.getRequests().get(1));
+        assertTrue(secondPrompt.contains("<existing_summary>"),
+                "第二次应走 update prompt(含 <existing_summary>): " + secondPrompt);
+        assertTrue(secondPrompt.contains("first summary, working on task X"),
+                "update prompt 应包含上次摘要文本: " + secondPrompt);
+        assertTrue(secondPrompt.contains("Build ON TOP OF") || secondPrompt.contains("REVISE"),
+                "update prompt 应包含 update 指令(Build ON TOP OF 或 REVISE): " + secondPrompt);
+    }
+
+    @Test
+    @DisplayName("extractPreviousSummary should pull plain summary text, stripping the prefix")
+    void extractPreviousSummary_strips_prefix() {
+        // 标准格式:`[Conversation summary] (5 messages archived to /tmp/x): summary here`
+        MessageParam m = MessageParam.user(
+                "[Conversation summary] (5 messages archived to /tmp/x.jsonl): "
+                        + "agent fixed bug A, now working on B");
+        String s = HistoryCompactor.extractPreviousSummary(List.of(m));
+        assertEquals("agent fixed bug A, now working on B", s);
+    }
+
+    @Test
+    @DisplayName("extractPreviousSummary returns null when no summary message in middle")
+    void extractPreviousSummary_returns_null_when_absent() {
+        MessageParam normal = MessageParam.user("hello there");
+        assertNull(HistoryCompactor.extractPreviousSummary(List.of(normal)),
+                "无摘要 marker 应返回 null,走 from-scratch 分支");
+    }
+
+    /** 测试 helper:从 mock 的请求里抠出 user prompt 文本(plain string content)。*/
+    private static String extractUserPromptText(CreateMessageRequest req) {
+        if (req.getMessages() == null || req.getMessages().isEmpty()) return "";
+        Object content = req.getMessages().get(0).getContent();
+        return content instanceof String s ? s : String.valueOf(content);
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    //  s21 Demo 24 (P2.2):pre-compression extraction
+    // ─────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("CompactPipeline.reactiveCompact should call MemoryService.preCompressionExtract before L4")
+    void reactive_calls_pre_compression_extract(@TempDir Path tempDir) {
+        // 用一个会记录调用次数的 spy MemoryService(无需真 LLM)
+        SpyMemoryService spy = new SpyMemoryService();
+
+        // mock client 返回非空摘要让 L4 走完
+        MockAnthropicClient client = MockAnthropicClient.ofResponses(
+                ResponseFixtures.endTurn("summary"));
+        CompactPipeline pipeline = new CompactPipeline(
+                configWithDir(tempDir, 2, 3, 500), client, "test-model", spy);
+
+        // 准备足够长 messages 让 L4 跑得动
+        List<MessageParam> messages = new ArrayList<>();
+        for (int i = 0; i < 10; i++) messages.add(userText("m" + i));
+
+        assertTrue(pipeline.hasPreCompressionExtraction(),
+                "注入 service 后应启用 pre-compression extraction");
+        assertTrue(pipeline.reactiveCompact(messages));
+
+        // spy 应记录 preCompressionExtract 被调一次
+        assertEquals(1, spy.preCompressionExtractCalls,
+                "L4 触发前应调一次 preCompressionExtract");
+    }
+
+    @Test
+    @DisplayName("pre-compression extract failure should NOT block L4 summary")
+    void extractor_failure_does_not_block_l4(@TempDir Path tempDir) {
+        // SpyMemoryService 配成 extract 时抛
+        SpyMemoryService spy = new SpyMemoryService();
+        spy.throwOnExtract = new RuntimeException("extractor down");
+
+        MockAnthropicClient client = MockAnthropicClient.ofResponses(
+                ResponseFixtures.endTurn("summary text"));
+        CompactPipeline pipeline = new CompactPipeline(
+                configWithDir(tempDir, 2, 3, 500), client, "test-model", spy);
+
+        List<MessageParam> messages = new ArrayList<>();
+        for (int i = 0; i < 10; i++) messages.add(userText("m" + i));
+
+        // 抢救阶段失败,L4 仍应跑完返回 true
+        assertTrue(pipeline.reactiveCompact(messages),
+                "extractor 抛异常时,L4 应仍然走完");
+        assertEquals(1, spy.preCompressionExtractCalls);
+    }
+
+    @Test
+    @DisplayName("CompactPipeline without MemoryService should skip pre-compression cleanly")
+    void no_memory_service_skips_extraction(@TempDir Path tempDir) {
+        MockAnthropicClient client = MockAnthropicClient.ofResponses(
+                ResponseFixtures.endTurn("summary"));
+        // 用 3 参 ctor(向后兼容,不传 memoryService)
+        CompactPipeline pipeline = new CompactPipeline(
+                configWithDir(tempDir, 2, 3, 500), client, "test-model");
+
+        assertFalse(pipeline.hasPreCompressionExtraction(),
+                "未注入 service 时 pre-compression 应不启用");
+
+        List<MessageParam> messages = new ArrayList<>();
+        for (int i = 0; i < 10; i++) messages.add(userText("m" + i));
+        assertTrue(pipeline.reactiveCompact(messages),
+                "无 service 时 L4 仍应跑完");
+    }
+
+    /**
+     * 测试用 spy:记录 preCompressionExtract / onTurnEnd 调用次数。
+     *
+     * <p>为啥继承 MemoryService 而不是写 mock —— MemoryService ctor 接 MemoryConfig + client +
+     * model,直接 new 出无 client 的 service 即可,extract 内部走 null client 不调 LLM。
+     * 比 Mockito 简单。
+     */
+    static class SpyMemoryService extends com.xilidou.jooj.memory.MemoryService {
+        int preCompressionExtractCalls = 0;
+        RuntimeException throwOnExtract = null;
+
+        SpyMemoryService() {
+            super();  // 默认 config + null client
+        }
+
+        @Override
+        public void preCompressionExtract(List<MessageParam> messages) {
+            preCompressionExtractCalls++;
+            if (throwOnExtract != null) throw throwOnExtract;
+        }
+    }
 }
