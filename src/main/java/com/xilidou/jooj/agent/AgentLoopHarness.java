@@ -29,7 +29,6 @@ import com.xilidou.jooj.http.dto.ToolResultBlock;
 import com.xilidou.jooj.http.dto.ToolUseBlock;
 import com.xilidou.jooj.hook.HookManager;
 import com.xilidou.jooj.memory.MemoryService;
-import com.xilidou.jooj.permission.PermissionPipeline;
 import com.xilidou.jooj.prompt.SystemPromptAssembler;
 import com.xilidou.jooj.todo.TodoStore;
 import jakarta.annotation.PostConstruct;
@@ -124,7 +123,6 @@ public class AgentLoopHarness {
     private final String model;
     private final ToolRegistry registry;
     private final ObjectMapper json;
-    private final PermissionPipeline permissions;
     private final HookManager hooks;
     private final CompactPipeline compactPipeline;
     private final MemoryService memoryService;
@@ -196,11 +194,15 @@ public class AgentLoopHarness {
 
     /**
      * 唯一构造器 —— Spring 容器装配。
+     *
+     * <p>s21 Demo 27 review:删 {@code permissions} 入参。
+     * Permission 检查走 {@link com.xilidou.jooj.hook.impl.PermissionHook}(注册到 hooks),
+     * harness 自己再持 PermissionPipeline 引用从来没人用 —— 是 R2 重构 hook 化时遗留的
+     * 死字段,容易让人误以为 permission 是 harness 直接检查。
      */
     public AgentLoopHarness(AnthropicClient client,
                             ToolRegistry registry,
                             @Qualifier("joojObjectMapper") ObjectMapper json,
-                            PermissionPipeline permissions,
                             HookManager hooks,
                             CompactPipeline compactPipeline,
                             MemoryService memoryService,
@@ -219,7 +221,6 @@ public class AgentLoopHarness {
         this.model = props.getAnthropic().getModel();
         this.registry = registry;
         this.json = json;
-        this.permissions = permissions;
         this.hooks = hooks;
         this.compactPipeline = compactPipeline;
         this.memoryService = memoryService;

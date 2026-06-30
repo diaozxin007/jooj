@@ -199,6 +199,69 @@ class InboundDispatcherTest {
                 "/help 输出应列出 /clear + /help,实际:" + reply);
     }
 
+    // ─────────────────────────────────────────────────────────────
+    //  s21 Demo 27 review:UserPromptHook 在 channel 入口生效
+    // ─────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("UserPromptHook 拦截 channel 入站 → 不进 LLM,回写 ⛔ 提示给 peer")
+    void user_prompt_hook_blocks_inbound() {
+        // 注册一个永远 deny 的 hook
+        com.xilidou.jooj.hook.HookManager hooks =
+                org.springframework.test.util.ReflectionTestUtils.getField(
+                        dispatcher, "hooks") instanceof com.xilidou.jooj.hook.HookManager hm
+                ? hm : null;
+        assertNotNull(hooks, "InboundDispatcher 应注入 HookManager");
+
+        hooks.register((com.xilidou.jooj.hook.Hook.OnUserPrompt) q -> {
+            if (q != null && q.toLowerCase().contains("forbidden")) {
+                return java.util.Optional.of("contains forbidden keyword");
+            }
+            return java.util.Optional.empty();
+        });
+
+        // mock LLM 不准备任何响应:如果代码错把消息喂给 LLM,会暴露 bug
+        mock.reset();
+        fake.outbound.clear();
+
+        dispatcher.dispatch(new ChannelMessage(
+                "weixin", "peerH", null, "do something forbidden please", null));
+
+        // history 不该有这条 user message(被 hook 拦下,不进 LLM 不进 history)
+        assertEquals(0, sessionService.loadHistory("chat_weixin_peerH").size(),
+                "被 hook 拦截的 prompt 不应进 history");
+
+        // peer 应收到一条 ⛔ 提示
+        assertEquals(1, fake.outbound.size());
+        String reply = fake.outbound.get(0).text();
+        assertTrue(reply.contains("⛔") && reply.contains("forbidden"),
+                "应回写 ⛔ Prompt blocked: ...,实际:" + reply);
+    }
+
+    @Test
+    @DisplayName("UserPromptHook 不拦时正常流程不受影响")
+    void user_prompt_hook_pass_through() {
+        com.xilidou.jooj.hook.HookManager hooks =
+                org.springframework.test.util.ReflectionTestUtils.getField(
+                        dispatcher, "hooks") instanceof com.xilidou.jooj.hook.HookManager hm
+                ? hm : null;
+        assertNotNull(hooks);
+        // 注册一个永远 pass 的 hook(不影响 dispatch 主路径)
+        hooks.register((com.xilidou.jooj.hook.Hook.OnUserPrompt) q -> java.util.Optional.empty());
+
+        mock.reset(
+                ResponseFixtures.endTurn("normal reply"),
+                ResponseFixtures.endTurn("[]")
+        );
+        fake.outbound.clear();
+
+        dispatcher.dispatch(new ChannelMessage(
+                "weixin", "peerOK", null, "normal benign question", null));
+
+        assertEquals(1, fake.outbound.size());
+        assertEquals("normal reply", fake.outbound.get(0).text());
+    }
+
     /** 简易 channel 实现:把出站记录到 list,测试用。 */
     static class FakeChannel implements MessageChannel {
         record Out(String peer, String text) {}

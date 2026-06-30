@@ -1,6 +1,7 @@
 package com.xilidou.jooj.channel;
 
 import com.xilidou.jooj.agent.AgentLoopHarness;
+import com.xilidou.jooj.hook.HookManager;
 import com.xilidou.jooj.http.dto.MessageParam;
 import com.xilidou.jooj.http.dto.TextBlock;
 import com.xilidou.jooj.session.AgentLockProvider;
@@ -13,6 +14,7 @@ import org.springframework.stereotype.Component;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
@@ -49,16 +51,28 @@ public class InboundDispatcher implements ChannelDeliverer {
      * 也走纯客户端命令,不喂 LLM。null 安全(SlashCommandRegistry 没装时 dispatcher 仍能跑)。
      */
     private final SlashCommandRegistry slashCommands;
+    /**
+     * s21 Demo 27 review:UserPromptHook 路由 —— IM 入站文本必须经过 hooks.triggerUserPrompt
+     * 才能进 LLM(跟 CLI REPL 跟 Web 同步)。null 安全(HookManager 没装时不拦,等价旧行为)。
+     *
+     * <p>背景:Demo 27 self-review 发现 PermissionPipeline 的 tool 层(PermissionHook)
+     * 在 channel 路径生效,但 UserPrompt 层(OnUserPrompt hook 链)只 CLI REPL 调,
+     * Web/channel 都漏掉。结果:UserPromptHook 阻断关键词(如 "leak credentials")在
+     * weixin 里完全失效。这里把 hook 调用补齐。
+     */
+    private final HookManager hooks;
     private final Map<String, MessageChannel> channels = new HashMap<>();
 
     public InboundDispatcher(AgentLoopHarness harness,
                              SessionService sessionService,
                              AgentLockProvider lockProvider,
-                             SlashCommandRegistry slashCommands) {
+                             SlashCommandRegistry slashCommands,
+                             HookManager hooks) {
         this.harness = harness;
         this.sessionService = sessionService;
         this.lockProvider = lockProvider;
         this.slashCommands = slashCommands;
+        this.hooks = hooks;
     }
 
     /** Channel 启动时主动注册自己 —— 出站要靠这张表。 */
@@ -91,6 +105,19 @@ public class InboundDispatcher implements ChannelDeliverer {
                     msg.channel(), msg.text().strip(), sessionId);
             sendReply(msg, reply);
             return;
+        }
+
+        // s21 Demo 27 review:UserPromptHook 必须在 LLM 拿到 query 之前执行 ——
+        // 跟 CLI REPL (AgentLoopHarness.repl) 行为对齐。被 hook 拦下时回写一条
+        // 友好消息给 IM peer,不进 LLM 不进 history。
+        if (hooks != null) {
+            Optional<String> blocked = hooks.triggerUserPrompt(msg.text());
+            if (blocked.isPresent()) {
+                log.info("[Channel:{}] user prompt blocked by hook (peer={}): {}",
+                        msg.channel(), msg.peerId(), blocked.get());
+                sendReply(msg, "⛔ Prompt blocked: " + blocked.get());
+                return;
+            }
         }
 
         ReentrantLock lock = lockProvider.lockFor(sessionId);

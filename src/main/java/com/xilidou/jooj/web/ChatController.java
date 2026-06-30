@@ -1,6 +1,7 @@
 package com.xilidou.jooj.web;
 
 import com.xilidou.jooj.agent.AgentLoopHarness;
+import com.xilidou.jooj.hook.HookManager;
 import com.xilidou.jooj.http.dto.MessageParam;
 import com.xilidou.jooj.http.dto.TextBlock;
 import com.xilidou.jooj.http.dto.ToolUseBlock;
@@ -14,6 +15,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
@@ -55,15 +57,22 @@ public class ChatController {
     private final SessionService sessionService;
     private final AgentLockProvider lockProvider;
     private final SlashCommandRegistry slashCommands;
+    /**
+     * s21 Demo 27 review:UserPromptHook 链 —— Web 入口跟 CLI / channel 同步,
+     * 让 OnUserPrompt hook 在 Web 也能拦截。
+     */
+    private final HookManager hooks;
 
     public ChatController(AgentLoopHarness harness,
                           SessionService sessionService,
                           AgentLockProvider lockProvider,
-                          SlashCommandRegistry slashCommands) {
+                          SlashCommandRegistry slashCommands,
+                          HookManager hooks) {
         this.harness = harness;
         this.sessionService = sessionService;
         this.lockProvider = lockProvider;
         this.slashCommands = slashCommands;
+        this.hooks = hooks;
     }
 
     /**
@@ -94,6 +103,16 @@ public class ChatController {
             String reply = slashCommands.dispatch(request.getQuery(), sessionId);
             int size = harness.getHistory(sessionId).size();
             return ResponseEntity.ok(new ChatResponse(reply, size, List.of()));
+        }
+
+        // s21 Demo 27 review:UserPromptHook 必须在 LLM 拿到 query 之前执行 ——
+        // 跟 CLI REPL (AgentLoopHarness.repl) + InboundDispatcher.dispatch 行为对齐。
+        Optional<String> blocked = hooks.triggerUserPrompt(request.getQuery());
+        if (blocked.isPresent()) {
+            log.info("[Web] user prompt blocked by hook (session={}): {}",
+                    sessionId, blocked.get());
+            return ResponseEntity.badRequest().body(error(
+                    "⛔ Prompt blocked: " + blocked.get()));
         }
 
         ReentrantLock lock = lockProvider.lockFor(sessionId);
