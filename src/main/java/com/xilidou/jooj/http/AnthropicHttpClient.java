@@ -75,10 +75,10 @@ public class AnthropicHttpClient implements AnthropicClient {
         try {
             String body = json.writeValueAsString(req);
 
-            // 用 SLF4J debug 级别输出请求体。
-            // 启用方式:在 logback.xml 把 com.xilidou.jooj.http 设为 DEBUG
-            // 或传 -Dlogging.level.com.xilidou.jooj.http=DEBUG
-            log.debug("Anthropic request ({} bytes): {}", body.length(), body);
+            // s21 Demo 25:HTTP 层 default DEBUG (logback.xml 里 com.xilidou.jooj.http 默认 DEBUG)。
+            // 入参 = 完整 request body,出参 = status + 完整 response body。
+            // 撞 400 时(messages.X.content.Y 错配)能立即看到 raw payload 找 culprit。
+            log.debug("[anthropic-http] -> POST /v1/messages bytes={} body={}", body.length(), body);
 
             Request.Builder reqBuilder = new Request.Builder()
                     .url(baseUrl + "/v1/messages")
@@ -92,11 +92,19 @@ public class AnthropicHttpClient implements AnthropicClient {
                 String respBody = resp.body() != null ? resp.body().string() : "";
 
                 if (!resp.isSuccessful()) {
+                    // 失败:WARN 级别(default 配置就能看见)+ 完整 body,
+                    // 配合上面 request DEBUG 一对照立刻知道 LLM 投诉的是哪个 message
+                    log.warn("[anthropic-http] <- status={} bytes={} body={}",
+                            resp.code(), respBody.length(), respBody);
                     throw new AnthropicException(resp.code(), respBody);
                 }
+                // 成功:DEBUG 级别(开了 http log 能看到完整响应)
+                log.debug("[anthropic-http] <- status={} bytes={} body={}",
+                        resp.code(), respBody.length(), respBody);
                 return json.readValue(respBody, CreateMessageResponse.class);
             }
         } catch (IOException e) {
+            log.warn("[anthropic-http] IO error: {}", e.toString());
             throw new AnthropicException(0, "IO error: " + e.getMessage(), e);
         }
     }

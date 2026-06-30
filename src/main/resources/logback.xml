@@ -3,9 +3,11 @@
   Logback 配置（同时被 S01 main 和 SpringApplication.run 加载）
 
   特点：
-  - root WARN，主线 INFO（业务日志可见、第三方安静）
-  - HTTP debug：传 -Djooj.log.http=DEBUG
-      java -Djooj.log.http=DEBUG -cp ... com.xilidou.jooj.S01
+  - root WARN，主线 DEBUG（业务方便排错；生产可手改 INFO）
+  - HTTP debug 切换：
+      -Djooj.log.http=DEBUG  默认 — Anthropic 请求/响应体进 console
+      -Djooj.log.http=INFO   想再静一点
+      -Djooj.log.okhttp=BODY 配合 OkHttp wire 层调试 TLS / proxy / headers
   - 格式简洁：HH:mm:ss + level + logger 类名 + msg
 -->
 <configuration>
@@ -21,7 +23,7 @@
         <appender-ref ref="CONSOLE"/>
     </root>
 
-    <!-- 主线代码：INFO 级别 -->
+    <!-- 主线代码：DEBUG 级别 -->
     <logger name="com.xilidou.jooj" level="DEBUG"/>
 
     <!-- s21 Demo 16.7：fork 进 jooj 的 OpenClaw weixin SDK 默认也走 INFO，
@@ -29,11 +31,20 @@
     <logger name="cn.langchat.openclaw" level="INFO"/>
 
     <!--
-      HTTP 层：默认继承上面的 INFO，但允许通过 -Djooj.log.http=DEBUG 切到 DEBUG。
-      - 没设 -Djooj.log.http 时，${...:-INFO} 默认 INFO
-      - 设了 -Djooj.log.http=DEBUG 时，会打印 Anthropic 请求体
+      HTTP 层日志开关 (s21 Demo 25 修)：
+      - 老配置挂在 com.xilidou.jooj.harness.http (R2 重构后这个包已经不存在)，
+        是个死开关。修正到真实包名 com.xilidou.jooj.http。
+      - 默认 DEBUG（继承主线），让 Anthropic 请求 / 响应体直接进 console，
+        撞 400 时立即看到 messages.X.content.Y 的 raw payload。
+      - 想再静一点：-Djooj.log.http=INFO
     -->
-    <logger name="com.xilidou.jooj.harness.http" level="${jooj.log.http:-INFO}"/>
+    <logger name="com.xilidou.jooj.http" level="${jooj.log.http:-DEBUG}"/>
+
+    <!--
+      OkHttp wire 层 (HttpLoggingInterceptor)：默认 OFF (WARN)，
+      传 -Djooj.log.okhttp=INFO 才输出。只在调试 HTTPS / proxy / TLS 故障时开。
+    -->
+    <logger name="okhttp3.logging.HttpLoggingInterceptor" level="${jooj.log.okhttp:-WARN}"/>
 
 </configuration>
 

@@ -253,19 +253,38 @@ public class WeixinApiClient {
 
         // jooj 改造:永久 log,不靠 -Dopenclaw.weixin.debug 开关。
         // 关键诊断信息:Authorization 头是不是空、body 是什么、server 返什么。
+        //
+        // s21 Demo 25:心跳路径(getUpdates 长轮询)走 DEBUG —— 每几秒一次,INFO 会刷屏。
+        // 业务调用(sendText / qrLogin / sendTyping / accountInfo 等)保持 INFO。
+        // logback.xml 里 cn.langchat.openclaw 默认 INFO,DEBUG 自然过滤;
+        // 想看心跳:-Dlogging.level.cn.langchat.openclaw=DEBUG。
+        boolean isHeartbeat = WeixinApiPaths.GET_UPDATES.equals(path);
         String authHeader = headers.getOrDefault("Authorization", "<missing>");
         String authPreview = authHeader.length() > 20 ? authHeader.substring(0, 20) + "..." : authHeader;
-        LOG.info("[weixin-http] POST {} auth={} bodyLen={}", path, authPreview, bytes.length);
+        if (isHeartbeat) {
+            LOG.debug("[weixin-http] POST {} auth={} bodyLen={}", path, authPreview, bytes.length);
+        } else {
+            LOG.info("[weixin-http] POST {} auth={} bodyLen={}", path, authPreview, bytes.length);
+        }
         debug("POST " + Redaction.redactUrl(config.baseUrl() + path) + " body=" + Redaction.redactJson(payload));
 
         try {
             HttpResponse<String> resp = httpClient.send(reqBuilder.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
             // jooj 改造:永久 log status + body(body trim 到 300 char 防刷屏)。
+            // 心跳:DEBUG;业务:INFO。失败 status 不论心跳/业务都 WARN(必看)。
             String respBody = resp.body() == null ? "" : resp.body();
             String respPreview = respBody.length() > 300 ? respBody.substring(0, 300) + "..." : respBody;
-            LOG.info("[weixin-http] POST {} → status={} body={}", path, resp.statusCode(), respPreview);
+            int status = resp.statusCode();
+            boolean isError = status < 200 || status >= 300;
+            if (isError) {
+                LOG.warn("[weixin-http] POST {} → status={} body={}", path, status, respPreview);
+            } else if (isHeartbeat) {
+                LOG.debug("[weixin-http] POST {} → status={} body={}", path, status, respPreview);
+            } else {
+                LOG.info("[weixin-http] POST {} → status={} body={}", path, status, respPreview);
+            }
             debug("POST status=" + resp.statusCode() + " body=" + Redaction.redactJson(resp.body()));
-            if (resp.statusCode() < 200 || resp.statusCode() >= 300) {
+            if (isError) {
                 throw new WeixinApiException("POST " + path + " failed", resp.statusCode(), resp.body());
             }
             String bodyText = respBody.trim();
