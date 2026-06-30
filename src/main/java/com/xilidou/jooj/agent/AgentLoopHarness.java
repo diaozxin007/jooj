@@ -6,6 +6,7 @@ import com.xilidou.jooj.JoojProperties;
 import com.xilidou.jooj.cron.CronJob;
 import com.xilidou.jooj.cron.CronService;
 import com.xilidou.jooj.session.AgentLockProvider;
+import com.xilidou.jooj.session.HistoryScrubber;
 import com.xilidou.jooj.session.Session;
 import com.xilidou.jooj.session.SessionService;
 import com.xilidou.jooj.team.Message;
@@ -307,6 +308,20 @@ public class AgentLoopHarness {
             }
 
             compactPipeline.apply(messages);
+
+            // s21 Demo 25 副作用 v3:不变量级防御 —— 任何路径(SnipCompactor / cron 注入 /
+            // channel 入站) 把孤儿 tool_use / tool_result 塞进 messages,都在 send 给
+            // Anthropic 之前 scrub 一次。MessageBoundary 加固只是减少孤儿产生,
+            // 这里是"绝不能让孤儿被 send"的硬契约。
+            //
+            // HistoryScrubber.scrub 返回新 list(可能是原引用,可能是新 ArrayList),
+            // 这里需要把结果反向 mirror 回 messages 这个 list 引用 —— 因为
+            // recoveryCoordinator + reactiveCompact 都是原地 mutate 这个 list,引用要保持。
+            List<MessageParam> scrubbed = HistoryScrubber.scrub(messages);
+            if (scrubbed != messages) {
+                messages.clear();
+                messages.addAll(scrubbed);
+            }
 
             // memory catalog 全局共享(Demo 13 撤销 per-session 化 —— 见 MemoryService 类注释)
             var system = promptAssembler.assembleBlocks(promptAssembler.currentContext());
