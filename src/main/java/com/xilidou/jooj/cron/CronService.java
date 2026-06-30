@@ -94,16 +94,22 @@ public class CronService {
      *
      * @return 成功时 6 位 id;失败时 {@code "Error: ..."} 字符串
      */
-    public String schedule(String cron, String prompt, boolean recurring, boolean durable) {
-        return schedule(cron, prompt, recurring, durable, null);
-    }
-
     /**
-     * s20 Demo 9:带 sessionId 的 schedule —— fire 时把 prompt 注入这个 session,而不是
-     * 一律塞 cron-default。{@code sessionId == null} 等价于老行为(注入 cron-default)。
+     * 调度一条 cron job。s21 Demo 20:self-describing,delivery 字段在 schedule 时 freeze。
+     *
+     * @param cron         5 字段 cron 表达式
+     * @param prompt       fire 时注入到 agentLoop 的 user message
+     * @param recurring    true=循环, false=一次性
+     * @param durable      true=持久化到 scheduled_tasks.json
+     * @param sessionId    fire 时注入到哪条 session;null = 兜底 cron-default
+     * @param deliveryType "channel" / "team" / "none";null 视作 "none"
+     * @param channel      仅 deliveryType=channel 时:weixin / discord / ...
+     * @param peerId       仅 deliveryType=channel 时:原始 raw peerId(xxx@im.wechat)
+     * @return job id 或错误信息
      */
     public String schedule(String cron, String prompt, boolean recurring, boolean durable,
-                           String sessionId) {
+                           String sessionId,
+                           String deliveryType, String channel, String peerId) {
         if (prompt == null || prompt.isBlank()) {
             return "Error: prompt must not be blank";
         }
@@ -111,12 +117,27 @@ public class CronService {
         if (validation != null) return validation;
 
         String id = generateId();
-        CronJob job = new CronJob(id, cron, prompt, recurring, durable, sessionId);
+        CronJob job = new CronJob(id, cron, prompt, recurring, durable,
+                sessionId, deliveryType, channel, peerId);
         scheduled.put(id, job);
         if (durable) persistDurable();
-        log.info("[Cron] scheduled {} '{}' → '{}' (recurring={}, durable={}, session={})",
-                id, cron, prompt, recurring, durable, sessionId);
+        log.info("[Cron] scheduled {} '{}' → '{}' (recurring={}, durable={}, session={}, deliveryType={}, channel={}, peer={})",
+                id, cron, prompt, recurring, durable, sessionId, deliveryType, channel, peerId);
         return id;
+    }
+
+    /**
+     * 测试 / CLI 便利重载:不指定 session / delivery,走兜底(cron-default session,deliveryType=none)。
+     * 跟 Demo 9 之前的 4-arg schedule 行为一致。生产代码请显式调全参版本,避免 cron 的回写信息丢失。
+     */
+    public String schedule(String cron, String prompt, boolean recurring, boolean durable) {
+        return schedule(cron, prompt, recurring, durable, null, "none", null, null);
+    }
+
+    /** 测试便利重载:带 sessionId,无 delivery 路由(deliveryType=none)。Demo 9 测试用。 */
+    public String schedule(String cron, String prompt, boolean recurring, boolean durable,
+                           String sessionId) {
+        return schedule(cron, prompt, recurring, durable, sessionId, "none", null, null);
     }
 
     /**

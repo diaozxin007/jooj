@@ -185,6 +185,15 @@ public class AgentLoopHarness {
     private final List<Consumer<String>> onNewSessionListeners = new ArrayList<>();
 
     /**
+     * Channel 投递抽象 —— Demo 20 起用 self-describing 路由,harness 直接调它把 cron 回复
+     * 发到 channel,不再用 Demo 19 的 listener + 反查表。
+     *
+     * <p>{@code ObjectProvider} 让 channel 包不存在时(纯 CLI 模式)也能装配 harness,
+     * deliveryType=channel 时 deliverer 缺席就 log warn + skip。
+     */
+    private final org.springframework.beans.factory.ObjectProvider<com.xilidou.jooj.channel.ChannelDeliverer> channelDelivererProvider;
+
+    /**
      * 唯一构造器 —— Spring 容器装配。
      */
     public AgentLoopHarness(AnthropicClient client,
@@ -203,7 +212,8 @@ public class AgentLoopHarness {
                             ProtocolRegistry protocols,
                             SessionService sessionService,
                             AgentLockProvider lockProvider,
-                            JoojProperties props) {
+                            JoojProperties props,
+                            org.springframework.beans.factory.ObjectProvider<com.xilidou.jooj.channel.ChannelDeliverer> channelDelivererProvider) {
         this.client = client;
         this.model = props.getAnthropic().getModel();
         this.registry = registry;
@@ -221,6 +231,7 @@ public class AgentLoopHarness {
         this.protocols = protocols;
         this.sessionService = sessionService;
         this.lockProvider = lockProvider;
+        this.channelDelivererProvider = channelDelivererProvider;
         this.recoveryCfg = props.getRecovery();
     }
 
@@ -239,16 +250,31 @@ public class AgentLoopHarness {
     // ── 核心 Agent Loop ─────────────────────────────────────────
 
     public void agentLoop(List<MessageParam> messages) {
-        agentLoop(messages, null);
+        agentLoop(messages, ExecutionContext.lead());
     }
 
     /**
-     * s20 Demo 9 重载:把 sessionId 一路线传到 {@link #executeOneTool},再到工具的
-     * {@code execute(call, ctx)},让 CronTool 这种"工具侧记 session"场景能拿到当前 session。
-     *
-     * @param sessionId 当前 session id;null = 不知道(老调用方/兼容路径)
+     * 老入口:只带 sessionId,自动包装成 {@link ExecutionContext#leadInSession}。
+     * Demo 20 之前的调用方走这条;Demo 20 起新调用方应走带 ctx 的重载,带上 deliveryHint 等。
      */
     public void agentLoop(List<MessageParam> messages, String sessionId) {
+        ExecutionContext ctx = sessionId != null
+                ? ExecutionContext.leadInSession(sessionId)
+                : ExecutionContext.lead();
+        agentLoop(messages, ctx);
+    }
+
+    /**
+     * s21 Demo 20 主入口:整 ctx 透传到 {@link #executeOneTool} → 各 Tool。
+     * 让 CronTool 等能拿到 deliveryHint freeze 进 self-describing 的 cron job。
+     *
+     * @param messages 当前 turn 的 history
+     * @param ctx      execution context;{@link ExecutionContext#sessionId} 决定 per-session 状态
+     *                 路由,{@link ExecutionContext#deliveryHint} 决定 cron job 等的 freeze 信息
+     */
+    public void agentLoop(List<MessageParam> messages, ExecutionContext ctx) {
+        // 提取 sessionId 给 todoStore / bgManager 等 per-session 状态服务用。
+        String sessionId = ctx != null ? ctx.sessionId() : null;
         List<ToolDef> tools = buildTools();
         int roundsSinceTodo = 0;
 
@@ -344,12 +370,12 @@ public class AgentLoopHarness {
                 if (BackgroundTaskManager.shouldRunBackground(toolUse.getName(), args)) {
                     Object cmd = args.get("command");
                     String command = cmd != null ? cmd.toString() : "(no command)";
-                    final String sid = sessionId;
+                    final ExecutionContext bgCtx = ctx;
                     // s20 Demo 12: bg 任务也带 sessionId,完成通知只回到本 session,
                     // 不串味给其他 session 那一轮 history。
-                    String bgId = bgManager.start(sid, toolUse.getId(), command,
-                            () -> registry.execute(new ToolCall(toolUse.getName(), args),
-                                    sid != null ? ExecutionContext.leadInSession(sid) : ExecutionContext.lead()));
+                    // s21 Demo 20: 整个 ctx 透传(带 deliveryHint),让 bg 内 CronTool 等也能用。
+                    String bgId = bgManager.start(sessionId, toolUse.getId(), command,
+                            () -> registry.execute(new ToolCall(toolUse.getName(), args), bgCtx));
                     String placeholder = "[Background task " + bgId + " started] " +
                             "Result will be available when complete.";
                     System.out.println("\033[35m" + placeholder + "\033[0m");
@@ -357,7 +383,7 @@ public class AgentLoopHarness {
                     continue;
                 }
 
-                ToolResultBlock result = executeOneTool(toolUse, args, sessionId);
+                ToolResultBlock result = executeOneTool(toolUse, args, ctx);
                 hooks.triggerPostToolUse(toolUse, result.getContent().toString());
 
                 if (TODO_TOOL_NAME.equals(toolUse.getName())) {
@@ -420,6 +446,10 @@ public class AgentLoopHarness {
         return this;
     }
 
+    // s21 Demo 19 的 onScheduledTurnComplete listener 在 Demo 20 重写后被移除 ——
+    // 改用 cron job self-describing(deliveryType + channel + peerId)+ ChannelDeliverer 接口。
+    // 见 processCronTriggers 内的 switch 路由。
+
     /** 兼容老 API。回调以 {@link Session#CLI_DEFAULT_ID} 触发。 */
     public AgentLoopHarness onNewSession(Runnable callback) {
         if (callback != null) {
@@ -452,6 +482,18 @@ public class AgentLoopHarness {
      * 跑一轮 agent_loop —— per-session 入口。
      */
     public void processOneQuery(String sessionId, String query) {
+        processOneQuery(sessionId, query, null);
+    }
+
+    /**
+     * s21 Demo 20:带 deliveryHint 的 processOneQuery —— InboundDispatcher 入站时调,
+     * 让 (channel, peerId) 透传到工具调用,CronTool 能 freeze 进 self-describing cron job。
+     *
+     * @param sessionId    target session
+     * @param query        user message
+     * @param deliveryHint 可选,channel 入站时由 dispatcher 提供;CLI / Web / cron-default 时 null
+     */
+    public void processOneQuery(String sessionId, String query, ExecutionContext.DeliveryHint deliveryHint) {
         if (sessionId == null || sessionId.isBlank()) {
             throw new IllegalArgumentException("sessionId must not be blank");
         }
@@ -464,7 +506,12 @@ public class AgentLoopHarness {
             log.info("[Memory] injected {} chars of relevant memories", injection.length());
         }
         history.add(MessageParam.user(enriched));
-        agentLoop(history, sessionId);
+
+        // s21 Demo 20: 构造完整 ctx(sessionId + deliveryHint),透传到 agent loop
+        ExecutionContext ctx = deliveryHint != null
+                ? ExecutionContext.leadInChannel(sessionId, deliveryHint.channel(), deliveryHint.peerId())
+                : ExecutionContext.leadInSession(sessionId);
+        agentLoop(history, ctx);
 
         memoryService.onTurnEnd(history);
 
@@ -501,7 +548,6 @@ public class AgentLoopHarness {
         Map<String, List<CronJob>> bySession = new java.util.LinkedHashMap<>();
         for (CronJob job : firedJobs) {
             String sid = job.getSessionId() != null ? job.getSessionId() : Session.CRON_DEFAULT_ID;
-            // 不存在的 session(可能用户已删) → 退回 cron-default 兜底,通知不丢
             if (!sessionService.exists(sid)) {
                 log.warn("[Cron] job {} target session {} no longer exists, " +
                         "falling back to cron-default", job.getId(), sid);
@@ -512,8 +558,10 @@ public class AgentLoopHarness {
 
         for (Map.Entry<String, List<CronJob>> entry : bySession.entrySet()) {
             String sessionId = entry.getKey();
+            List<CronJob> jobsThisSession = entry.getValue();
             List<MessageParam> history = sessionService.loadHistory(sessionId);
-            for (CronJob job : entry.getValue()) {
+            int historyBefore = history.size();
+            for (CronJob job : jobsThisSession) {
                 history.add(MessageParam.user("[Scheduled] " + job.getPrompt()));
                 log.info("[Cron] injected fired job {} prompt into session {}",
                         job.getId(), sessionId);
@@ -521,7 +569,83 @@ public class AgentLoopHarness {
             agentLoop(history, sessionId);
             memoryService.onTurnEnd(history);
             sessionService.saveHistory(sessionId, history);
+
+            // s21 Demo 20:每个 fired job 按自己的 deliveryType 路由(self-describing)。
+            // 同 session 多 jobs 共享同一段 reply(它们的 prompt 都串接进了 turn)。
+            String reply = lastAssistantTextSince(history, historyBefore);
+            for (CronJob job : jobsThisSession) {
+                deliverCronResult(job, reply);
+            }
         }
+    }
+
+    /**
+     * s21 Demo 20:按 cron job 自描述的 deliveryType 路由 LLM 回复。
+     * cron job 创建时已经 freeze 了路由信息,fire 时**只读 cron job 自身**,不查任何旁路状态。
+     */
+    private void deliverCronResult(CronJob job, String reply) {
+        String type = job.getDeliveryType();
+        if (type == null) type = "none";
+
+        switch (type) {
+            case "channel" -> {
+                if (reply == null || reply.isBlank()) {
+                    log.info("[Cron] job {} channel-delivery skipped: no assistant text", job.getId());
+                    return;
+                }
+                String channel = job.getChannel();
+                String peerId = job.getPeerId();
+                if (channel == null || peerId == null) {
+                    log.warn("[Cron] job {} deliveryType=channel but missing channel/peerId, dropped",
+                            job.getId());
+                    return;
+                }
+                com.xilidou.jooj.channel.ChannelDeliverer deliverer =
+                        channelDelivererProvider != null ? channelDelivererProvider.getIfAvailable() : null;
+                if (deliverer == null) {
+                    log.warn("[Cron] job {} deliveryType=channel but no ChannelDeliverer wired " +
+                            "(jooj.weixin.enabled=false?), dropped", job.getId());
+                    return;
+                }
+                boolean ok = deliverer.deliver(channel, peerId, reply);
+                log.info("[Cron] job {} delivered to channel={} peer={}: {}",
+                        job.getId(), channel, peerId, ok);
+            }
+            case "team" -> {
+                // Tier B 后续:用 messageBus 投递给 alice/bob;当前 LLM 还没自己生成 team cron
+                log.warn("[Cron] job {} deliveryType=team not yet implemented", job.getId());
+            }
+            case "none" -> {
+                log.debug("[Cron] job {} deliveryType=none, no outbound delivery", job.getId());
+            }
+            default ->
+                log.warn("[Cron] job {} unknown deliveryType '{}', dropped", job.getId(), type);
+        }
+    }
+
+    /**
+     * 从 sinceIndex 之后的 history 里找最后一条 assistant 文本。
+     * 跳过 tool_use / thinking,只回纯文本。
+     * 跟 InboundDispatcher.lastAssistantText 一致语义,这里独立放在 harness 包不需要跨包依赖。
+     */
+    private String lastAssistantTextSince(List<MessageParam> history, int sinceIndex) {
+        for (int i = history.size() - 1; i >= sinceIndex; i--) {
+            MessageParam m = history.get(i);
+            if (!"assistant".equals(m.getRole())) continue;
+            Object c = m.getContent();
+            if (c instanceof String s && !s.isBlank()) return s;
+            if (c instanceof List<?> blocks) {
+                StringBuilder sb = new StringBuilder();
+                for (Object b : blocks) {
+                    if (b instanceof TextBlock tb && tb.getText() != null) {
+                        if (sb.length() > 0) sb.append('\n');
+                        sb.append(tb.getText());
+                    }
+                }
+                if (sb.length() > 0) return sb.toString();
+            }
+        }
+        return null;
     }
 
     private void printToolHeader(ToolUseBlock toolUse, Map<String, Object> args) {
@@ -530,10 +654,8 @@ public class AgentLoopHarness {
         System.out.println("\033[33m$ " + display + "\033[0m");
     }
 
-    private ToolResultBlock executeOneTool(ToolUseBlock toolUse, Map<String, Object> args, String sessionId) {
-        ExecutionContext ctx = sessionId != null
-                ? ExecutionContext.leadInSession(sessionId)
-                : ExecutionContext.lead();
+    private ToolResultBlock executeOneTool(ToolUseBlock toolUse, Map<String, Object> args, ExecutionContext ctx) {
+        if (ctx == null) ctx = ExecutionContext.lead();
         ToolResult result = registry.execute(new ToolCall(toolUse.getName(), args), ctx);
         String output = result.getOutput();
 

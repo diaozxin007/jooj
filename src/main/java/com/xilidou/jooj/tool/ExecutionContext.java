@@ -44,37 +44,51 @@ public record ExecutionContext(
         Path cwd,
         String agentName,
         String worktreeName,
-        String sessionId
+        String sessionId,
+        DeliveryHint deliveryHint
 ) {
 
-    /** Lead 主路径默认 ctx —— 无 cwd 覆盖,用工具自身默认根目录;无 sessionId(老调用点兼容)。 */
+    /**
+     * 投递目标的暗示 —— 仅 channel 入站路径(微信/Discord/...) 时由 InboundDispatcher 填,
+     * 其他路径(CLI / Web / cron-default)留 null。
+     *
+     * <p>用途(s21 Demo 20):CronTool.doSchedule 拿到此 hint 后,把 (channel, peerId) freeze
+     * 进 CronJob,**让 cron 数据自描述路由,不依赖 jooj 内存反查表**。Hermes 的 origin 同款。
+     */
+    public record DeliveryHint(String channel, String peerId) {}
+
+    /** Lead 主路径默认 ctx —— 无 cwd 覆盖,用工具自身默认根目录;无 sessionId / deliveryHint。 */
     public static ExecutionContext lead() {
-        return new ExecutionContext(null, "lead", null, null);
+        return new ExecutionContext(null, "lead", null, null, null);
     }
 
-    /** Lead 主路径,绑定到指定 session(s20 Demo 9:cron 等"工具侧记 session"场景)。 */
+    /** Lead 主路径,绑定到指定 session(s20 Demo 9)。 */
     public static ExecutionContext leadInSession(String sessionId) {
-        return new ExecutionContext(null, "lead", null, sessionId);
+        return new ExecutionContext(null, "lead", null, sessionId, null);
+    }
+
+    /**
+     * s21 Demo 20:Channel 入站路径 ctx —— 含 deliveryHint,让本 turn 内 CronTool 等
+     * 能拿到 (channel, peerId) freeze 进自描述消息(cron job)。
+     */
+    public static ExecutionContext leadInChannel(String sessionId, String channel, String peerId) {
+        return new ExecutionContext(null, "lead", null, sessionId, new DeliveryHint(channel, peerId));
     }
 
     /**
      * Teammate 路径但**没绑定 worktree** —— 工具仍用默认 cwd,但审计能看到调用者是谁。
      */
     public static ExecutionContext forTeammate(String teammateName) {
-        return new ExecutionContext(null, teammateName, null, null);
+        return new ExecutionContext(null, teammateName, null, null, null);
     }
 
     /**
      * Teammate 路径**已绑定 worktree** —— 工具切换到 worktree 路径执行。
-     *
-     * @param teammateName 队友 name
-     * @param worktreeName 关联的 worktree 名(纯 string 标识,审计用)
-     * @param worktreePath worktree 在文件系统上的路径
      */
     public static ExecutionContext inWorktree(String teammateName,
                                               String worktreeName,
                                               Path worktreePath) {
-        return new ExecutionContext(worktreePath, teammateName, worktreeName, null);
+        return new ExecutionContext(worktreePath, teammateName, worktreeName, null, null);
     }
 
     /**

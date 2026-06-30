@@ -143,12 +143,22 @@ public class CronTool implements Tool {
         boolean recurring = parseBoolean(call.getArguments().get("recurring"), true);
         boolean durable = parseBoolean(call.getArguments().get("durable"), false);
 
-        // ctx 带 sessionId 时,把它落到 CronJob,fire 时通知回这个 session;
-        // 否则走老兜底(注入 cron-default 收容 session)。
+        // s20 Demo 9 + s21 Demo 20:从 ctx 提取路由信息 freeze 进 CronJob。
+        // 这是 self-describing 的核心 —— fire 时不查任何旁路状态,job 自己就够。
         String sessionId = ctx != null ? ctx.sessionId() : null;
+        String deliveryType = "none";
+        String channel = null;
+        String peerId = null;
+        if (ctx != null && ctx.deliveryHint() != null) {
+            // 入站路径(微信/Discord/...) 在 InboundDispatcher 那里把 hint 注入了 ctx
+            deliveryType = "channel";
+            channel = ctx.deliveryHint().channel();
+            peerId = ctx.deliveryHint().peerId();
+        }
 
         String result = service.schedule(
-                cronArg.toString(), promptArg.toString(), recurring, durable, sessionId);
+                cronArg.toString(), promptArg.toString(), recurring, durable,
+                sessionId, deliveryType, channel, peerId);
         if (result.startsWith("Error:")) {
             return new ToolResult(false, result);
         }

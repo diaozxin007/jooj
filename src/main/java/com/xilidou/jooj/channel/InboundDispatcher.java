@@ -5,6 +5,7 @@ import com.xilidou.jooj.http.dto.MessageParam;
 import com.xilidou.jooj.http.dto.TextBlock;
 import com.xilidou.jooj.session.AgentLockProvider;
 import com.xilidou.jooj.session.SessionService;
+import com.xilidou.jooj.tool.ExecutionContext;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -37,7 +38,7 @@ import java.util.concurrent.locks.ReentrantLock;
  */
 @Component
 @Slf4j
-public class InboundDispatcher {
+public class InboundDispatcher implements ChannelDeliverer {
 
     private final AgentLoopHarness harness;
     private final SessionService sessionService;
@@ -83,7 +84,10 @@ public class InboundDispatcher {
         int historySizeBefore;
         try {
             historySizeBefore = sessionService.loadHistory(sessionId).size();
-            harness.processOneQuery(sessionId, msg.text());
+            // s21 Demo 20:把 (channel, peerId) 作为 deliveryHint 透传给 processOneQuery,
+            // CronTool 等能拿到 hint freeze 进 self-describing cron job(不依赖任何旁路)。
+            ExecutionContext.DeliveryHint hint = new ExecutionContext.DeliveryHint(msg.channel(), msg.peerId());
+            harness.processOneQuery(sessionId, msg.text(), hint);
         } catch (Exception e) {
             log.error("[Channel:{}] processOneQuery failed for session {}: {}",
                     msg.channel(), sessionId, e.getMessage(), e);
@@ -130,6 +134,35 @@ public class InboundDispatcher {
         String title = msg.channel() + ":" + (msg.peerName() != null ? msg.peerName() : msg.peerId());
         sessionService.createWithId(sessionId, title);
         log.info("[Channel:{}] auto-created session {} (title={})", msg.channel(), sessionId, title);
+    }
+
+    /**
+     * {@link ChannelDeliverer} 接口实现 — harness 在 cron 触发完,按 cron job 自描述的
+     * (channel, peerId) 调用此方法把 LLM 回复发回去(s21 Demo 20)。
+     *
+     * <p>设计:dispatcher 降级为单纯执行器 —— 决策"送哪 + 内容是什么"都在 harness,这里只负责
+     * 找到 channel bean 调 sendOutbound。**不做任何反查**。
+     */
+    @Override
+    public boolean deliver(String channel, String peerId, String text) {
+        if (channel == null || peerId == null || text == null || text.isBlank()) {
+            log.debug("[Channel] deliver skipped: missing args (channel={}, peerId={}, text={})",
+                    channel, peerId, text == null ? "null" : "len=" + text.length());
+            return false;
+        }
+        MessageChannel ch = channels.get(channel);
+        if (ch == null) {
+            log.warn("[Channel:{}] not registered, skipping deliver to peer={}", channel, peerId);
+            return false;
+        }
+        try {
+            ch.sendOutbound(peerId, text);
+            log.info("[Channel:{}] delivered to peer={} ({} chars)", channel, peerId, text.length());
+            return true;
+        } catch (Exception e) {
+            log.warn("[Channel:{}] sendOutbound failed (peer={}): {}", channel, peerId, e.getMessage());
+            return false;
+        }
     }
 
     /**
