@@ -76,9 +76,14 @@ public class AnthropicHttpClient implements AnthropicClient {
             String body = json.writeValueAsString(req);
 
             // s21 Demo 25:HTTP 层 default DEBUG (logback.xml 里 com.xilidou.jooj.http 默认 DEBUG)。
-            // 入参 = 完整 request body,出参 = status + 完整 response body。
-            // 撞 400 时(messages.X.content.Y 错配)能立即看到 raw payload 找 culprit。
-            log.debug("[anthropic-http] -> POST /v1/messages bytes={} body={}", body.length(), body);
+            // 入参 = digest 后的 request body,出参 = status + digest 后的 response body。
+            // 撞 400 时(messages.X.content.Y 错配)能立即看到结构化的 raw payload 找 culprit。
+            //
+            // 用 HttpBodyDigest 截 signature / thinking / 大 tool_result —— 不是脱敏,
+            // 是结构性噪音去除,让 log 一行能看清意图。signature 单字段就 3000+ char,
+            // 不去掉一次 turn 占 console 整屏。
+            log.debug("[anthropic-http] -> POST /v1/messages bytes={} body={}",
+                    body.length(), HttpBodyDigest.digest(body, json));
 
             Request.Builder reqBuilder = new Request.Builder()
                     .url(baseUrl + "/v1/messages")
@@ -92,15 +97,19 @@ public class AnthropicHttpClient implements AnthropicClient {
                 String respBody = resp.body() != null ? resp.body().string() : "";
 
                 if (!resp.isSuccessful()) {
-                    // 失败:WARN 级别(default 配置就能看见)+ 完整 body,
-                    // 配合上面 request DEBUG 一对照立刻知道 LLM 投诉的是哪个 message
+                    // 失败:WARN 级别(default 配置就能看见)+ digest body,
+                    // 配合上面 request DEBUG 一对照立刻知道 LLM 投诉的是哪个 message。
+                    // 对错误响应,digest 通常只是整体截断(错误 body 一般是个错误 JSON),
+                    // 不会丢失诊断关键信息。
                     log.warn("[anthropic-http] <- status={} bytes={} body={}",
-                            resp.code(), respBody.length(), respBody);
+                            resp.code(), respBody.length(),
+                            HttpBodyDigest.digest(respBody, json));
                     throw new AnthropicException(resp.code(), respBody);
                 }
-                // 成功:DEBUG 级别(开了 http log 能看到完整响应)
+                // 成功:DEBUG 级别(开了 http log 能看到 digest 后的响应)
                 log.debug("[anthropic-http] <- status={} bytes={} body={}",
-                        resp.code(), respBody.length(), respBody);
+                        resp.code(), respBody.length(),
+                        HttpBodyDigest.digest(respBody, json));
                 return json.readValue(respBody, CreateMessageResponse.class);
             }
         } catch (IOException e) {
