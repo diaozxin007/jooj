@@ -50,11 +50,16 @@ public class SessionConfiguration {
      * {@link SessionService#ensureBootstrap()},三个 reserved session 自动建立。
      *
      * <p>s21 Demo 25:加 {@link SearchService} 入参,SessionService 钩子层负责
-     * saveHistory/delete/clearHistory 时双写 FTS5。SearchService null 安全(没装时走老 1 参委托)。
+     * saveHistory/delete/clearHistory 时双写 FTS5。
+     *
+     * <p>s21 review BUG 1:加 {@link AgentLockProvider} 入参,delete 时调 release
+     * 防 lock map 永远只增不减。
      */
     @Bean(initMethod = "ensureBootstrap")
-    public SessionService sessionService(SessionStore store, SearchService searchService) {
-        return new SessionService(store, searchService);
+    public SessionService sessionService(SessionStore store,
+                                         SearchService searchService,
+                                         AgentLockProvider lockProvider) {
+        return new SessionService(store, searchService, lockProvider);
     }
 
     @Bean

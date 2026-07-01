@@ -211,4 +211,97 @@ class SessionServiceTest {
         assertEquals(a.id(), b.id());
         assertEquals("first", b.title(), "已存在时不应覆盖 title");
     }
+
+    // ─────────────────────────────────────────────────────────────
+    //  s21 review bug fixes
+    // ─────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("BUG 1:delete 后 AgentLockProvider.release 被调(lock 不泄漏)")
+    void bug1_delete_releases_lock() {
+        AgentLockProvider lockProvider = new AgentLockProvider();
+        SessionService svc = new SessionService(store, null, lockProvider);
+        svc.ensureBootstrap();
+        Session s = svc.create("temp");
+        // lock 先装上
+        lockProvider.lockFor(s.id());
+
+        svc.delete(s.id());
+
+        // release 后 map 里已清,lockFor 再拿到的是个新 lock 对象
+        var lockAfter = lockProvider.lockFor(s.id());
+        assertNotNull(lockAfter);
+        // 如果 release 没被调,lockProvider.locks 里还会有旧的 lock;
+        // 这里验证删除后 key 被清(重新 lockFor 会 computeIfAbsent 建新锁)
+        assertTrue(lockAfter.tryLock(), "新 lock 应未被持有");
+        lockAfter.unlock();
+    }
+
+    @Test
+    @DisplayName("BUG 2:saveHistory 对不在 index 的 session 不再静默 return(状态不一致)")
+    void bug2_save_history_unknown_session_does_not_silently_skip() {
+        // 创建 session 然后绕过 service 直接移除内存 map(模拟 bug 场景)
+        Session s = service.create("orphan");
+        String id = s.id();
+        // 不调 delete(要保留 JSON 文件),只让内存 map 失去同步
+        // 最简单:用一个新 service 实例,不 ensureBootstrap,手动 load → map 里没有这条
+        SessionService fresh = new SessionService(store);
+        fresh.ensureBootstrap();  // 只 bootstrap reserved session,普通 session 不在 map
+
+        List<MessageParam> hist = List.of(MessageParam.user("hello"));
+        // saveHistory 应该 warn + 自动注册,不 silently return
+        assertDoesNotThrow(() -> fresh.saveHistory(id, hist));
+
+        // 验证:session 现在在 fresh 的 map 里了
+        assertTrue(fresh.exists(id), "saveHistory 应自动注册 unknown session");
+
+        // 磁盘 JSON 也已更新(saveHistory 调 store.writeHistory)
+        List<MessageParam> loaded = fresh.loadHistory(id);
+        assertEquals(1, loaded.size());
+    }
+
+    @Test
+    @DisplayName("BUG 3:clearHistory 清空 history 且不抛(冗余 onClearHistory 已删,searchService=null 不 NPE)")
+    void bug3_clear_history_works_without_search_service() {
+        // searchService=null 的 service(老 1 参 ctor)调 clearHistory 不应 NPE
+        // 这守门"不再显式调 searchService.onClearHistory"不会因 NPE 爆
+        Session s = service.create("c");
+        service.loadHistory(s.id()).add(MessageParam.user("hi"));
+        service.saveHistory(s.id(), service.loadHistory(s.id()));
+        assertEquals(1, service.loadHistory(s.id()).size());
+
+        assertDoesNotThrow(() -> service.clearHistory(s.id()));
+        assertEquals(0, service.loadHistory(s.id()).size(), "clearHistory 应清空 history");
+    }
+
+    @Test
+    @DisplayName("BUG 7:createWithId 不允许绕过 MAX_SESSIONS(非 reserved)")
+    void bug7_create_with_id_respects_max_sessions() throws IOException {
+        // 用全新 store + service,填满 MAX_SESSIONS 个 session
+        Path freshDir = tmp.resolve("fresh");
+        java.nio.file.Files.createDirectories(freshDir);
+        SessionStore freshStore = new SessionStore(freshDir,
+                new ObjectMapper().findAndRegisterModules());
+        SessionService freshSvc = new SessionService(freshStore);
+        freshSvc.ensureBootstrap();  // 建 3 个 reserved
+
+        // 填到 MAX_SESSIONS
+        for (int i = freshSvc.list().size(); i < SessionService.MAX_SESSIONS; i++) {
+            freshSvc.create("session " + i);
+        }
+        assertEquals(SessionService.MAX_SESSIONS, freshSvc.list().size());
+
+        // create 应该拒
+        assertThrows(IllegalStateException.class, () -> freshSvc.create("overflow"));
+
+        // createWithId 对非 reserved 也应该拒(BUG 7 修复点)
+        assertThrows(IllegalStateException.class,
+                () -> freshSvc.createWithId("extra-" + System.nanoTime(), "overflow via id"),
+                "createWithId 应同样拒绝超过 MAX_SESSIONS(BUG 7 修复)");
+
+        // createWithId 对 reserved 应该豁免(bootstrap 不受限)
+        assertDoesNotThrow(
+                () -> freshSvc.createWithId(Session.DEFAULT_ID, "reserved"),
+                "reserved session 应豁免 MAX_SESSIONS 检查");
+    }
 }

@@ -8,6 +8,7 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -47,30 +48,54 @@ public class SessionService {
 
     /**
      * s21 Demo 25:SQLite + FTS5 search index 钩子。可空(测试 / CLI 单测可选)。
-     * SessionService 不强依赖 SearchService —— 老 1 参 ctor 仍合法,内部 null 守卫。
      */
     private final SearchService searchService;
 
-    /** 内存索引(单例,启动期从 {@link SessionStore#readIndex()} 加载)。 */
-    private final Map<String, Session> sessions = new LinkedHashMap<>();
+    /**
+     * s21 review:per-session lock 池。delete 时需要 release,防 lock 泄漏。可空兼容老构造。
+     * (BUG 1 修复)
+     */
+    private final AgentLockProvider lockProvider;
 
-    /** 写 index 时的互斥锁。CRUD 都串行,简单可靠。 */
+    /**
+     * 内存索引(单例,启动期从 {@link SessionStore#readIndex()} 加载)。
+     *
+     * <p>BUG 6 修复:改为 {@code synchronizedMap} 包装的 LinkedHashMap。
+     * 所有写路径已加 {@code indexLock},但 {@link #get}/{@link #exists} 等读路径没加锁,
+     * 裸 LinkedHashMap 的无锁读跟结构修改(remove/put)并发会出 NPE / 脏数据。
+     * {@code synchronizedMap} 让每次 get/containsKey 也原子化,消除读路径的数据竞争。
+     * 写路径的 indexLock 仍保留:保证多步骤 (read-modify-write) 的原子性,
+     * 单步 synchronizedMap 锁只能保证单次调用,跨调用还是需要 indexLock。
+     */
+    private final Map<String, Session> sessions =
+            Collections.synchronizedMap(new LinkedHashMap<>());
+
+    /** 写 index 时的互斥锁。CRUD 都串行,保证多步 read-modify-write 原子性。 */
     private final ReentrantLock indexLock = new ReentrantLock();
 
     /** in-memory history 缓存:同 session 多次访问不重复读盘。 */
     private final Map<String, List<MessageParam>> historyCache = new ConcurrentHashMap<>();
 
     public SessionService(SessionStore store) {
-        this(store, null);
+        this(store, null, null);
+    }
+
+    /** s21 Demo 25 2 参:接 SearchService,不接 lockProvider(向后兼容)。 */
+    public SessionService(SessionStore store, SearchService searchService) {
+        this(store, searchService, null);
     }
 
     /**
-     * s21 Demo 25 加 2 参构造器:同时接 SearchService。null 安全(老调用方仍走 1 参委托)。
+     * 完整 3 参构造器 —— 生产 Spring 装配走这条。
+     *
+     * @param lockProvider  nullable;非 null 时 delete 调 {@link AgentLockProvider#release}
      */
-    public SessionService(SessionStore store, SearchService searchService) {
+    public SessionService(SessionStore store, SearchService searchService,
+                          AgentLockProvider lockProvider) {
         if (store == null) throw new IllegalArgumentException("store must not be null");
         this.store = store;
         this.searchService = searchService;
+        this.lockProvider = lockProvider;
     }
 
     /**
@@ -131,8 +156,20 @@ public class SessionService {
     }
 
     /**
-     * 测试 / 用例驱动:用指定 ID 创建 session(若已存在则不动)。
-     * 生产路径不要走这个 —— 它只是给单测把 sessionId="test" 之类的提前装上。
+     * 按指定 ID 创建 session(若已存在则幂等返回已有)。
+     *
+     * <p>典型调用方:
+     * <ul>
+     *   <li>{@link #ensureBootstrap} —— 三个 reserved session</li>
+     *   <li>{@link #loadHistory} —— 第一次访问某 session 时自动注册</li>
+     *   <li>{@link com.xilidou.jooj.channel.InboundDispatcher} —— IM peer 第一条消息时建 session</li>
+     * </ul>
+     *
+     * <p>BUG 7 修复:加 {@link #MAX_SESSIONS} 检查。
+     * 之前 {@code create} 有上限,{@code createWithId} 绕过,导致 channel 场景每来一个新 peer
+     * 就能绕过限制建 session。现在 createWithId 也强制检查,但 reserved session(bootstrap 阶段)
+     * 是例外 —— bootstrap 发生在 container 刚起时,通常 map 是空的,不会超限;就算超限,
+     * reserved session 不存在会导致更严重的功能失效,所以 reserved 豁免检查。
      */
     public Session createWithId(String id, String title) {
         if (id == null || id.isBlank()) {
@@ -142,6 +179,11 @@ public class SessionService {
         try {
             Session existing = sessions.get(id);
             if (existing != null) return existing;
+            // BUG 7:非 reserved session 也要检查上限
+            if (!Session.isReserved(id) && sessions.size() >= MAX_SESSIONS) {
+                throw new IllegalStateException(
+                        "Reached max sessions (" + MAX_SESSIONS + "). Please delete some.");
+            }
             Instant now = Instant.now();
             String resolvedTitle = (title == null || title.isBlank()) ? id : title;
             Session s = new Session(id, resolvedTitle, now, now, 0);
@@ -165,6 +207,8 @@ public class SessionService {
 
     /** get 单个 session,不存在抛 {@link NoSuchElementException}。 */
     public Session get(String id) {
+        // BUG 6 修复:sessions 已改 synchronizedMap,单次 get 安全;不需要 indexLock。
+        // indexLock 只用于保护多步 read-modify-write 操作。
         Session s = sessions.get(id);
         if (s == null) {
             throw new NoSuchElementException("session not found: " + id);
@@ -172,7 +216,9 @@ public class SessionService {
         return s;
     }
 
+    /** 检查 session 是否存在。 */
     public boolean exists(String id) {
+        // BUG 6 修复:同上,synchronizedMap 保证单次读安全。
         return id != null && sessions.containsKey(id);
     }
 
@@ -217,10 +263,17 @@ public class SessionService {
             sessions.remove(id);
             store.writeIndex(sessions);
             store.deleteHistory(id);
+            // BUG 5 修复:historyCache 在 indexLock 内清,避免 delete 与 loadHistory 竞态。
+            // 若 loadHistory 在 indexLock 外 computeIfAbsent,delete 之后 cache 仍残留;
+            // 统一在 indexLock 内清,delete 完成后 cache 必然空,下次 loadHistory 走 createWithId。
             historyCache.remove(id);
             log.info("[Session] deleted {}", id);
         } finally {
             indexLock.unlock();
+        }
+        // BUG 1 修复:释放 per-session lock,防 AgentLockProvider.locks map 永远只增不减。
+        if (lockProvider != null) {
+            lockProvider.release(id);
         }
         // s21 Demo 25:SearchService 钩子放 indexLock 外,不让 SQLite IO 拖住 sessions map 锁
         if (searchService != null) {
@@ -278,7 +331,17 @@ public class SessionService {
         indexLock.lock();
         try {
             Session existing = sessions.get(sessionId);
-            if (existing == null) return;
+            // BUG 2 修复:existing==null 时不再静默 return。
+            // 原来的行为:JSON 已写盘,但 index 没更新 → 状态永久不一致。
+            // 现在:log warn 并自动注册(跟 loadHistory 的"优雅注册"同语义),
+            // 然后继续更新 index。这样 JSON 写了,index 也跟上。
+            if (existing == null) {
+                log.warn("[Session] saveHistory called for unknown session {}, auto-registering",
+                        sessionId);
+                Instant now = Instant.now();
+                existing = new Session(sessionId, sessionId, now, now, 0);
+                sessions.put(sessionId, existing);
+            }
             int count = history != null ? history.size() : 0;
             Session updated = new Session(
                     existing.id(),
@@ -293,7 +356,6 @@ public class SessionService {
             indexLock.unlock();
         }
         // s21 Demo 25:SearchService 钩子放 indexLock 外,不让 SQLite IO 拖住 sessions map 锁。
-        // 同步双写:LLM 在下一轮 turn 调 session_search 时立即能搜到本轮新内容(语义跟 Hermes 一致)。
         if (searchService != null) {
             searchService.onSaveHistory(sessionId, history);
         }
@@ -302,16 +364,16 @@ public class SessionService {
     /**
      * 清空 history(in-memory + 盘)。reserved session 也允许 clear,
      * 跟 delete 不同 —— clear 只是重置内容。
+     *
+     * <p>BUG 3 修复:删掉多余的 {@code searchService.onClearHistory} 调用。
+     * {@link #saveHistory} 末尾已调 {@code onSaveHistory(sessionId, emptyList)},
+     * 它走 {@code store.replaceSession(sid, []) = DELETE WHERE session_id=? + 不 INSERT},
+     * 语义等同于 clear。再显式调 {@code onClearHistory} 多 1 次 SQLite DELETE,是冗余。
+     * 如果未来 saveHistory 钩子改语义,在 saveHistory 那里修就够了,clearHistory 里不该有第二份逻辑。
      */
     public void clearHistory(String sessionId) {
         List<MessageParam> hist = loadHistory(sessionId);
         hist.clear();
         saveHistory(sessionId, hist);
-        // s21 Demo 25:saveHistory 已经把空 list 同步到 FTS5(replaceSession 整盘覆盖,
-        // DELETE WHERE session_id=? 后没有 INSERT 的话效果跟 clear 一样)。
-        // 显式调 onClearHistory 是防御性的 —— 如果未来 saveHistory 钩子改语义,这里仍兜底。
-        if (searchService != null) {
-            searchService.onClearHistory(sessionId);
-        }
     }
 }
