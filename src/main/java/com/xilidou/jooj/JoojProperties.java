@@ -196,16 +196,12 @@ public class JoojProperties {
                 "Before starting any multi-step task, use todo_write to plan your steps. " +
                 "Update task status as you go. Act, don't explain.";
 
-        /** tools section:可用工具的概述(具体 ToolDef 仍通过 Anthropic API 协议传)。 */
-        private String tools =
-                "Available tools: bash, read_file, write_file, edit_file, glob, " +
-                "todo_write, load_skill, task, " +
-                "create_task, list_tasks, get_task, claim_task, complete_task, " +
-                "schedule_cron, list_crons, cancel_cron, " +
-                "spawn_teammate, send_message, check_inbox, " +
-                "create_worktree, remove_worktree, keep_worktree, " +
-                "connect_mcp (+ dynamic mcp__server__tool after connect), " +
-                "session_search. " +
+        /**
+         * tools section 的使用提示(追加在动态工具列表之后)。
+         * 工具名列表由 {@link com.xilidou.jooj.tool.ToolRegistry} 动态生成,
+         * 此字段只放"怎么用"的 hint。
+         */
+        private String toolsHint =
                 "For slow ops (build/test/deploy/install), set bash.run_in_background=true " +
                 "to keep working while it runs in the background.";
 

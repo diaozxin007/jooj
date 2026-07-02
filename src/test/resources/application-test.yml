@@ -49,7 +49,7 @@ jooj:
   # s10 测试场景:用最短的 prompt,保持测试断言简单
   prompt:
     identity: "Test identity. Act, don't explain."
-    tools: "Available tools: test stub."
+    tools-hint: "Use tools wisely."
     memory-header: "Memory:"
 
   # s11 测试场景:激进默认让 backoff 测试在 < 100ms 完成。

@@ -221,7 +221,7 @@ public class SystemPromptAssembler {
     private String sectionContent(String section, PromptContext ctx) {
         return switch (section) {
             case "identity" -> template.getIdentity();
-            case "tools" -> template.getTools();
+            case "tools" -> buildToolsSection(ctx);
             case "workspace" -> "Working directory: " + ctx.workspace();
             case "skills" -> {
                 String catalog = ctx.skillCatalog();
@@ -235,6 +235,22 @@ public class SystemPromptAssembler {
             }
             default -> null;
         };
+    }
+
+    /**
+     * 动态生成 tools section:从 {@link PromptContext#enabledTools()} 拿当前
+     * 真实注册的工具名,拼成 "Available tools: a, b, c. <hint>"。
+     *
+     * <p>好处:新加 Tool / 动态加载 MCP tool 后,system prompt 自动反映,
+     * 不需要手工同步硬编码字符串。
+     */
+    private String buildToolsSection(PromptContext ctx) {
+        List<String> tools = ctx.enabledTools();
+        if (tools == null || tools.isEmpty()) {
+            return template.getToolsHint();
+        }
+        return "Available tools: " + String.join(", ", tools) + ". " +
+                template.getToolsHint();
     }
 
     /**

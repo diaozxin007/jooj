@@ -132,19 +132,22 @@ class SystemPromptAssemblerTest {
     }
 
     @Test
-    @DisplayName("identity / tools 段从 yml 取(application-test.yml 里的值)")
+    @DisplayName("identity 从 yml 取; tools 段动态生成工具名 + hint")
     void identity_and_tools_loaded_from_yaml() {
-        var ctx = new PromptContext(List.of(), "/x", "", "");
+        var ctx = new PromptContext(List.of("bash", "read_file"), "/x", "", "");
 
         String prompt = assembler.assemble(ctx);
 
         // application-test.yml 里设了:
         //   identity: "Test identity. Act, don't explain."
-        //   tools: "Available tools: test stub."
+        //   tools-hint: "Use tools wisely."
         assertTrue(prompt.contains("Test identity. Act, don't explain."),
                 "identity 应该来自 application-test.yml");
-        assertTrue(prompt.contains("Available tools: test stub."),
-                "tools 应该来自 application-test.yml");
+        // tools 段动态拼接:从 enabledTools 生成列表 + toolsHint
+        assertTrue(prompt.contains("Available tools: bash, read_file."),
+                "tools 段应包含动态生成的工具名列表");
+        assertTrue(prompt.contains("Use tools wisely."),
+                "tools 段应包含 toolsHint(来自 application-test.yml)");
     }
 
     @Test
