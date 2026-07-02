@@ -22,6 +22,14 @@ jooj:
     api-key: ${ANTHROPIC_API_KEY:}
     auth-token: ${ANTHROPIC_AUTH_TOKEN:}
     model: ${MODEL_ID:}
+
+  # DeepSeek (Anthropic 兼容端点) —— 可选;api-key 为空则不注册 provider。
+  # 配置后,model ID 以 "deepseek-" 开头的请求(如 deepseek-chat)自动路由到此 provider。
+  deepseek:
+    base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com/anthropic}
+    api-key: ${DEEPSEEK_API_KEY:}
+    model: ${DEEPSEEK_MODEL:deepseek-chat}
+
   compact:
     max-messages: 50
     snip-head-keep: 3

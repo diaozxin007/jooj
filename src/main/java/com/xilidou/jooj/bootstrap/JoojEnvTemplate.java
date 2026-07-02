@@ -3,9 +3,9 @@ package com.xilidou.jooj.bootstrap;
 /**
  * {@code ~/.jooj/.env} 首次缺失时写入的模板内容。
  *
- * <p>风格参考 hermes 的 {@code .env.example},裁成 jooj 实际用得到的 5 个 section:
- * Anthropic / Recovery fallback / 通用日志 / Memory / MCP。每个 section 有分隔线 +
- * 一两行说明 + 注释占位 {@code # KEY=...},用户解开注释填值即可。
+ * <p>风格参考 hermes 的 {@code .env.example},裁成 jooj 实际用得到的 6 个 section:
+ * Anthropic / DeepSeek / Recovery fallback / 通用日志 / Memory / MCP。每个 section 有
+ * 分隔线 + 一两行说明 + 注释占位 {@code # KEY=...},用户解开注释填值即可。
  *
  * <h3>为什么硬编码字符串而不是 classpath 资源</h3>
  *
@@ -48,6 +48,19 @@ final class JoojEnvTemplate {
 
             # 默认模型 id,例如 claude-sonnet-4-6
             # MODEL_ID=
+
+            # =============================================================================
+            # DeepSeek(Anthropic 兼容端点)—— 可选。api-key 非空才注册 provider,
+            # 之后 model ID 以 "deepseek-" 开头(如 deepseek-chat)的请求自动路由过来。
+            # =============================================================================
+            # 从 https://platform.deepseek.com/api_keys 申请
+            # DEEPSEEK_API_KEY=
+
+            # 覆盖默认端点(默认 https://api.deepseek.com/anthropic)
+            # DEEPSEEK_BASE_URL=
+
+            # 默认模型 id(默认 deepseek-chat;推理任务可换 deepseek-reasoner)
+            # DEEPSEEK_MODEL=
 
             # =============================================================================
             # Recovery (s11) —— 连续 529 ≥ 3 时切换到的 fallback 模型
