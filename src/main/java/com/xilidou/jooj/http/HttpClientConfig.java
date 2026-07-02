@@ -84,16 +84,19 @@ public class HttpClientConfig {
     }
 
     /**
-     * 把 4 个组件拼成 {@link AnthropicClient}。
+     * Anthropic provider —— 直连 Anthropic API。
+     *
+     * <p>不再标 {@code @Primary};{@link ModelRouterConfiguration} 将其收集并通过
+     * {@link ModelRouter} 以 {@code @Primary AnthropicClient} 暴露。
      *
      * <p>注意参数 {@code ObjectMapper} 用 {@code joojObjectMapper} 限定,
      * 避免与 Spring Boot 自带 jackson auto-config 的 mapper 冲突。
      */
     @Bean
-    public AnthropicClient anthropicClient(OkHttpClient http,
-                                           ObjectMapper joojObjectMapper,
-                                           JoojProperties props,
-                                           HttpAuth auth) {
+    public ModelProvider anthropicProvider(OkHttpClient http,
+                                          ObjectMapper joojObjectMapper,
+                                          JoojProperties props,
+                                          HttpAuth auth) {
         return new AnthropicHttpClient(http, joojObjectMapper,
                 props.getAnthropic().getBaseUrl(), auth);
     }

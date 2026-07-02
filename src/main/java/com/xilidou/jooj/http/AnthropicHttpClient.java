@@ -14,6 +14,7 @@ import okhttp3.Response;
 
 import java.io.IOException;
 import java.time.Duration;
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 
@@ -42,7 +43,7 @@ import java.util.concurrent.TimeUnit;
  * </pre>
  */
 @Slf4j
-public class AnthropicHttpClient implements AnthropicClient {
+public class AnthropicHttpClient implements ModelProvider {
 
     private static final MediaType JSON_MEDIA_TYPE = MediaType.parse("application/json");
     private static final String ANTHROPIC_VERSION = "2023-06-01";
@@ -55,8 +56,14 @@ public class AnthropicHttpClient implements AnthropicClient {
     @Getter
     private final HttpAuth auth;
 
+    /** Provider 标识(用于 ModelRouter 路由 + 日志)。 */
+    private final String providerName;
+    /** 该 provider 支持的 model ID 前缀列表。 */
+    private final List<String> prefixes;
+
     /**
      * 全参构造器(DI 友好)。所有依赖必须由调用方提供。
+     * 默认 providerName="anthropic", prefixes=["claude-"]。
      *
      * @param http    OkHttp 客户端(应复用,内部有连接池)
      * @param json    Jackson ObjectMapper(应使用 {@link JacksonConfig#newMapper()})
@@ -64,10 +71,40 @@ public class AnthropicHttpClient implements AnthropicClient {
      * @param auth    认证策略
      */
     public AnthropicHttpClient(OkHttpClient http, ObjectMapper json, String baseUrl, HttpAuth auth) {
+        this(http, json, baseUrl, auth, "anthropic", List.of("claude-"));
+    }
+
+    /**
+     * 完整构造器 —— 支持以任意身份注册为 {@link ModelProvider}。
+     * 适用于 Anthropic 兼容协议的第三方 provider(如 DeepSeek)。
+     *
+     * @param http         OkHttp 客户端
+     * @param json         Jackson ObjectMapper
+     * @param baseUrl      API 根 URL
+     * @param auth         认证策略
+     * @param providerName provider 名称,如 "deepseek"
+     * @param prefixes     model ID 前缀列表,如 ["deepseek-"]
+     */
+    public AnthropicHttpClient(OkHttpClient http, ObjectMapper json, String baseUrl,
+                               HttpAuth auth, String providerName, List<String> prefixes) {
         this.http = Objects.requireNonNull(http, "http");
         this.json = Objects.requireNonNull(json, "json");
         this.baseUrl = stripTrailingSlash(Objects.requireNonNull(baseUrl, "baseUrl"));
         this.auth = Objects.requireNonNull(auth, "auth");
+        this.providerName = Objects.requireNonNull(providerName, "providerName");
+        this.prefixes = List.copyOf(Objects.requireNonNull(prefixes, "prefixes"));
+    }
+
+    // ── ModelProvider 契约 ──────────────────────────────────────
+
+    @Override
+    public String name() {
+        return providerName;
+    }
+
+    @Override
+    public List<String> modelPrefixes() {
+        return prefixes;
     }
 
     @Override

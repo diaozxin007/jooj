@@ -41,6 +41,9 @@ public class JoojProperties {
     /** Anthropic / 兼容代理的 HTTP 配置。 */
     private Anthropic anthropic = new Anthropic();
 
+    /** DeepSeek (Anthropic 兼容模式) 配置。可选 —— 不配则不注册。 */
+    private DeepSeek deepseek = new DeepSeek();
+
     /** Compact 流水线(s08)阈值。 */
     private Compact compact = new Compact();
 
@@ -92,6 +95,22 @@ public class JoojProperties {
         private String authToken = "";
 
         /** 模型 ID,如 {@code claude-sonnet-4-6}。 */
+        private String model = "";
+    }
+
+    /**
+     * DeepSeek 配置(Anthropic 兼容模式)。
+     * 使用 {@code https://api.deepseek.com/anthropic} 端点,协议与 Anthropic 完全相同。
+     */
+    @Data
+    public static class DeepSeek {
+        /** API 根 URL,默认 https://api.deepseek.com/anthropic。 */
+        private String baseUrl = "https://api.deepseek.com/anthropic";
+
+        /** DeepSeek API Key(通过 x-api-key header 发送)。为空则不注册该 provider。 */
+        private String apiKey = "";
+
+        /** 模型 ID,如 {@code deepseek-chat}。 */
         private String model = "";
     }
 
