@@ -4,13 +4,16 @@ import com.xilidou.jooj.agent.AgentLoopHarness;
 import com.xilidou.jooj.hook.HookManager;
 import com.xilidou.jooj.http.dto.MessageParam;
 import com.xilidou.jooj.http.dto.TextBlock;
+import com.xilidou.jooj.http.dto.ToolUseBlock;
 import com.xilidou.jooj.session.AgentLockProvider;
+import com.xilidou.jooj.session.Session;
 import com.xilidou.jooj.session.SessionService;
 import com.xilidou.jooj.slashcmd.SlashCommandRegistry;
 import com.xilidou.jooj.tool.ExecutionContext;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -18,26 +21,30 @@ import java.util.Optional;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
- * InboundDispatcher —— 把 Channel 的入站消息走 LLM 再回写。
+ * InboundDispatcher —— 所有入站入口(Channel / Web / 未来其他)的统一 pipeline。
  *
- * <h3>流程</h3>
+ * <h3>调用点</h3>
+ *
+ * <ul>
+ *   <li>{@link #dispatch(ChannelMessage)} —— push-style channel(微信/Discord)fire-and-forget</li>
+ *   <li>{@link #dispatchSync(DispatchRequest)} —— 请求/响应式(Web REST)拿到结构化结果自己映射</li>
+ *   <li>{@link #history(String)} / {@link #clearHistory(String)} —— 会话读写,共用同一把锁</li>
+ * </ul>
+ *
+ * <h3>Pipeline 步骤(所有入口共用)</h3>
  *
  * <ol>
- *   <li>把 ChannelMessage → sessionId 映射(per-peer:"chat:{channel}:{peerId}")</li>
- *   <li>不存在的 session 自动创建(title = "{channel}:{peerName}")</li>
- *   <li>抢 session lock(跟 Web/CLI 共享同一把锁,避免跟用户当面对话撞车)</li>
+ *   <li>resolveSessionId + exists 校验(可选 autoCreate)</li>
+ *   <li>Slash 命令短路(不喂 LLM、不写 history)</li>
+ *   <li>UserPromptHook 拦截(跟 CLI REPL 对齐)</li>
+ *   <li>抢 per-session lock(不同 session 并行,同 session 互斥)</li>
  *   <li>调 {@link AgentLoopHarness#processOneQuery} 走完整 LLM 流程</li>
- *   <li>从 history 末尾取 assistant 文本,通过 channel.sendOutbound 发回</li>
+ *   <li>从 history 抽 last assistant text + 本轮 tool 调用名</li>
  * </ol>
  *
- * <h3>session 路由</h3>
- *
- * <p>{@code chat:{channel}:{peerId}} —— 一 peer 一 session,跟 Demo 9 cron 路由一致风格。
- * 这样跟用户 A 的对话上下文不会串到给用户 B 的回复里。
- *
- * <h3>已知 peer 注册</h3>
- *
- * <p>Channel 在 {@link #registerChannel} 时把自己交给 dispatcher,出站时按 channel 名查回。
+ * <p>Channel 入站是 fire-and-forget,pipeline 结果通过 {@link #sendReply} 回写;
+ * Web 是同步 RPC,pipeline 结果作为 {@link DispatchResult} 返给 controller,由 controller
+ * 映射到 HTTP status。
  */
 @Component
 @Slf4j
@@ -52,13 +59,8 @@ public class InboundDispatcher implements ChannelDeliverer {
      */
     private final SlashCommandRegistry slashCommands;
     /**
-     * s21 Demo 27 review:UserPromptHook 路由 —— IM 入站文本必须经过 hooks.triggerUserPrompt
-     * 才能进 LLM(跟 CLI REPL 跟 Web 同步)。null 安全(HookManager 没装时不拦,等价旧行为)。
-     *
-     * <p>背景:Demo 27 self-review 发现 PermissionPipeline 的 tool 层(PermissionHook)
-     * 在 channel 路径生效,但 UserPrompt 层(OnUserPrompt hook 链)只 CLI REPL 调,
-     * Web/channel 都漏掉。结果:UserPromptHook 阻断关键词(如 "leak credentials")在
-     * weixin 里完全失效。这里把 hook 调用补齐。
+     * s21 Demo 27 review:UserPromptHook 路由 —— 入站文本必须经过 hooks.triggerUserPrompt
+     * 才能进 LLM(跟 CLI REPL 同步)。null 安全(HookManager 没装时不拦,等价旧行为)。
      */
     private final HookManager hooks;
     private final Map<String, MessageChannel> channels = new HashMap<>();
@@ -86,114 +88,203 @@ public class InboundDispatcher implements ChannelDeliverer {
         log.info("[Channel] unregistered: {}", name);
     }
 
+    // ─────────────────────────────────────────────────────────────
+    //  统一入口 —— 结构化结果
+    // ─────────────────────────────────────────────────────────────
+
+    /** 分派结果状态。Web 层据此映射 HTTP status;Channel 层只关心 reply 有没有。 */
+    public enum Status {
+        /** 走完 LLM,reply 有值(可能为空串,取决于 LLM 输出)。 */
+        OK,
+        /** slash 命令处理完,reply = 命令输出。 */
+        SLASH_HANDLED,
+        /** UserPromptHook 拦截,reply = 已加前缀的阻断消息,errorMessage = 原因。 */
+        HOOK_BLOCKED,
+        /** 请求的 session 不存在(且未启用自动创建)。 */
+        SESSION_NOT_FOUND,
+        /** per-session lock 抢占失败(同 session 已有请求在跑)。 */
+        SESSION_BUSY,
+        /** 输入非法(query 空白等)。 */
+        BAD_REQUEST,
+        /** processOneQuery 抛异常。 */
+        AGENT_FAILED
+    }
+
     /**
-     * Channel 把入站消息交给这里 —— 同步走 LLM,完事再回写。
+     * 分派请求 —— 抽掉 channel / peer 具体细节,只保留 pipeline 需要的语义。
      *
-     * <p>**调用方应该在自己的 worker 线程跑**(每个 channel 自己开线程池),
-     * 这里会阻塞数秒到数分钟(LLM 慢 + 工具调用)。dispatcher 不持线程池。
+     * @param sessionId       目标 session(null/空白由 pipeline resolve 到 DEFAULT_ID)
+     * @param query           用户输入原文
+     * @param autoCreate      session 不存在时是否自动创建(channel=true, web=false)
+     * @param autoCreateTitle 自动创建时的 title(仅 autoCreate=true 时用,null 则用 sessionId)
+     * @param hint            deliveryHint(仅 channel 有,web 传 null)
      */
-    public void dispatch(ChannelMessage msg) {
-        String sessionId = sessionIdFor(msg);
-        ensureSession(sessionId, msg);
+    public record DispatchRequest(
+            String sessionId,
+            String query,
+            boolean autoCreate,
+            String autoCreateTitle,
+            ExecutionContext.DeliveryHint hint
+    ) {}
 
-        // s21 Demo 25 副作用 v4:slash 命令优先走客户端路由,不喂 LLM、不进 history。
-        // 跟 ChatController + JoojCliRunner 同款。这样 IM 用户发 /clear 真的清 history,
-        // 不会被 LLM 当成普通文本礼貌响应"已清空"但实际啥也没清。
-        if (slashCommands != null && slashCommands.isCommand(msg.text())) {
-            String reply = slashCommands.dispatch(msg.text(), sessionId);
-            log.info("[Channel:{}] slash command handled: {} (session={})",
-                    msg.channel(), msg.text().strip(), sessionId);
-            sendReply(msg, reply);
-            return;
+    /**
+     * 分派结果 —— 结构化终态,调用方按需映射(HTTP status / channel 回写 / 日志)。
+     *
+     * @param status            终态
+     * @param reply             对用户可见的回复文本(OK / SLASH_HANDLED / HOOK_BLOCKED 有值)
+     * @param errorMessage      错误说明(非成功态用;HOOK_BLOCKED 时是被阻断的原始原因)
+     * @param historySize       当前 history 长度(OK / SLASH_HANDLED / HOOK_BLOCKED 有效)
+     * @param toolCallsThisTurn 本轮 turn 调用的工具名(仅 status=OK 有意义)
+     */
+    public record DispatchResult(
+            Status status,
+            String reply,
+            String errorMessage,
+            int historySize,
+            List<String> toolCallsThisTurn
+    ) {
+        public static DispatchResult error(Status s, String msg) {
+            return new DispatchResult(s, null, msg, 0, List.of());
         }
+    }
 
-        // s21 Demo 27 review:UserPromptHook 必须在 LLM 拿到 query 之前执行 ——
-        // 跟 CLI REPL (AgentLoopHarness.repl) 行为对齐。被 hook 拦下时回写一条
-        // 友好消息给 IM peer,不进 LLM 不进 history。
-        if (hooks != null) {
-            Optional<String> blocked = hooks.triggerUserPrompt(msg.text());
-            if (blocked.isPresent()) {
-                log.info("[Channel:{}] user prompt blocked by hook (peer={}): {}",
-                        msg.channel(), msg.peerId(), blocked.get());
-                sendReply(msg, "⛔ Prompt blocked: " + blocked.get());
-                return;
+    /**
+     * 同步分派 —— Web REST / 未来 sync RPC 用。跑完 pipeline 拿结构化结果,
+     * 调用方自己映射到自己的响应格式(HTTP status / RPC error code / ...)。
+     */
+    public DispatchResult dispatchSync(DispatchRequest req) {
+        if (req == null || req.query() == null || req.query().isBlank()) {
+            return DispatchResult.error(Status.BAD_REQUEST, "query must not be blank");
+        }
+        String sessionId = resolveSessionId(req.sessionId());
+
+        if (!sessionService.exists(sessionId)) {
+            if (req.autoCreate()) {
+                String title = req.autoCreateTitle() != null ? req.autoCreateTitle() : sessionId;
+                sessionService.createWithId(sessionId, title);
+                log.info("[Dispatch] auto-created session {} (title={})", sessionId, title);
+            } else {
+                return DispatchResult.error(Status.SESSION_NOT_FOUND, "session not found: " + sessionId);
             }
         }
 
-        ReentrantLock lock = lockProvider.lockFor(sessionId);
-        if (!lock.tryLock()) {
-            log.warn("[Channel:{}] session {} busy, dropping inbound from peer={}",
-                    msg.channel(), sessionId, msg.peerId());
-            return;
+        // 1) Slash 命令短路 —— 不进 LLM、不抢 session lock、不写 history。
+        if (slashCommands != null && slashCommands.isCommand(req.query())) {
+            String reply = slashCommands.dispatch(req.query(), sessionId);
+            int size = harness.getHistory(sessionId).size();
+            return new DispatchResult(Status.SLASH_HANDLED, reply, null, size, List.of());
         }
 
-        int historySizeBefore;
+        // 2) UserPromptHook 必须在 LLM 拿到 query 之前执行 —— 跟 CLI REPL 行为对齐。
+        if (hooks != null) {
+            Optional<String> blocked = hooks.triggerUserPrompt(req.query());
+            if (blocked.isPresent()) {
+                log.info("[Dispatch] user prompt blocked by hook (session={}): {}",
+                        sessionId, blocked.get());
+                return new DispatchResult(
+                        Status.HOOK_BLOCKED,
+                        "⛔ Prompt blocked: " + blocked.get(),
+                        blocked.get(),
+                        harness.getHistory(sessionId).size(),
+                        List.of());
+            }
+        }
+
+        // 3) 抢 per-session lock。
+        ReentrantLock lock = lockProvider.lockFor(sessionId);
+        if (!lock.tryLock()) {
+            return DispatchResult.error(Status.SESSION_BUSY,
+                    "Session busy (another request is running for this session). Please retry.");
+        }
         try {
-            historySizeBefore = sessionService.loadHistory(sessionId).size();
-            // s21 Demo 20:把 (channel, peerId) 作为 deliveryHint 透传给 processOneQuery,
-            // CronTool 等能拿到 hint freeze 进 self-describing cron job(不依赖任何旁路)。
-            ExecutionContext.DeliveryHint hint = new ExecutionContext.DeliveryHint(msg.channel(), msg.peerId());
-            harness.processOneQuery(sessionId, msg.text(), hint);
-        } catch (Exception e) {
-            log.error("[Channel:{}] processOneQuery failed for session {}: {}",
-                    msg.channel(), sessionId, e.getMessage(), e);
-            return;
+            int historyBefore = harness.getHistory(sessionId).size();
+            try {
+                if (req.hint() != null) {
+                    harness.processOneQuery(sessionId, req.query(), req.hint());
+                } else {
+                    harness.processOneQuery(sessionId, req.query());
+                }
+            } catch (Exception e) {
+                log.error("[Dispatch] processOneQuery failed (session={})", sessionId, e);
+                return DispatchResult.error(Status.AGENT_FAILED,
+                        "Agent failed: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            }
+
+            List<MessageParam> history = harness.getHistory(sessionId);
+            String reply = lastAssistantText(history, historyBefore);
+            List<String> toolCalls = collectToolCallsSince(history, historyBefore);
+            return new DispatchResult(Status.OK, reply, null, history.size(), toolCalls);
         } finally {
             lock.unlock();
         }
-
-        // 取 LLM 这一轮新增的最后一条 assistant text 回写给 peer
-        String reply = lastAssistantText(sessionService.loadHistory(sessionId), historySizeBefore);
-        if (reply == null || reply.isBlank()) {
-            log.info("[Channel:{}] no assistant text to reply (peer={})", msg.channel(), msg.peerId());
-            return;
-        }
-        sendReply(msg, reply);
-    }
-
-    /** 通过已注册 channel 把回复发回 peer。失败仅 warn,不抛。 */
-    private void sendReply(ChannelMessage msg, String reply) {
-        if (reply == null || reply.isBlank()) return;
-        MessageChannel ch = channels.get(msg.channel());
-        if (ch == null) {
-            log.warn("[Channel:{}] not registered, dropping reply to peer={}",
-                    msg.channel(), msg.peerId());
-            return;
-        }
-        try {
-            ch.sendOutbound(msg.peerId(), reply);
-        } catch (Exception e) {
-            log.warn("[Channel:{}] sendOutbound failed (peer={}): {}",
-                    msg.channel(), msg.peerId(), e.getMessage());
-        }
     }
 
     /**
-     * 构造 session id —— 必须严格匹配 SessionStore 的 {@code [a-zA-Z0-9_-]+} 字符集
-     * (防路径注入)。冒号 / 点 / 中文等非法字符全替换成 '_'。
+     * Channel 入站(fire-and-forget)—— 薄化为:适配 → dispatchSync → 回写 channel。
      *
-     * <p>替换后保持人类可读 + 同 peer 永远同 session(replaceAll 是稳定函数)。
-     * 极端 collision(两个不同 peer 替换后撞 id)概率极低,且业务上影响有限(共享上下文)。
+     * <p>**调用方应该在自己的 worker 线程跑**(每个 channel 自己开线程池),这里会阻塞
+     * 数秒到数分钟(LLM 慢 + 工具调用)。dispatcher 不持线程池。
      */
-    static String sessionIdFor(ChannelMessage msg) {
-        String safePeer = msg.peerId().replaceAll("[^a-zA-Z0-9_-]", "_");
-        return "chat_" + msg.channel() + "_" + safePeer;
-    }
-
-    private void ensureSession(String sessionId, ChannelMessage msg) {
-        if (sessionService.exists(sessionId)) return;
+    public void dispatch(ChannelMessage msg) {
+        String sessionId = sessionIdFor(msg);
         String title = msg.channel() + ":" + (msg.peerName() != null ? msg.peerName() : msg.peerId());
-        sessionService.createWithId(sessionId, title);
-        log.info("[Channel:{}] auto-created session {} (title={})", msg.channel(), sessionId, title);
+        ExecutionContext.DeliveryHint hint =
+                new ExecutionContext.DeliveryHint(msg.channel(), msg.peerId());
+
+        DispatchResult r = dispatchSync(new DispatchRequest(
+                sessionId, msg.text(), true, title, hint));
+
+        switch (r.status()) {
+            case SESSION_BUSY -> log.warn("[Channel:{}] session {} busy, dropping inbound from peer={}",
+                    msg.channel(), sessionId, msg.peerId());
+            case AGENT_FAILED -> {
+                // 已在 dispatchSync 内 log.error;channel 侧静默丢弃(不回写异常给 peer)
+            }
+            case BAD_REQUEST -> log.debug("[Channel:{}] bad request from peer={}: {}",
+                    msg.channel(), msg.peerId(), r.errorMessage());
+            case SESSION_NOT_FOUND -> log.warn("[Channel:{}] session not found (unexpected, autoCreate=true): {}",
+                    msg.channel(), r.errorMessage());
+            case OK, SLASH_HANDLED, HOOK_BLOCKED -> {
+                if (r.reply() != null && !r.reply().isBlank()) {
+                    sendReply(msg, r.reply());
+                } else {
+                    log.info("[Channel:{}] no assistant text to reply (peer={})",
+                            msg.channel(), msg.peerId());
+                }
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    //  history / clear —— 供 Web 层复用,共享 per-session lock 语义
+    // ─────────────────────────────────────────────────────────────
+
+    /** 读取指定 session 的对话历史(null/空 → DEFAULT_ID 兜底)。 */
+    public List<MessageParam> history(String sessionId) {
+        return harness.getHistory(resolveSessionId(sessionId));
     }
 
     /**
-     * {@link ChannelDeliverer} 接口实现 — harness 在 cron 触发完,按 cron job 自描述的
-     * (channel, peerId) 调用此方法把 LLM 回复发回去(s21 Demo 20)。
+     * 清空指定 session 的对话历史。
      *
-     * <p>设计:dispatcher 降级为单纯执行器 —— 决策"送哪 + 内容是什么"都在 harness,这里只负责
-     * 找到 channel bean 调 sendOutbound。**不做任何反查**。
+     * @return true = 清空成功;false = session busy(有请求在跑)。
      */
+    public boolean clearHistory(String sessionId) {
+        String sid = resolveSessionId(sessionId);
+        ReentrantLock lock = lockProvider.lockFor(sid);
+        if (!lock.tryLock()) return false;
+        try {
+            harness.clearHistory(sid);
+            return true;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    //  ChannelDeliverer(harness / cron 主动 outbound)
+    // ─────────────────────────────────────────────────────────────
+
     @Override
     public boolean deliver(String channel, String peerId, String text) {
         if (channel == null || peerId == null || text == null || text.isBlank()) {
@@ -216,13 +307,43 @@ public class InboundDispatcher implements ChannelDeliverer {
         }
     }
 
+    // ─────────────────────────────────────────────────────────────
+    //  内部辅助
+    // ─────────────────────────────────────────────────────────────
+
+    private void sendReply(ChannelMessage msg, String reply) {
+        if (reply == null || reply.isBlank()) return;
+        MessageChannel ch = channels.get(msg.channel());
+        if (ch == null) {
+            log.warn("[Channel:{}] not registered, dropping reply to peer={}",
+                    msg.channel(), msg.peerId());
+            return;
+        }
+        try {
+            ch.sendOutbound(msg.peerId(), reply);
+        } catch (Exception e) {
+            log.warn("[Channel:{}] sendOutbound failed (peer={}): {}",
+                    msg.channel(), msg.peerId(), e.getMessage());
+        }
+    }
+
     /**
-     * 从 sinceIndex 之后的 history 里找最后一条 assistant 文本。
-     *
-     * <p>跳过 tool_use / thinking,只回纯文本 —— peer 那边不需要看到工具调用细节。
+     * 构造 session id —— 严格匹配 SessionStore 的 {@code [a-zA-Z0-9_-]+} 字符集(防路径注入)。
      */
-    private String lastAssistantText(List<MessageParam> history, int sinceIndex) {
-        for (int i = history.size() - 1; i >= sinceIndex; i--) {
+    static String sessionIdFor(ChannelMessage msg) {
+        String safePeer = msg.peerId().replaceAll("[^a-zA-Z0-9_-]", "_");
+        return "chat_" + msg.channel() + "_" + safePeer;
+    }
+
+    /** 空白 sessionId → {@link Session#DEFAULT_ID} 兜底。 */
+    private static String resolveSessionId(String sessionId) {
+        if (sessionId == null || sessionId.isBlank()) return Session.DEFAULT_ID;
+        return sessionId.trim();
+    }
+
+    /** 从 sinceIndex 之后的 history 里找最后一条 assistant 文本。跳过 tool_use / thinking。 */
+    private static String lastAssistantText(List<MessageParam> history, int sinceIndex) {
+        for (int i = history.size() - 1; i >= Math.max(0, sinceIndex); i--) {
             MessageParam m = history.get(i);
             if (!"assistant".equals(m.getRole())) continue;
             Object c = m.getContent();
@@ -238,6 +359,22 @@ public class InboundDispatcher implements ChannelDeliverer {
                 if (sb.length() > 0) return sb.toString();
             }
         }
-        return null;
+        return "";
+    }
+
+    /** 收集本次 turn 在 history 增量里出现的工具名(去重保序)。 */
+    private static List<String> collectToolCallsSince(List<MessageParam> history, int sinceIdx) {
+        List<String> out = new ArrayList<>();
+        for (int i = Math.max(0, sinceIdx); i < history.size(); i++) {
+            MessageParam m = history.get(i);
+            if (!"assistant".equals(m.getRole())) continue;
+            if (!(m.getContent() instanceof List<?> blocks)) continue;
+            for (Object b : blocks) {
+                if (b instanceof ToolUseBlock tu && !out.contains(tu.getName())) {
+                    out.add(tu.getName());
+                }
+            }
+        }
+        return out;
     }
 }

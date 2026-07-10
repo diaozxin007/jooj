@@ -1,25 +1,20 @@
 package com.xilidou.jooj.web;
 
-import com.xilidou.jooj.agent.AgentLoopHarness;
-import com.xilidou.jooj.hook.HookManager;
+import com.xilidou.jooj.channel.InboundDispatcher;
+import com.xilidou.jooj.channel.InboundDispatcher.DispatchRequest;
+import com.xilidou.jooj.channel.InboundDispatcher.DispatchResult;
 import com.xilidou.jooj.http.dto.MessageParam;
 import com.xilidou.jooj.http.dto.TextBlock;
-import com.xilidou.jooj.http.dto.ToolUseBlock;
-import com.xilidou.jooj.session.AgentLockProvider;
-import com.xilidou.jooj.session.Session;
-import com.xilidou.jooj.session.SessionService;
-import com.xilidou.jooj.slashcmd.SlashCommandRegistry;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
-import java.util.concurrent.locks.ReentrantLock;
+import java.util.Map;
 
 /**
- * jooj 的 REST 接口 —— 让浏览器(或 curl/Postman)代替 CLI REPL 跟 agent 交互。
+ * jooj REST 接口 —— 所有请求统一收拢到 {@link InboundDispatcher}。
  *
  * <h3>三个 endpoint</h3>
  *
@@ -29,17 +24,17 @@ import java.util.concurrent.locks.ReentrantLock;
  *   <li>{@code POST /api/clear}    清空对话历史</li>
  * </ul>
  *
- * <h3>关键设计 — Session 抽象</h3>
+ * <h3>职责划分</h3>
  *
- * <ul>
- *   <li><b>每个请求都带 sessionId</b>:body 里(POST /chat)或 query param 里(GET /history、
- *       POST /clear)。空白 sessionId 退化到 {@link Session#DEFAULT_ID} 兜底,
- *       让旧前端 / curl 不带也能跑</li>
- *   <li><b>Per-session 锁</b>:通过 {@link AgentLockProvider#lockFor(String)} 拿,
- *       不同 session 可以并行,同 session 互斥防 messages list 撞车</li>
- *   <li><b>历史 per-session</b>:{@link AgentLoopHarness#getHistory(String)}
- *       返回的是该 session 自己的 list,不会跟别的 session 串味</li>
- * </ul>
+ * <p>Controller 只负责两件事:
+ * <ol>
+ *   <li>把 HTTP 请求参数适配成 {@link DispatchRequest}</li>
+ *   <li>把 {@link DispatchResult} 映射成 HTTP status(200 / 400 / 409 / 500)</li>
+ * </ol>
+ *
+ * <p>pipeline 本身(session 解析/校验、slash 短路、UserPromptHook、per-session lock、
+ * LLM 调用、reply 抽取、toolCalls 收集)全在 {@link InboundDispatcher} 里,跟 Channel
+ * (微信/Discord)入站共用同一份实现,避免行为漂移。
  *
  * <h3>不做的事</h3>
  *
@@ -53,103 +48,55 @@ import java.util.concurrent.locks.ReentrantLock;
 @Slf4j
 public class ChatController {
 
-    private final AgentLoopHarness harness;
-    private final SessionService sessionService;
-    private final AgentLockProvider lockProvider;
-    private final SlashCommandRegistry slashCommands;
-    /**
-     * s21 Demo 27 review:UserPromptHook 链 —— Web 入口跟 CLI / channel 同步,
-     * 让 OnUserPrompt hook 在 Web 也能拦截。
-     */
-    private final HookManager hooks;
+    private final InboundDispatcher dispatcher;
 
-    public ChatController(AgentLoopHarness harness,
-                          SessionService sessionService,
-                          AgentLockProvider lockProvider,
-                          SlashCommandRegistry slashCommands,
-                          HookManager hooks) {
-        this.harness = harness;
-        this.sessionService = sessionService;
-        this.lockProvider = lockProvider;
-        this.slashCommands = slashCommands;
-        this.hooks = hooks;
+    public ChatController(InboundDispatcher dispatcher) {
+        this.dispatcher = dispatcher;
     }
 
     /**
-     * 主对话 endpoint。
+     * 主对话 endpoint —— 全部逻辑走 {@link InboundDispatcher#dispatchSync}。
      *
-     * <p>逻辑:
-     * <ol>
-     *   <li>校验 query / sessionId 非空 → 400</li>
-     *   <li>{@link AgentLockProvider#lockFor(String)}.tryLock() 抢 per-session 锁,
-     *       失败 → 409 (此 session 正在跑别的请求)</li>
-     *   <li>记录调用前 history.size,调 {@code processOneQuery},找 turn 内调用的工具</li>
-     *   <li>从 history.last 拼 last assistant text 返回</li>
-     * </ol>
+     * <p>Web 侧 {@code autoCreate=false}:未知 sessionId 返 400 "session not found",
+     * 保留原语义(避免前端 bug 静默漂到 DEFAULT session)。
      */
     @PostMapping("/chat")
     public ResponseEntity<?> chat(@RequestBody ChatRequest request) {
-        if (request == null || request.getQuery() == null || request.getQuery().isBlank()) {
-            return ResponseEntity.badRequest().body(error("query must not be blank"));
+        if (request == null) {
+            return ResponseEntity.badRequest().body(error("request body required"));
         }
-        String sessionId = resolveSessionId(request.getSessionId());
-        if (!sessionService.exists(sessionId)) {
-            return ResponseEntity.badRequest().body(error("session not found: " + sessionId));
-        }
+        DispatchResult r = dispatcher.dispatchSync(new DispatchRequest(
+                request.getSessionId(),
+                request.getQuery(),
+                /* autoCreate    */ false,
+                /* autoCreateTitle */ null,
+                /* hint          */ null));
 
-        // Slash 命令短路 —— 不进 LLM、不抢 session lock、不写 history。
-        // 命令本身可能改 session state(如 /clear),但操作是同步即时的,无需对 LLM 互斥。
-        if (slashCommands.isCommand(request.getQuery())) {
-            String reply = slashCommands.dispatch(request.getQuery(), sessionId);
-            int size = harness.getHistory(sessionId).size();
-            return ResponseEntity.ok(new ChatResponse(reply, size, List.of()));
-        }
-
-        // s21 Demo 27 review:UserPromptHook 必须在 LLM 拿到 query 之前执行 ——
-        // 跟 CLI REPL (AgentLoopHarness.repl) + InboundDispatcher.dispatch 行为对齐。
-        Optional<String> blocked = hooks.triggerUserPrompt(request.getQuery());
-        if (blocked.isPresent()) {
-            log.info("[Web] user prompt blocked by hook (session={}): {}",
-                    sessionId, blocked.get());
-            return ResponseEntity.badRequest().body(error(
-                    "⛔ Prompt blocked: " + blocked.get()));
-        }
-
-        ReentrantLock lock = lockProvider.lockFor(sessionId);
-        if (!lock.tryLock()) {
-            return ResponseEntity.status(409).body(error(
-                    "Session busy (another request is running for this session). Please retry."));
-        }
-        try {
-            int historyBefore = harness.getHistory(sessionId).size();
-            try {
-                harness.processOneQuery(sessionId, request.getQuery());
-            } catch (Exception e) {
-                log.error("[Web] processOneQuery failed", e);
-                return ResponseEntity.status(500).body(error(
-                        "Agent failed: " + e.getClass().getSimpleName() + ": " + e.getMessage()));
-            }
-
-            List<MessageParam> history = harness.getHistory(sessionId);
-            String reply = extractLastAssistantText(history);
-            List<String> toolCalls = collectToolCallsSince(history, historyBefore);
-
-            return ResponseEntity.ok(new ChatResponse(reply, history.size(), toolCalls));
-        } finally {
-            lock.unlock();
-        }
+        return switch (r.status()) {
+            case OK, SLASH_HANDLED ->
+                    ResponseEntity.ok(new ChatResponse(
+                            r.reply(), r.historySize(), r.toolCallsThisTurn()));
+            case HOOK_BLOCKED ->
+                    // reply 已带 "⛔ Prompt blocked: " 前缀,直接作为 error 消息返 400
+                    ResponseEntity.badRequest().body(error(r.reply()));
+            case BAD_REQUEST, SESSION_NOT_FOUND ->
+                    ResponseEntity.badRequest().body(error(r.errorMessage()));
+            case SESSION_BUSY ->
+                    ResponseEntity.status(409).body(error(r.errorMessage()));
+            case AGENT_FAILED ->
+                    ResponseEntity.status(500).body(error(r.errorMessage()));
+        };
     }
 
     /**
      * 完整对话历史(只给前端展示用)。
      *
-     * <p>跳过揉平后是空的消息 —— 协议内部状态(tool_use only / tool_result only
-     * 那些 message),前端用户不该看到这些占位气泡。
+     * <p>跳过揉平后为空的消息 —— 协议内部状态(tool_use only / tool_result only 那些
+     * message),前端用户不该看到这些占位气泡。
      */
     @GetMapping("/history")
     public HistoryResponse history(@RequestParam(required = false) String sessionId) {
-        String sid = resolveSessionId(sessionId);
-        List<MessageParam> hist = harness.getHistory(sid);
+        List<MessageParam> hist = dispatcher.history(sessionId);
         List<HistoryResponse.Entry> entries = new ArrayList<>(hist.size());
         for (MessageParam m : hist) {
             String text = flattenContent(m);
@@ -159,39 +106,18 @@ public class ChatController {
         return new HistoryResponse(entries);
     }
 
-    /** 清空对话历史。复用 {@link AgentLoopHarness#clearHistory(String)}。 */
+    /** 清空对话历史。走 {@link InboundDispatcher#clearHistory} 共享 per-session lock。 */
     @PostMapping("/clear")
     public ResponseEntity<?> clear(@RequestParam(required = false) String sessionId) {
-        String sid = resolveSessionId(sessionId);
-        ReentrantLock lock = lockProvider.lockFor(sid);
-        if (!lock.tryLock()) {
+        if (!dispatcher.clearHistory(sessionId)) {
             return ResponseEntity.status(409).body(error("Session busy. Please retry."));
         }
-        try {
-            harness.clearHistory(sid);
-            return ResponseEntity.ok(new ChatResponse(null, 0, List.of()));
-        } finally {
-            lock.unlock();
-        }
+        return ResponseEntity.ok(new ChatResponse(null, 0, List.of()));
     }
 
     // ─────────────────────────────────────────────────────────────
-    //  内部辅助
+    //  view helper:MessageParam → 纯文本(前端展示)
     // ─────────────────────────────────────────────────────────────
-
-    /** 空白 sessionId → {@link Session#DEFAULT_ID} 兜底。 */
-    private static String resolveSessionId(String sessionId) {
-        if (sessionId == null || sessionId.isBlank()) return Session.DEFAULT_ID;
-        return sessionId.trim();
-    }
-
-    /** 从 history.last 抽 TextBlock 拼成字符串。empty / 非 assistant → 空串。 */
-    private static String extractLastAssistantText(List<MessageParam> history) {
-        if (history.isEmpty()) return "";
-        MessageParam last = history.get(history.size() - 1);
-        if (!"assistant".equals(last.getRole())) return "";
-        return flattenContent(last);
-    }
 
     /** 把 MessageParam 揉平成纯文本(只取用户可见的 TextBlock,协议内部 block 全跳过)。 */
     private static String flattenContent(MessageParam m) {
@@ -214,25 +140,7 @@ public class ChatController {
         return "";
     }
 
-    /**
-     * 收集本次 turn 在 history 增量里出现的工具名(去重保序)。
-     */
-    private static List<String> collectToolCallsSince(List<MessageParam> history, int sinceIdx) {
-        List<String> out = new ArrayList<>();
-        for (int i = Math.max(0, sinceIdx); i < history.size(); i++) {
-            MessageParam m = history.get(i);
-            if (!"assistant".equals(m.getRole())) continue;
-            if (!(m.getContent() instanceof List<?> blocks)) continue;
-            for (Object b : blocks) {
-                if (b instanceof ToolUseBlock tu && !out.contains(tu.getName())) {
-                    out.add(tu.getName());
-                }
-            }
-        }
-        return out;
-    }
-
-    private static java.util.Map<String, String> error(String msg) {
-        return java.util.Map.of("error", msg);
+    private static Map<String, String> error(String msg) {
+        return Map.of("error", msg);
     }
 }

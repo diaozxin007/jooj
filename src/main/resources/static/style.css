@@ -540,6 +540,9 @@ textarea::placeholder { color: var(--text-faint); }
 }
 .hint .dot { margin: 0 6px; }
 
+.char-counter { transition: color .15s ease; }
+.char-counter.char-warn { color: var(--error); font-weight: 600; }
+
 /* ──────────────────────────────────────────────
  * Channels panel(Demo 15)
  * ────────────────────────────────────────────── */

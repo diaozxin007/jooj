@@ -160,3 +160,45 @@ jooj:
     enabled: ${WEIXIN_ENABLED:true}
     bot-agent: jooj
     dispatch-pool-size: 4               # IM 多 peer 并发度;Demo 14 压测推荐 4
+
+# ─────────────────────────────────────────────────────────────
+#  Actuator / Observability
+#
+#  OpenTelemetry 通过 zero-code javaagent 接入(见 bin/run-with-otel.sh),
+#  不引 micrometer-tracing / opentelemetry-exporter-otlp 等 maven 依赖:
+#    - Trace / Metrics / Logs 三条流全由 agent 自动仪器化 + 导出到 OTLP。
+#    - Spring 侧只保留 actuator 用于暴露 health / info(agent 会顺便仪器化)。
+#    - management.tracing.enabled=false —— 避免 Spring Boot 4 自带 micrometer
+#      tracing 跟 agent 双重打点(会出现两条同名 span)。
+#
+#  运行时配置全走 OTEL_* 环境变量,由 run-with-otel.sh 或部署平台注入,例如:
+#    OTEL_SERVICE_NAME=jooj
+#    OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+#    OTEL_TRACES_SAMPLER=parentbased_traceidratio  OTEL_TRACES_SAMPLER_ARG=0.1
+#  完整清单参考 https://opentelemetry.io/zh/docs/languages/java/configuration/
+# ─────────────────────────────────────────────────────────────
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus,loggers
+  endpoint:
+    health:
+      show-details: when-authorized
+  info:
+    env:
+      enabled: true
+  # 关掉 Spring Boot 自带的 micrometer tracing,统一走 javaagent。
+  # 需要走 Spring Boot 内置 tracing(不用 agent 时),把这里改成 true,
+  # 并引 micrometer-tracing-bridge-otel + opentelemetry-exporter-otlp。
+  tracing:
+    enabled: false
+    sampling:
+      probability: 1.0
+  # OTLP 相关端口 / URL 由 javaagent 自己读 OTEL_EXPORTER_OTLP_ENDPOINT,
+  # 这里不再重复配 management.otlp.*(否则 agent + Spring 双出口更混乱)。
+
+info:
+  app:
+    name: ${spring.application.name}
+    description: jooj coding agent

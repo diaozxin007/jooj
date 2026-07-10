@@ -48,3 +48,7 @@ build/
 .mailboxes.test/
 .worktrees/
 .worktrees.test/
+
+# OpenTelemetry Java agent —— 23MB jar,不入库。
+# 需要时通过 bin/run-with-otel.sh 的提示 curl 下载,或 CI 里预置。
+tools/opentelemetry-javaagent.jar
