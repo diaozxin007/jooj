@@ -434,33 +434,12 @@ class AgentLoopHarnessTest {
                 "未清 history 时,query2 应看到 [user1, assistant1, user2] 累积历史");
     }
 
-    @Test
-    @DisplayName("onNewSession 链式 API 返回 this,支持流畅注册")
-    void onNewSession_returns_this_for_chaining() {
-        AgentLoopHarness returned = harness
-                .onNewSession((Runnable) () -> {})
-                .onNewSession((Runnable) () -> {})
-                .onNewSession((Runnable) null);
-
-        assertSame(harness, returned, "onNewSession 应返回 this");
-    }
-
-    @Test
-    @DisplayName("onNewSession 支持注册多个回调;单个失败不影响其他")
-    void onNewSession_supports_multiple_callbacks_and_fault_isolation() throws Exception {
-        AtomicInteger fired = new AtomicInteger();
-        harness
-                .onNewSession((Runnable) fired::incrementAndGet)
-                .onNewSession((Runnable) () -> { throw new RuntimeException("intentional"); })
-                .onNewSession((Runnable) fired::incrementAndGet);
-
-        var method = AgentLoopHarness.class.getDeclaredMethod("fireOnNewSession", String.class);
-        method.setAccessible(true);
-        method.invoke(harness, SID);
-
-        // 即使中间那个抛异常,前后两个都应该被执行
-        assertTrue(fired.get() >= 2, "中间回调抛异常不应影响其他回调执行");
-    }
+    // ────────────────────────────────────────────────────────────
+    //  onNewSession pub/sub 测试 —— s22 架构审查删除
+    //  原因:唯一订阅者(TodoStore.clear)已改事件驱动,pub/sub 机制作为
+    //  AgentLoopHarness 内部私有实现被移除。这两个测试测的是被删的 public API,
+    //  已删除。参考 s22 架构审查 doc。
+    // ────────────────────────────────────────────────────────────
 
     // ────────────────────────────────────────────────────────────
     //  s13 Background Tasks

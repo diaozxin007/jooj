@@ -1,6 +1,9 @@
 package com.xilidou.jooj.todo;
 
+import com.xilidou.jooj.transcript.SessionDeleted;
+import com.xilidou.jooj.transcript.SessionHistoryCleared;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -87,6 +90,24 @@ public class TodoStore {
 
     public synchronized void clear(String sessionId) {
         bySession.remove(normalize(sessionId));
+    }
+
+    /**
+     * s22 架构审查(2026-07-13):session 历史清空事件 → 清 todo 分区。
+     * 取代旧的 AgentLoopHarness.onNewSession(sid -> todoStore.clear(sid)) 中转,
+     * 让 todo 生命周期钩子直接跟 session 生命周期事件对齐。
+     */
+    @EventListener
+    public void onSessionHistoryCleared(SessionHistoryCleared e) {
+        clear(e.sessionId());
+    }
+
+    /**
+     * s22 架构审查:session 被删也清对应 todo 分区,避免 bySession map 无限增长。
+     */
+    @EventListener
+    public void onSessionDeleted(SessionDeleted e) {
+        clear(e.sessionId());
     }
 
     // ── 老 API:无 sessionId,委托给 DEFAULT_SESSION 分区 ─────────────

@@ -49,11 +49,16 @@ import java.util.function.Function;
 @Slf4j
 public class RecoveryCoordinator {
 
+    private final AnthropicClient client;
+    private final String defaultModel;
     private final JoojProperties.Recovery cfg;
     private final CompactPipeline compactPipeline;
     private final Random random = new Random();
 
-    public RecoveryCoordinator(JoojProperties props, CompactPipeline compactPipeline) {
+    public RecoveryCoordinator(JoojProperties props, CompactPipeline compactPipeline,
+                               AnthropicClient client) {
+        this.client = client;
+        this.defaultModel = props.getAnthropic().getModel();
         this.cfg = props.getRecovery();
         this.compactPipeline = compactPipeline;
 
@@ -64,17 +69,26 @@ public class RecoveryCoordinator {
     }
 
     /**
+     * s22 架构审查修复:创建 per-turn RecoveryState —— 用 coordinator 已知的默认 model
+     * 和 max_tokens 初始化,让 caller (AgentLoopHarness) 不再需要持有这两个配置字段。
+     */
+    public RecoveryState newState() {
+        return new RecoveryState(defaultModel, cfg.getDefaultMaxTokens());
+    }
+
+    /**
      * 调用 LLM + 处理三条恢复路径。一次成功的 {@link #call} 返回 {@link RecoveryResult.Done};
      * 需要 agentLoop 介入(重试/续写/退出)的返回另外三种 result。
      *
-     * @param client          底层 LLM 客户端
+     * <p>s22 架构审查(2026-07-13):删掉旧签名的 {@code AnthropicClient client} 参数。
+     * client 已经由 coordinator 自己持有,caller 不需要传。
+     *
      * @param requestBuilder  接 RecoveryState,返回 request。retry 中 state 改动后重建用
      * @param messages        对话历史。**Path 2 会原地裁剪**
-     * @param state           per-agent-loop 状态机
+     * @param state           per-agent-loop 状态机(由 {@link #newState()} 创建)
      * @return 恢复结局,见 {@link RecoveryResult} 4 个变体
      */
     public RecoveryResult call(
-            AnthropicClient client,
             Function<RecoveryState, CreateMessageRequest> requestBuilder,
             List<MessageParam> messages,
             RecoveryState state) {
@@ -82,7 +96,7 @@ public class RecoveryCoordinator {
         // ── 调 LLM,withRetry 处理 Path 3(429/529)─────────────────
         CreateMessageResponse response;
         try {
-            response = withRetry(client, requestBuilder, state);
+            response = withRetry(requestBuilder, state);
         } catch (AnthropicException e) {
             // ── Path 2: prompt_too_long → reactive compact + 重试一次 ──
             if (e.isPromptTooLong()
@@ -139,7 +153,6 @@ public class RecoveryCoordinator {
      * 但**不重建 request**(那是调用方的事)。下一轮 retry 时 requestBuilder 看到新 model。
      */
     private CreateMessageResponse withRetry(
-            AnthropicClient client,
             Function<RecoveryState, CreateMessageRequest> requestBuilder,
             RecoveryState state) {
 

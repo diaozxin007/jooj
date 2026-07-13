@@ -23,14 +23,19 @@ import static org.junit.jupiter.api.Assertions.*;
  * RecoveryCoordinator 三条恢复路径的核心行为锁定。
  *
  * <p>不走 SpringBootTest:Coordinator 是纯逻辑组件(没有 @Autowired 链路),
- * 直接 new 即可,测试启动 < 100ms。
+ * 直接 new 即可,测试启动 &lt; 100ms。
+ *
+ * <p>s22 架构审查(2026-07-13):RecoveryCoordinator 现在在**构造器**里持有
+ * AnthropicClient,不再在 {@code call(...)} 里传。每个测试通过 {@link #newCoordinator}
+ * 传入自己的 mock。cfg 在 {@link #setup()} 里初始化,某些用例修改 cfg 后需要重新
+ * {@code newCoordinator} 让新 cfg 生效。
  */
 class RecoveryCoordinatorTest {
 
     /** 测试专用配置:激进默认,让 backoff 测试 < 100ms 完成。 */
     private JoojProperties.Recovery recoveryCfg;
-    /** 把 sleep override 掉:不真睡,测试快速通过。 */
-    private RecoveryCoordinator coordinator;
+    /** props 存 recoveryCfg,newCoordinator 从 props 取 cfg + defaultModel。 */
+    private JoojProperties props;
     /** 真正的 sleep 累计时长(测试断言用)。 */
     private long totalSleepMs;
 
@@ -46,22 +51,22 @@ class RecoveryCoordinatorTest {
         recoveryCfg.setEscalatedMaxTokens(64000);
         recoveryCfg.setMaxRecoveryRetries(2);
 
-        JoojProperties props = new JoojProperties();
+        props = new JoojProperties();
         props.setRecovery(recoveryCfg);
-
-        coordinator = newCoordinator(props, /* hasReactiveSupport */ false);
         totalSleepMs = 0;
     }
 
     /**
      * 自定义 Coordinator:覆写 sleep 不真睡,只累加。CompactPipeline 用空实现,
      * 由 hasReactiveSupport 控制是否声称支持。
+     *
+     * <p>s22 架构审查:RecoveryCoordinator 构造器新增 AnthropicClient 参数,
+     * 每个测试用自己的 mock。
      */
-    private RecoveryCoordinator newCoordinator(JoojProperties props, boolean hasReactiveSupport) {
+    private RecoveryCoordinator newCoordinator(MockAnthropicClient mock, boolean hasReactiveSupport) {
         CompactPipeline fakeCompact = new CompactPipeline() {
             @Override public boolean hasReactiveSupport() { return hasReactiveSupport; }
             @Override public boolean reactiveCompact(List<MessageParam> messages) {
-                // 测试场景:把 messages 砍到 1 条,模拟成功
                 if (messages.size() > 1) {
                     MessageParam first = messages.get(0);
                     messages.clear();
@@ -70,7 +75,7 @@ class RecoveryCoordinatorTest {
                 return true;
             }
         };
-        return new RecoveryCoordinator(props, fakeCompact) {
+        return new RecoveryCoordinator(props, fakeCompact, mock) {
             @Override
             void sleep(long ms) {
                 totalSleepMs += ms;
@@ -93,9 +98,10 @@ class RecoveryCoordinatorTest {
     @DisplayName("一次成功 → Done(response)")
     void happy_path_returns_done() {
         var mock = MockAnthropicClient.ofResponses(ResponseFixtures.endTurn("ok"));
+        var coordinator = newCoordinator(mock, false);
         var state = new RecoveryState("m1", 8000);
 
-        var result = coordinator.call(mock, buildSimpleRequest(), new ArrayList<>(), state);
+        var result = coordinator.call(buildSimpleRequest(), new ArrayList<>(), state);
 
         assertInstanceOf(RecoveryResult.Done.class, result);
         assertEquals(1, mock.getCallCount());
@@ -113,9 +119,10 @@ class RecoveryCoordinatorTest {
             if (n == 1) throw new AnthropicException(429, "rate limit exceeded");
             return ResponseFixtures.endTurn("ok");
         });
+        var coordinator = newCoordinator(mock, false);
 
         var state = new RecoveryState("m1", 8000);
-        var result = coordinator.call(mock, buildSimpleRequest(), new ArrayList<>(), state);
+        var result = coordinator.call(buildSimpleRequest(), new ArrayList<>(), state);
 
         assertInstanceOf(RecoveryResult.Done.class, result);
         assertEquals(2, mock.getCallCount(), "429 + 重试 = 2 次调用");
@@ -126,9 +133,10 @@ class RecoveryCoordinatorTest {
     @DisplayName("超过 maxRetries 次 429 → 抛 AnthropicException → Fatal")
     void exhausts_retries_on_persistent_429() {
         var mock = MockAnthropicClient.throwing(new AnthropicException(429, "always rate limited"));
+        var coordinator = newCoordinator(mock, false);
 
         var state = new RecoveryState("m1", 8000);
-        var result = coordinator.call(mock, buildSimpleRequest(), new ArrayList<>(), state);
+        var result = coordinator.call(buildSimpleRequest(), new ArrayList<>(), state);
 
         assertInstanceOf(RecoveryResult.Fatal.class, result);
         assertEquals(recoveryCfg.getMaxRetries(), mock.getCallCount(),
@@ -142,25 +150,23 @@ class RecoveryCoordinatorTest {
     void switches_to_fallback_after_consecutive_529() {
         recoveryCfg.setFallbackModel("fallback-model");
         recoveryCfg.setMaxRetries(10);
-        coordinator = newCoordinator(propsWith(recoveryCfg), false);
 
         AtomicInteger calls = new AtomicInteger();
         var mock = new MockAnthropicClient(req -> {
             int n = calls.incrementAndGet();
-            // 前 3 次返回 529,第 4 次成功(此时 model 应已切到 fallback)
             if (n < 4) throw new AnthropicException(529, "overloaded");
             return ResponseFixtures.endTurn("ok");
         });
+        var coordinator = newCoordinator(mock, false);
 
         var state = new RecoveryState("primary-model", 8000);
-        var result = coordinator.call(mock, buildSimpleRequest(), new ArrayList<>(), state);
+        var result = coordinator.call(buildSimpleRequest(), new ArrayList<>(), state);
 
         assertInstanceOf(RecoveryResult.Done.class, result);
         assertEquals("fallback-model", state.getCurrentModel(),
                 "连续 3 次 529 后应切到 fallback");
         assertEquals(0, state.getConsecutive529(), "切 fallback 后清零");
 
-        // 第 4 次请求(成功那次)的 model 应该是 fallback
         var lastReq = mock.getLastRequest();
         assertEquals("fallback-model", lastReq.getModel());
     }
@@ -169,12 +175,12 @@ class RecoveryCoordinatorTest {
     @DisplayName("没配 fallback 时,529 持续重试到 maxRetries")
     void no_fallback_keeps_retrying_on_529() {
         recoveryCfg.setMaxRetries(4);
-        coordinator = newCoordinator(propsWith(recoveryCfg), false);
 
         var mock = MockAnthropicClient.throwing(new AnthropicException(529, "overloaded"));
+        var coordinator = newCoordinator(mock, false);
 
         var state = new RecoveryState("m1", 8000);
-        var result = coordinator.call(mock, buildSimpleRequest(), new ArrayList<>(), state);
+        var result = coordinator.call(buildSimpleRequest(), new ArrayList<>(), state);
 
         assertInstanceOf(RecoveryResult.Fatal.class, result);
         assertEquals(4, mock.getCallCount());
@@ -187,9 +193,10 @@ class RecoveryCoordinatorTest {
     @DisplayName("第一次 max_tokens 截断 → EscalateAndRetry(不 append)+ 升级 currentMaxTokens")
     void max_tokens_first_truncation_escalates() {
         var mock = MockAnthropicClient.ofResponses(ResponseFixtures.maxTokensTruncated("partial"));
+        var coordinator = newCoordinator(mock, false);
 
         var state = new RecoveryState("m1", 8000);
-        var result = coordinator.call(mock, buildSimpleRequest(), new ArrayList<>(), state);
+        var result = coordinator.call(buildSimpleRequest(), new ArrayList<>(), state);
 
         assertInstanceOf(RecoveryResult.EscalateAndRetry.class, result);
         assertTrue(state.isHasEscalated());
@@ -203,12 +210,13 @@ class RecoveryCoordinatorTest {
     @DisplayName("已升级再次截断 → AppendContinuation,recoveryCount 累加")
     void max_tokens_after_escalation_appends_continuation() {
         var mock = MockAnthropicClient.ofResponses(ResponseFixtures.maxTokensTruncated("still cut"));
+        var coordinator = newCoordinator(mock, false);
 
         var state = new RecoveryState("m1", 8000);
-        state.hasEscalated = true;  // 模拟已升级过
+        state.hasEscalated = true;
         state.currentMaxTokens = 64000;
 
-        var result = coordinator.call(mock, buildSimpleRequest(), new ArrayList<>(), state);
+        var result = coordinator.call(buildSimpleRequest(), new ArrayList<>(), state);
 
         assertInstanceOf(RecoveryResult.AppendContinuation.class, result);
         assertEquals(1, state.getRecoveryCount());
@@ -218,13 +226,14 @@ class RecoveryCoordinatorTest {
     @DisplayName("超过 maxRecoveryRetries 次 continuation → Fatal")
     void max_tokens_recovery_limit_returns_fatal() {
         var mock = MockAnthropicClient.ofResponses(ResponseFixtures.maxTokensTruncated("forever cut"));
+        var coordinator = newCoordinator(mock, false);
 
         var state = new RecoveryState("m1", 8000);
         state.hasEscalated = true;
         state.currentMaxTokens = 64000;
-        state.recoveryCount = 2;  // 已经用满 maxRecoveryRetries(=2)
+        state.recoveryCount = 2;
 
-        var result = coordinator.call(mock, buildSimpleRequest(), new ArrayList<>(), state);
+        var result = coordinator.call(buildSimpleRequest(), new ArrayList<>(), state);
 
         assertInstanceOf(RecoveryResult.Fatal.class, result);
         assertTrue(((RecoveryResult.Fatal) result).reason().toLowerCase().contains("max"),
@@ -236,10 +245,9 @@ class RecoveryCoordinatorTest {
     @Test
     @DisplayName("prompt_too_long + reactive 支持 → 触发 reactiveCompact + EscalateAndRetry")
     void prompt_too_long_triggers_reactive_compact() {
-        coordinator = newCoordinator(propsWith(recoveryCfg), true);  // hasReactiveSupport
-
         var mock = MockAnthropicClient.throwing(
                 new AnthropicException(400, "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"prompt is too long\"}}"));
+        var coordinator = newCoordinator(mock, true);  // hasReactiveSupport
 
         var state = new RecoveryState("m1", 8000);
         List<MessageParam> messages = new ArrayList<>();
@@ -247,7 +255,7 @@ class RecoveryCoordinatorTest {
         messages.add(MessageParam.user("second"));
         messages.add(MessageParam.user("third"));
 
-        var result = coordinator.call(mock, buildSimpleRequest(), messages, state);
+        var result = coordinator.call(buildSimpleRequest(), messages, state);
 
         assertInstanceOf(RecoveryResult.EscalateAndRetry.class, result);
         assertTrue(state.isHasAttemptedReactiveCompact());
@@ -257,15 +265,14 @@ class RecoveryCoordinatorTest {
     @Test
     @DisplayName("prompt_too_long 第二次(已 attempted)→ Fatal")
     void prompt_too_long_second_time_is_fatal() {
-        coordinator = newCoordinator(propsWith(recoveryCfg), true);
-
         var mock = MockAnthropicClient.throwing(
                 new AnthropicException(400, "{\"error\":{\"message\":\"prompt is too long\"}}"));
+        var coordinator = newCoordinator(mock, true);
 
         var state = new RecoveryState("m1", 8000);
-        state.hasAttemptedReactiveCompact = true;  // 已用过
+        state.hasAttemptedReactiveCompact = true;
 
-        var result = coordinator.call(mock, buildSimpleRequest(), new ArrayList<>(), state);
+        var result = coordinator.call(buildSimpleRequest(), new ArrayList<>(), state);
 
         assertInstanceOf(RecoveryResult.Fatal.class, result);
     }
@@ -273,14 +280,13 @@ class RecoveryCoordinatorTest {
     @Test
     @DisplayName("prompt_too_long 但 compactPipeline 没有 reactive 支持 → Fatal")
     void prompt_too_long_no_reactive_support_is_fatal() {
-        coordinator = newCoordinator(propsWith(recoveryCfg), false);  // 不支持
-
         var mock = MockAnthropicClient.throwing(
                 new AnthropicException(400, "{\"error\":{\"message\":\"prompt is too long\"}}"));
+        var coordinator = newCoordinator(mock, false);  // 不支持
 
         var state = new RecoveryState("m1", 8000);
 
-        var result = coordinator.call(mock, buildSimpleRequest(), new ArrayList<>(), state);
+        var result = coordinator.call(buildSimpleRequest(), new ArrayList<>(), state);
 
         assertInstanceOf(RecoveryResult.Fatal.class, result);
     }
@@ -292,17 +298,12 @@ class RecoveryCoordinatorTest {
     void non_retryable_4xx_is_fatal_immediately() {
         var mock = MockAnthropicClient.throwing(
                 new AnthropicException(400, "invalid request"));
+        var coordinator = newCoordinator(mock, false);
 
         var state = new RecoveryState("m1", 8000);
-        var result = coordinator.call(mock, buildSimpleRequest(), new ArrayList<>(), state);
+        var result = coordinator.call(buildSimpleRequest(), new ArrayList<>(), state);
 
         assertInstanceOf(RecoveryResult.Fatal.class, result);
         assertEquals(1, mock.getCallCount(), "不该重试");
-    }
-
-    private JoojProperties propsWith(JoojProperties.Recovery cfg) {
-        var p = new JoojProperties();
-        p.setRecovery(cfg);
-        return p;
     }
 }

@@ -2,7 +2,6 @@ package com.xilidou.jooj.agent;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xilidou.jooj.JoojProperties;
 import com.xilidou.jooj.cron.CronJob;
 import com.xilidou.jooj.cron.CronService;
 import com.xilidou.jooj.session.AgentLockProvider;
@@ -18,7 +17,6 @@ import com.xilidou.jooj.tool.ExecutionContext;
 import com.xilidou.jooj.compact.CompactPipeline;
 import com.xilidou.jooj.tool.ToolDefinition;
 import com.xilidou.jooj.tool.ToolResult;
-import com.xilidou.jooj.http.AnthropicClient;
 import com.xilidou.jooj.http.dto.ContentBlock;
 import com.xilidou.jooj.http.dto.CreateMessageRequest;
 import com.xilidou.jooj.http.dto.CreateMessageResponse;
@@ -34,7 +32,6 @@ import com.xilidou.jooj.todo.TodoStore;
 import com.xilidou.jooj.transcript.AssistantResponseCompleted;
 import com.xilidou.jooj.transcript.ScheduledPromptFired;
 import com.xilidou.jooj.transcript.UserMessageReceived;
-import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.ApplicationEventPublisher;
@@ -49,7 +46,6 @@ import java.util.Optional;
 import java.util.Scanner;
 import java.util.UUID;
 import java.util.concurrent.locks.ReentrantLock;
-import java.util.function.Consumer;
 import java.time.Instant;
 
 /**
@@ -125,8 +121,6 @@ public class AgentLoopHarness {
     private static final int CONSOLE_PREVIEW_LIMIT = 200;
 
     // ── 依赖(全部 final,Spring 构造器注入)──────────────────────
-    private final AnthropicClient client;
-    private final String model;
     private final ToolRegistry registry;
     private final ObjectMapper json;
     private final HookManager hooks;
@@ -144,11 +138,11 @@ public class AgentLoopHarness {
      * 错误恢复协调器(s11)。三条路径:
      * Path 1 max_tokens 升级、Path 2 prompt_too_long 触发 reactive compact、
      * Path 3 429/529 退避 + fallback model 切换。
+     *
+     * <p>s22 架构审查(2026-07-13):RecoveryCoordinator 自己持有 AnthropicClient +
+     * default model + default max tokens 配置,harness 不再需要三个 pass-through 字段。
      */
     private final RecoveryCoordinator recoveryCoordinator;
-
-    /** 错误恢复配置(s11)。{@link #agentLoop} 用 {@code defaultMaxTokens} 初始化 RecoveryState。 */
-    private final JoojProperties.Recovery recoveryCfg;
 
     /**
      * s13 Background Tasks 管理器。慢操作派 daemon 线程,placeholder 立即返回给 LLM,
@@ -187,7 +181,12 @@ public class AgentLoopHarness {
     private final AgentLockProvider lockProvider;
 
     /** 新会话回调列表(per-session 触发)。 */
-    private final List<Consumer<String>> onNewSessionListeners = new ArrayList<>();
+    /**
+     * s22 架构审查(2026-07-13):删除 {@code onNewSessionListeners} pub/sub 机制。
+     *
+     * <p>之前只有一个订阅者(TodoStore.clear),已改为直接监听 SessionHistoryCleared /
+     * SessionDeleted 事件,不再走 harness 中转。生产代码无外部订阅者,YAGNI 原则删除。
+     */
 
     /**
      * Channel 投递抽象 —— Demo 20 起用 self-describing 路由,harness 直接调它把 cron 回复
@@ -215,8 +214,7 @@ public class AgentLoopHarness {
      * harness 自己再持 PermissionPipeline 引用从来没人用 —— 是 R2 重构 hook 化时遗留的
      * 死字段,容易让人误以为 permission 是 harness 直接检查。
      */
-    public AgentLoopHarness(AnthropicClient client,
-                            ToolRegistry registry,
+    public AgentLoopHarness(ToolRegistry registry,
                             @Qualifier("joojObjectMapper") ObjectMapper json,
                             HookManager hooks,
                             CompactPipeline compactPipeline,
@@ -230,11 +228,8 @@ public class AgentLoopHarness {
                             ProtocolRegistry protocols,
                             SessionService sessionService,
                             AgentLockProvider lockProvider,
-                            JoojProperties props,
                             org.springframework.beans.factory.ObjectProvider<com.xilidou.jooj.channel.ChannelDeliverer> channelDelivererProvider,
                             ApplicationEventPublisher eventPublisher) {
-        this.client = client;
-        this.model = props.getAnthropic().getModel();
         this.registry = registry;
         this.json = json;
         this.hooks = hooks;
@@ -251,19 +246,6 @@ public class AgentLoopHarness {
         this.lockProvider = lockProvider;
         this.channelDelivererProvider = channelDelivererProvider;
         this.eventPublisher = eventPublisher;
-        this.recoveryCfg = props.getRecovery();
-    }
-
-    /**
-     * Spring 装配完成后注册 {@code onNewSession} 回调(清空 todoStore)。
-     * 注:history 的 clear 现在跟着 sessionId 走,不在新会话边界统一清,
-     * 因为 cli-default 的"新会话"恰恰是用户希望保留的(REPL 多轮对话);
-     * 真要清显式调 {@link #clearHistory}。
-     */
-    @PostConstruct
-    void init() {
-        // s20 Demo 12: todoStore 已 per-session 化。新 session 触发只清自己分区,不影响别的 session。
-        onNewSession(sid -> todoStore.clear(sid));
     }
 
     // ── 核心 Agent Loop ─────────────────────────────────────────
@@ -305,7 +287,8 @@ public class AgentLoopHarness {
         }
 
         // s11: per-loop 错误恢复状态机。跨 agentLoop 调用不污染。
-        var recoveryState = new RecoveryState(model, recoveryCfg.getDefaultMaxTokens());
+        // s22 架构审查:默认 model / max_tokens 现在由 RecoveryCoordinator 内部拿,harness 不管
+        var recoveryState = recoveryCoordinator.newState();
 
         while (true) {
             // Nag 守卫(s20 Demo 7 修复):
@@ -345,7 +328,6 @@ public class AgentLoopHarness {
             var system = promptAssembler.assembleBlocks(promptAssembler.currentContext());
 
             RecoveryResult recoveryResult = recoveryCoordinator.call(
-                    client,
                     state -> CreateMessageRequest.builder()
                             .model(state.getCurrentModel())
                             .system(system)
@@ -470,36 +452,17 @@ public class AgentLoopHarness {
     }
 
     // ── 新会话生命周期 ──────────────────────────────────────────
-
-    /** 注册一个 per-session 触发的回调(给 sessionId 作为参数)。 */
-    public AgentLoopHarness onNewSession(Consumer<String> callback) {
-        if (callback != null) {
-            onNewSessionListeners.add(callback);
-        }
-        return this;
-    }
-
+    // s22 架构审查(2026-07-13):删除 onNewSession pub/sub API + fireOnNewSession
+    // 触发点。唯一订阅者(TodoStore.clear)已改事件驱动直接监听 SessionHistoryCleared /
+    // SessionDeleted。生产代码无外部订阅者,YAGNI 删除。
+    //
+    // 若未来 harness 需要通知外界"新 session 开始",直接 publish 新事件类型即可,
+    // 不再依赖 harness 内部的 ArrayList 中转。
+    //
     // s21 Demo 19 的 onScheduledTurnComplete listener 在 Demo 20 重写后被移除 ——
     // 改用 cron job self-describing(deliveryType + channel + peerId)+ ChannelDeliverer 接口。
     // 见 processCronTriggers 内的 switch 路由。
 
-    /** 兼容老 API。回调以 {@link Session#CLI_DEFAULT_ID} 触发。 */
-    public AgentLoopHarness onNewSession(Runnable callback) {
-        if (callback != null) {
-            onNewSessionListeners.add(sid -> callback.run());
-        }
-        return this;
-    }
-
-    private void fireOnNewSession(String sessionId) {
-        for (Consumer<String> callback : onNewSessionListeners) {
-            try {
-                callback.accept(sessionId);
-            } catch (Exception e) {
-                log.warn("[Loop] onNewSession callback failed: {}", e.getMessage());
-            }
-        }
-    }
 
     /** 清空指定 session 的 history。 */
     public void clearHistory(String sessionId) {
@@ -797,7 +760,11 @@ public class AgentLoopHarness {
                     continue;
                 }
                 try {
-                    fireOnNewSession(sessionId);
+                    // s22 架构审查(2026-07-13):删除 fireOnNewSession(sessionId) 调用。
+                    // 该动作旧语义每轮 CLI query 都清 cli-default 分区的 todo —— 会误伤
+                    // 用户 in-progress 的 todo。todo 生命周期现由 SessionHistoryCleared /
+                    // SessionDeleted 事件驱动 (TodoStore 直接 listen),更精确、更符合
+                    // per-session 化(Demo 12)之后的语义。
                     processOneQuery(sessionId, query);
                 } finally {
                     lock.unlock();
