@@ -1,11 +1,15 @@
 package com.xilidou.jooj;
 
+import com.xilidou.jooj.bootstrap.JoojHome;
+import com.xilidou.jooj.bootstrap.PidfileGuard;
 import org.springframework.boot.Banner;
 import org.springframework.boot.WebApplicationType;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
 
+import java.io.IOException;
+import java.nio.file.Path;
 import java.util.Arrays;
 
 /**
@@ -48,6 +52,18 @@ public class JoojApplication {
 
     public static void main(String[] args) {
         boolean webMode = isWebMode(args);
+
+        // s22 P5 (D12):pidfile guard —— 阻断第二个 jooj 实例启动。
+        // 事件驱动 transcript / 单进程假设的所有 IO 语义都建立在"只有一个 JVM 写 ~/.jooj/"上。
+        // 检查放在容器起来前:若有活跃实例存在,直接抛异常 fail-fast,连 Spring 上下文都不装。
+        try {
+            Path home = JoojHome.getHomePath();
+            JoojHome.ensureHome(home);
+            PidfileGuard.acquire(home);
+        } catch (IOException e) {
+            System.err.println("[Bootstrap] failed to acquire pidfile: " + e.getMessage());
+            System.exit(1);
+        }
 
         SpringApplicationBuilder builder = new SpringApplicationBuilder(JoojApplication.class)
                 .bannerMode(Banner.Mode.OFF);

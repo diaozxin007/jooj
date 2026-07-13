@@ -690,7 +690,13 @@ public class AgentLoopHarness {
      * 跟 InboundDispatcher.lastAssistantText 一致语义,这里独立放在 harness 包不需要跨包依赖。
      */
     private String lastAssistantTextSince(List<MessageParam> history, int sinceIndex) {
-        for (int i = history.size() - 1; i >= sinceIndex; i--) {
+        // s22 P6 修复:sinceIndex 可能被压缩过程摧毁 —— agentLoop 内部若触发
+        // CompactPipeline 会削掉 history 中段,原本记录的 sinceIndex(压缩前的 size)
+        // 会大于新的 history.size(),导致 for 循环从来不进入,event 丢失。
+        // clamp 到 [0, history.size()-1],配合"最新那条 assistant 就是本轮 reply"
+        // 的普适假设 —— 即使 sinceIndex 变无效,拿到的最新 assistant 也是正确的。
+        int from = Math.max(0, Math.min(sinceIndex, history.size() - 1));
+        for (int i = history.size() - 1; i >= from; i--) {
             MessageParam m = history.get(i);
             if (!"assistant".equals(m.getRole())) continue;
             Object c = m.getContent();
