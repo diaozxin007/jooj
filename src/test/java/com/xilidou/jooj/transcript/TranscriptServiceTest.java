@@ -22,7 +22,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * <ul>
  *   <li>D3 —— assistant 只放 final text,blank 内容跳过</li>
  *   <li>D6 —— SessionDeleted 触发 softDelete</li>
- *   <li>D7 —— ScheduledPromptFired 落 role=scheduled + source="cron:jobId"</li>
+ *   <li>B1 —— UserMessageReceived source="cron:jobId" 落 role="scheduled"</li>
  *   <li>D11 —— 幂等:同 eventId 只落一次;失败回退允许重试</li>
  * </ul>
  *
@@ -61,16 +61,16 @@ class TranscriptServiceTest {
         }
 
         @Test
-        @DisplayName("ScheduledPromptFired 落 role=scheduled + source=\"cron:jobId\" (D7)")
-        void scheduled_event_appends_scheduled_line() throws IOException {
-            service.onScheduledPrompt(new ScheduledPromptFired(
-                    UUID.randomUUID(), "s1", "check deploy", "job-42",
-                    Instant.parse("2026-07-13T10:00:00Z")));
+        @DisplayName("UserMessageReceived source=cron:xxx → role=scheduled (B1 合并事件)")
+        void cron_source_maps_to_scheduled_role() throws IOException {
+            service.onUserMessage(new UserMessageReceived(
+                    UUID.randomUUID(), "s1", "check deploy",
+                    Instant.parse("2026-07-13T10:00:00Z"), "cron:job-42"));
 
             List<TranscriptLine> lines = store.readAll("s1");
             assertEquals(1, lines.size());
             assertEquals("scheduled", lines.get(0).role(),
-                    "D7: cron 不伪装 user role");
+                    "s22 B1:source 前缀 cron: 时 TranscriptService 落成 role=scheduled");
             assertEquals("check deploy", lines.get(0).content(),
                     "干净原文,不带 [Scheduled] 前缀");
             assertEquals("cron:job-42", lines.get(0).source());
@@ -104,10 +104,10 @@ class TranscriptServiceTest {
         }
 
         @Test
-        @DisplayName("cron 场景下 scheduled + assistant 两行都出现(D8)")
+        @DisplayName("cron 场景下 scheduled + assistant 两行都出现(B1)")
         void cron_scenario_yields_scheduled_and_assistant() throws IOException {
-            service.onScheduledPrompt(new ScheduledPromptFired(
-                    UUID.randomUUID(), "s1", "check deploy", "job-42", Instant.now()));
+            service.onUserMessage(new UserMessageReceived(
+                    UUID.randomUUID(), "s1", "check deploy", Instant.now(), "cron:job-42"));
             service.onAssistantResponse(new AssistantResponseCompleted(
                     UUID.randomUUID(), "s1", "deploy healthy", Instant.now()));
 

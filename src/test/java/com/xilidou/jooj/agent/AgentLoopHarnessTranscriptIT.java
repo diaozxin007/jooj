@@ -58,6 +58,8 @@ class AgentLoopHarnessTranscriptIT {
     @Autowired TranscriptService transcriptService;
     @Autowired TranscriptStore transcriptStore;
     @Autowired SessionService sessionService;
+    /** s22 架构审查(B1):cron 编排搬走 */
+    @Autowired com.xilidou.jooj.cron.CronTurnOrchestrator cronOrchestrator;
 
     // 用不同 sid 隔离,避免跟 AgentLoopHarnessTest / 其他测试串味
     private static final String SID_USER = "s22p2-user";
@@ -123,7 +125,8 @@ class AgentLoopHarnessTranscriptIT {
         job.setPrompt("check deploy");
         // 不设 deliveryType,兜底 "none",不走 channel 派发
 
-        harness.processCronTriggers(List.of(job));
+        // s22 架构审查(B1):cron 编排搬到 CronTurnOrchestrator。
+        cronOrchestrator.processFired(List.of(job));
 
         List<TranscriptLine> lines = transcriptService.readAll(SID_CRON);
         assertEquals(2, lines.size(),

@@ -15,16 +15,21 @@ import java.util.UUID;
  * <p>方案:把"用户可见对话"抬到独立 domain,靠事件流分叉。
  * loop 里往 {@code history} 加什么都不影响 transcript,transcript 只接收显式发布的事件。
  *
- * <h3>5 个具体事件类型</h3>
+ * <h3>4 个具体事件类型</h3>
  *
  * <ul>
- *   <li>{@link UserMessageReceived} —— 用户在 Web/CLI/Channel 发起的对话</li>
- *   <li>{@link ScheduledPromptFired} —— cron 触发(独立事件,不伪装 user;role="scheduled")</li>
- *   <li>{@link AssistantResponseCompleted} —— lead-agent 最终回复(cron 触发也走这条)</li>
+ *   <li>{@link UserMessageReceived} —— 用户在 Web/CLI/Channel 发起的对话;
+ *       cron 触发也走这条,靠 {@code source} 前缀 {@code "cron:jobId"} 区分</li>
+ *   <li>{@link AssistantResponseCompleted} —— lead-agent 最终回复</li>
  *   <li>{@link SessionDeleted} —— session 从 index 移除,transcript 软归档</li>
  *   <li>{@link SessionHistoryCleared} —— session 保留但清历史,transcript 同样软归档
  *       (语义区分见事件类注释)</li>
  * </ul>
+ *
+ * <p><b>s22 架构审查(2026-07-13, B1 refactor)</b>:删除 {@code ScheduledPromptFired}
+ * 独立事件类型。Hermes 参考实现证明"单一 turn 入口 + 单一入口事件"更清晰。cron 走
+ * {@code UserMessageReceived + source="cron:jobId"},前端 mapper 按 source 前缀渲染
+ * 系统气泡(而非 role="scheduled")。原来的 D7 决策(独立事件)撤回。
  *
  * <h3>边界(D13)</h3>
  *
@@ -41,7 +46,7 @@ import java.util.UUID;
  * 只落一次。写盘失败时 LRU 会回退允许重试。
  */
 public sealed interface TranscriptEvent
-        permits UserMessageReceived, ScheduledPromptFired,
+        permits UserMessageReceived,
                 AssistantResponseCompleted, SessionDeleted,
                 SessionHistoryCleared {
 

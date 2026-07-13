@@ -74,6 +74,11 @@ class AgentLoopHarnessTest {
     @Autowired ProtocolRegistry protocolRegistry;
     @Autowired TodoStore todoStore;
     @Autowired SessionService sessionService;
+    /**
+     * s22 架构审查(B1):cron 触发编排搬到 CronTurnOrchestrator。旧的
+     * {@code harness.processCronTriggers(...)} 已删,测试改调 orchestrator。
+     */
+    @Autowired com.xilidou.jooj.cron.CronTurnOrchestrator cronOrchestrator;
 
     @BeforeEach
     void setUp() {
@@ -757,7 +762,8 @@ class AgentLoopHarnessTest {
         CronJob jobA = new CronJob("cron_a01", "* * * * *", "wake A", false, false, sA.id());
         CronJob jobB = new CronJob("cron_b01", "* * * * *", "wake B", false, false, sB.id());
 
-        harness.processCronTriggers(List.of(jobA, jobB));
+        // s22 架构审查(B1):cron 编排搬到 CronTurnOrchestrator
+        cronOrchestrator.processFired(List.of(jobA, jobB));
 
         // 各自 session 的 history 应该有自己的 [Scheduled] 注入
         List<MessageParam> historyA = sessionService.loadHistory(sA.id());
@@ -802,7 +808,8 @@ class AgentLoopHarnessTest {
         // 老 5-arg ctor:sessionId == null
         CronJob legacy = new CronJob("cron_legacy01", "* * * * *", "legacy job", false, false);
 
-        harness.processCronTriggers(List.of(legacy));
+        // s22 架构审查(B1)
+        cronOrchestrator.processFired(List.of(legacy));
 
         List<MessageParam> historyDefault = sessionService.loadHistory(Session.CRON_DEFAULT_ID);
         assertTrue(historyDefault.stream().anyMatch(m ->

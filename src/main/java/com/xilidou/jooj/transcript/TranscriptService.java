@@ -75,30 +75,18 @@ public class TranscriptService {
             return;
         }
         try {
+            // s22 架构审查(2026-07-13, B1 refactor):cron 触发合并到本 listener,
+            // source 前缀 "cron:" 时落成 role="scheduled",前端按 role 分派渲染系统气泡。
+            // 其他 source(web / cli / channel:xxx)一律 role="user"。
+            String role = e.source() != null && e.source().startsWith("cron:")
+                    ? "scheduled"
+                    : "user";
             store.append(e.sessionId(),
-                    new TranscriptLine("user", e.content(), e.timestamp(), e.source()));
+                    new TranscriptLine(role, e.content(), e.timestamp(), e.source()));
         } catch (Exception ex) {
             releaseOnFailure(e.eventId());
             log.warn("[Transcript] append user message failed sid={}: {}",
                     e.sessionId(), ex.toString());
-        }
-    }
-
-    /** D7:cron 触发的 prompt 用 role="scheduled",跟 user 明确区分。 */
-    @EventListener
-    public void onScheduledPrompt(ScheduledPromptFired e) {
-        if (!acquireEvent(e.eventId())) {
-            log.debug("[Transcript] dedup skip scheduled event {}", e.eventId());
-            return;
-        }
-        try {
-            store.append(e.sessionId(),
-                    new TranscriptLine("scheduled", e.prompt(), e.timestamp(),
-                            "cron:" + e.jobId()));
-        } catch (Exception ex) {
-            releaseOnFailure(e.eventId());
-            log.warn("[Transcript] append scheduled failed sid={} job={}: {}",
-                    e.sessionId(), e.jobId(), ex.toString());
         }
     }
 

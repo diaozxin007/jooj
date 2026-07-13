@@ -5,7 +5,6 @@ import com.xilidou.jooj.session.Session;
 import com.xilidou.jooj.session.SessionService;
 import com.xilidou.jooj.session.SessionStore;
 import com.xilidou.jooj.transcript.AssistantResponseCompleted;
-import com.xilidou.jooj.transcript.ScheduledPromptFired;
 import com.xilidou.jooj.transcript.SessionDeleted;
 import com.xilidou.jooj.transcript.SessionHistoryCleared;
 import com.xilidou.jooj.transcript.UserMessageReceived;
@@ -29,7 +28,7 @@ import java.util.UUID;
  * <h3>职责(s22 P3-b 之后)</h3>
  *
  * <ul>
- *   <li>{@link #onUserMessage} / {@link #onScheduledPrompt} / {@link #onAssistantResponse}
+ *   <li>{@link #onUserMessage} / {@link #onAssistantResponse}
  *       —— {@link EventListener},事件到就 incremental append 到 FTS,只索引干净原文(D2 / D4.4)</li>
  *   <li>{@link #onSessionDeleted} —— 事件驱动删除索引</li>
  *   <li>{@link #search} — Tool / API 入口,limit clamp 到 maxLimit</li>
@@ -93,23 +92,15 @@ public class SearchService {
     public void onUserMessage(UserMessageReceived e) {
         if (!acquireEvent(e.eventId())) return;
         try {
-            store.appendOne(e.sessionId(), "user", e.content(), e.timestamp());
+            // s22 架构审查(2026-07-13, B1):cron 触发合并到 UserMessageReceived,
+            // source 前缀 "cron:" 时 FTS role="scheduled" 便于按类型筛。
+            String role = e.source() != null && e.source().startsWith("cron:")
+                    ? "scheduled"
+                    : "user";
+            store.appendOne(e.sessionId(), role, e.content(), e.timestamp());
         } catch (Throwable t) {
             releaseOnFailure(e.eventId());
             log.warn("[Search] onUserMessage({}) failed: {}", e.sessionId(), t.toString());
-        }
-    }
-
-    /** D7:scheduled event 也进 FTS,role="scheduled" 便于按类型筛。 */
-    @EventListener
-    public void onScheduledPrompt(ScheduledPromptFired e) {
-        if (!acquireEvent(e.eventId())) return;
-        try {
-            store.appendOne(e.sessionId(), "scheduled", e.prompt(), e.timestamp());
-        } catch (Throwable t) {
-            releaseOnFailure(e.eventId());
-            log.warn("[Search] onScheduledPrompt({}, job={}) failed: {}",
-                    e.sessionId(), e.jobId(), t.toString());
         }
     }
 

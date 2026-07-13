@@ -14,9 +14,9 @@ import java.util.UUID;
  *   <li>{@code "web"} —— Web 前端 ChatController 触发</li>
  *   <li>{@code "cli"} —— JoojCliRunner REPL 触发</li>
  *   <li>{@code "channel:weixin"} / {@code "channel:xxx"} —— 外部渠道触发</li>
+ *   <li>{@code "cron:jobId"} —— cron 定时任务触发(s22 B1 refactor 合并进本事件类型,
+ *       transcript role 会落 {@code "scheduled"} 而非 {@code "user"},前端按 source 前缀分派)</li>
  * </ul>
- *
- * <p>注意 cron 触发**不走这条**,走 {@link ScheduledPromptFired}(D7)。
  */
 public record UserMessageReceived(
         UUID eventId,

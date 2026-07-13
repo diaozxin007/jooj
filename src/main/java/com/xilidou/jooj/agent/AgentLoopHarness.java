@@ -30,7 +30,6 @@ import com.xilidou.jooj.memory.MemoryService;
 import com.xilidou.jooj.prompt.SystemPromptAssembler;
 import com.xilidou.jooj.todo.TodoStore;
 import com.xilidou.jooj.transcript.AssistantResponseCompleted;
-import com.xilidou.jooj.transcript.ScheduledPromptFired;
 import com.xilidou.jooj.transcript.UserMessageReceived;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -186,16 +185,14 @@ public class AgentLoopHarness {
      *
      * <p>之前只有一个订阅者(TodoStore.clear),已改为直接监听 SessionHistoryCleared /
      * SessionDeleted 事件,不再走 harness 中转。生产代码无外部订阅者,YAGNI 原则删除。
-     */
-
-    /**
-     * Channel 投递抽象 —— Demo 20 起用 self-describing 路由,harness 直接调它把 cron 回复
-     * 发到 channel,不再用 Demo 19 的 listener + 反查表。
      *
-     * <p>{@code ObjectProvider} 让 channel 包不存在时(纯 CLI 模式)也能装配 harness,
-     * deliveryType=channel 时 deliverer 缺席就 log warn + skip。
+     * s22 架构审查(2026-07-13,B1 refactor):删除 {@code channelDelivererProvider}
+     * 字段 + {@code processCronTriggers} / {@code deliverCronResult} 方法。
+     * cron 编排搬到 {@link com.xilidou.jooj.cron.CronTurnOrchestrator};delivery 分派
+     * 搬到 {@link com.xilidou.jooj.cron.CronDeliveryHandler}。harness 只保留"单 turn
+     * 执行"职责,不再感知 cron / delivery。参考 Hermes {@code cron/scheduler.py}
+     * 的 {@code _run_one_job + _deliver_result} 分层。
      */
-    private final org.springframework.beans.factory.ObjectProvider<com.xilidou.jooj.channel.ChannelDeliverer> channelDelivererProvider;
 
     /**
      * s22 P2:Transcript 事件 publisher —— 独立 domain 记录 user↔lead-agent 对话。
@@ -228,7 +225,6 @@ public class AgentLoopHarness {
                             ProtocolRegistry protocols,
                             SessionService sessionService,
                             AgentLockProvider lockProvider,
-                            org.springframework.beans.factory.ObjectProvider<com.xilidou.jooj.channel.ChannelDeliverer> channelDelivererProvider,
                             ApplicationEventPublisher eventPublisher) {
         this.registry = registry;
         this.json = json;
@@ -244,7 +240,6 @@ public class AgentLoopHarness {
         this.protocols = protocols;
         this.sessionService = sessionService;
         this.lockProvider = lockProvider;
-        this.channelDelivererProvider = channelDelivererProvider;
         this.eventPublisher = eventPublisher;
     }
 
@@ -490,15 +485,56 @@ public class AgentLoopHarness {
      * @param deliveryHint 可选,channel 入站时由 dispatcher 提供;CLI / Web / cron-default 时 null
      */
     public void processOneQuery(String sessionId, String query, ExecutionContext.DeliveryHint deliveryHint) {
+        processOneQuery(sessionId, query, deliveryHint, null);
+    }
+
+    /**
+     * s22 架构审查(2026-07-13):加 {@code sourceOverride} 参数版本 —— 让 caller
+     * (比如 {@code CronTurnOrchestrator})显式指定 transcript 的 source 前缀,
+     * 而不是靠 harness 从 hint 里推断。这样"cron 触发" 这类语义化 source 由 caller 决定,
+     * harness 保持 turn-only 职责。
+     *
+     * <p>合并 D7 事件类型:cron 场景现在也发 {@link UserMessageReceived},靠 source
+     * 前缀({@code "cron:jobId"})跟正常 user 请求({@code "web"} / {@code "channel:xxx"})
+     * 区分。删除了原来的 {@code ScheduledPromptFired} 独立事件类型 —— Hermes 参考实现
+     * 证明"单一 turn 入口 + 单一入口事件"更清晰。
+     *
+     * @param query          送给 LLM 的 prompt(可能含 {@code [Scheduled] } 之类前缀
+     *                       帮 model 理解上下文)
+     * @param deliveryHint   可选,channel 入站时由 dispatcher 提供
+     * @param sourceOverride 非 null 时直接作为 source;null 时按旧逻辑从 hint 派生
+     *                       ({@code hint != null → "channel:" + channel},否则 {@code "session"})
+     */
+    public void processOneQuery(String sessionId, String query,
+                                ExecutionContext.DeliveryHint deliveryHint,
+                                String sourceOverride) {
+        processOneQuery(sessionId, query, deliveryHint, sourceOverride, null);
+    }
+
+    /**
+     * 完整版:同时可指定 {@code transcriptContent} —— transcript 里落的内容
+     * 跟 {@code query} 分离。用于 cron 场景:LLM 看到 {@code "[Scheduled] check deploy"},
+     * transcript 里干净落 {@code "check deploy"}。
+     *
+     * @param transcriptContent 非 null 时,transcript 里 UserMessageReceived.content 用它;
+     *                          null 时用 {@code query}(user/web/channel 场景默认走这条)
+     */
+    public void processOneQuery(String sessionId, String query,
+                                ExecutionContext.DeliveryHint deliveryHint,
+                                String sourceOverride,
+                                String transcriptContent) {
         if (sessionId == null || sessionId.isBlank()) {
             throw new IllegalArgumentException("sessionId must not be blank");
         }
 
         // s22 P2:一进门发 user 事件(干净原文,不带任何 memory/skill 前缀污染)。
         // 详细语义:s22 文档 §4.6 边界清单。source 反映入口来源,便于前端渲染 + 审计。
-        String source = deliveryHint != null ? "channel:" + deliveryHint.channel() : "session";
+        String source = sourceOverride != null
+                ? sourceOverride
+                : (deliveryHint != null ? "channel:" + deliveryHint.channel() : "session");
+        String eventContent = transcriptContent != null ? transcriptContent : query;
         eventPublisher.publishEvent(new UserMessageReceived(
-                UUID.randomUUID(), sessionId, query, Instant.now(), source));
+                UUID.randomUUID(), sessionId, eventContent, Instant.now(), source));
 
         List<MessageParam> history = sessionService.loadHistory(sessionId);
         String enriched = query;
@@ -535,117 +571,30 @@ public class AgentLoopHarness {
         }
     }
 
-    /**
-     * s14: 由 {@link com.xilidou.jooj.cron.CronQueueProcessor} 在持有 lock 后调用。
-     *
-     * <p>cron 触发的 LLM run 路由到 {@link Session#CRON_DEFAULT_ID} session,
-     * 跟用户交互 session 完全隔离 —— 这是引入 session 抽象后的核心好处。
-     */
-    /**
-     * 处理一批已 fired 的 cron job。
-     *
-     * <h3>s20 Demo 9 改动</h3>
-     *
-     * <p>旧版把所有 fired job 一律塞 {@link Session#CRON_DEFAULT_ID} 这个收容 session,
-     * 用户在 web 前端的特定 session 里调度的 cron 触发后,通知永远到不了那个 session,
-     * 前端轮询的 history 看不见。
-     *
-     * <p>现在按 {@code job.sessionId} 分组路由:有 sessionId → 注入对应 session;
-     * sessionId == null(老 cron / cli REPL 调度) → 兜底 cron-default。每个 session
-     * 一次 agentLoop。
-     */
-    public void processCronTriggers(List<CronJob> firedJobs) {
-        if (firedJobs == null || firedJobs.isEmpty()) return;
-
-        // 按 sessionId 分组(null → cron-default)
-        Map<String, List<CronJob>> bySession = new java.util.LinkedHashMap<>();
-        for (CronJob job : firedJobs) {
-            String sid = job.getSessionId() != null ? job.getSessionId() : Session.CRON_DEFAULT_ID;
-            if (!sessionService.exists(sid)) {
-                log.warn("[Cron] job {} target session {} no longer exists, " +
-                        "falling back to cron-default", job.getId(), sid);
-                sid = Session.CRON_DEFAULT_ID;
-            }
-            bySession.computeIfAbsent(sid, k -> new java.util.ArrayList<>()).add(job);
-        }
-
-        for (Map.Entry<String, List<CronJob>> entry : bySession.entrySet()) {
-            String sessionId = entry.getKey();
-            List<CronJob> jobsThisSession = entry.getValue();
-            List<MessageParam> history = sessionService.loadHistory(sessionId);
-            int historyBefore = history.size();
-            for (CronJob job : jobsThisSession) {
-                // LLM 视图仍加 [Scheduled] 前缀(帮 model 理解是定时触发)
-                history.add(MessageParam.user("[Scheduled] " + job.getPrompt()));
-                log.info("[Cron] injected fired job {} prompt into session {}",
-                        job.getId(), sessionId);
-                // s22 P2 D7:transcript 视图走独立事件,role=scheduled,prompt 是干净原文
-                eventPublisher.publishEvent(new ScheduledPromptFired(
-                        UUID.randomUUID(), sessionId, job.getPrompt(), job.getId(), Instant.now()));
-            }
-            agentLoop(history, sessionId);
-            memoryService.onTurnEnd(history);
-            sessionService.saveHistory(sessionId, history);
-
-            // s21 Demo 20:每个 fired job 按自己的 deliveryType 路由(self-describing)。
-            // 同 session 多 jobs 共享同一段 reply(它们的 prompt 都串接进了 turn)。
-            String reply = lastAssistantTextSince(history, historyBefore);
-
-            // s22 P2 D8:cron 触发的 assistant 走同一条事件,前端不区分入口
-            if (reply != null && !reply.isBlank()) {
-                eventPublisher.publishEvent(new AssistantResponseCompleted(
-                        UUID.randomUUID(), sessionId, reply, Instant.now()));
-            }
-
-            for (CronJob job : jobsThisSession) {
-                deliverCronResult(job, reply);
-            }
-        }
+    /** 供 CronTurnOrchestrator 拿 reply —— 用于 delivery 后续处理。 */
+    public String extractLastAssistantText(String sessionId) {
+        return lastAssistantTextSince(sessionService.loadHistory(sessionId), 0);
     }
 
-    /**
-     * s21 Demo 20:按 cron job 自描述的 deliveryType 路由 LLM 回复。
-     * cron job 创建时已经 freeze 了路由信息,fire 时**只读 cron job 自身**,不查任何旁路状态。
-     */
-    private void deliverCronResult(CronJob job, String reply) {
-        String type = job.getDeliveryType();
-        if (type == null) type = "none";
-
-        switch (type) {
-            case "channel" -> {
-                if (reply == null || reply.isBlank()) {
-                    log.info("[Cron] job {} channel-delivery skipped: no assistant text", job.getId());
-                    return;
-                }
-                String channel = job.getChannel();
-                String peerId = job.getPeerId();
-                if (channel == null || peerId == null) {
-                    log.warn("[Cron] job {} deliveryType=channel but missing channel/peerId, dropped",
-                            job.getId());
-                    return;
-                }
-                com.xilidou.jooj.channel.ChannelDeliverer deliverer =
-                        channelDelivererProvider != null ? channelDelivererProvider.getIfAvailable() : null;
-                if (deliverer == null) {
-                    log.warn("[Cron] job {} deliveryType=channel but no ChannelDeliverer wired " +
-                            "(jooj.weixin.enabled=false?), dropped", job.getId());
-                    return;
-                }
-                boolean ok = deliverer.deliver(channel, peerId, reply);
-                log.info("[Cron] job {} delivered to channel={} peer={}: {}",
-                        job.getId(), channel, peerId, ok);
-            }
-            case "team" -> {
-                // Tier B 后续:用 messageBus 投递给 alice/bob;当前 LLM 还没自己生成 team cron
-                log.warn("[Cron] job {} deliveryType=team not yet implemented", job.getId());
-            }
-            case "none" -> {
-                log.debug("[Cron] job {} deliveryType=none, no outbound delivery", job.getId());
-            }
-            default ->
-                log.warn("[Cron] job {} unknown deliveryType '{}', dropped", job.getId(), type);
-        }
-    }
+    // ────────────────────────────────────────────────────────────
+    //  s22 架构审查(2026-07-13, B1 refactor):cron 编排 + delivery 已搬走
+    // ────────────────────────────────────────────────────────────
+    //
+    // 曾经在此处的 processCronTriggers(List<CronJob>) + deliverCronResult(job, reply)
+    // 现已迁移:
+    //   - 编排  → com.xilidou.jooj.cron.CronTurnOrchestrator#processFired
+    //   - 分派  → com.xilidou.jooj.cron.CronDeliveryHandler#deliver
+    //
+    // 好处:
+    //   1. AgentLoopHarness 只保留"单 turn 执行"职责,不再感知 cron / delivery
+    //   2. 删掉 channelDelivererProvider 依赖(harness 少 1 参)
+    //   3. Cron 走"每 job 一次 processOneQuery",跟 user 场景**单一入口**,
+    //      对齐 Hermes cron/scheduler.py:_run_one_job -> agent.run_conversation
+    //   4. 事件语义:cron 走 UserMessageReceived + source="cron:jobId"(非 ScheduledPromptFired)
+    //   5. Per-session lock 现在真的按 job.sessionId 抢,不再统一 cron-default lock
+    //
+    // 参考:AI Agent 实战/Week10_Skills_MCP_协议/s22_改造规划_事件驱动Transcript.md
+    //       + Hermes agent 源码 cron/scheduler.py
 
     /**
      * 从 sinceIndex 之后的 history 里找最后一条 assistant 文本。

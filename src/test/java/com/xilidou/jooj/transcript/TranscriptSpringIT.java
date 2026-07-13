@@ -98,15 +98,16 @@ class TranscriptSpringIT {
     }
 
     @Test
-    @DisplayName("publishEvent(ScheduledPromptFired) → role=scheduled + source=cron:jobId")
+    @DisplayName("publishEvent(UserMessageReceived) source=cron:jobId → role=scheduled (B1)")
     void publish_scheduled_event_lands_correctly() throws IOException {
-        publisher.publishEvent(new ScheduledPromptFired(
-                UUID.randomUUID(), "sid-b", "check deploy", "job-42",
-                Instant.parse("2026-07-13T10:00:00Z")));
+        publisher.publishEvent(new UserMessageReceived(
+                UUID.randomUUID(), "sid-b", "check deploy",
+                Instant.parse("2026-07-13T10:00:00Z"), "cron:job-42"));
 
         List<TranscriptLine> lines = transcriptService.readAll("sid-b");
         assertEquals(1, lines.size());
-        assertEquals("scheduled", lines.get(0).role());
+        assertEquals("scheduled", lines.get(0).role(),
+                "s22 B1:source 前缀 cron: 时 TranscriptService 落成 role=scheduled");
         assertEquals("check deploy", lines.get(0).content());
         assertEquals("cron:job-42", lines.get(0).source());
     }

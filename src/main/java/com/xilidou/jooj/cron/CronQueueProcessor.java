@@ -1,10 +1,8 @@
 package com.xilidou.jooj.cron;
 
-import com.xilidou.jooj.agent.AgentLoopHarness;
 import com.xilidou.jooj.session.AgentLockProvider;
 import com.xilidou.jooj.session.Session;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.context.annotation.Lazy;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -15,7 +13,7 @@ import java.util.concurrent.locks.ReentrantLock;
  * Cron 4 层架构 — Layer 3:queue processor 定时调度。
  *
  * <p>每 {@link CronConfig#processorTickMs} 毫秒(默认 200ms)轮询 queue,
- * 一旦有 fired job 且能拿到 {@code cron-default session} 的 lock,就触发一轮 agent_loop。
+ * 一旦有 fired job 就交给 {@link CronTurnOrchestrator} 处理。
  *
  * <p>对应上游 s14 {@code _process_cron_queue} 的 thread 形态。
  *
@@ -25,34 +23,41 @@ import java.util.concurrent.locks.ReentrantLock;
  * 跟 {@link CronScheduler} 同模式。两个 tick 都跑在 {@code joojTaskScheduler}
  * 共享调度池,Spring 容器接管启停。
  *
- * <h3>循环依赖打破:{@code @Lazy}</h3>
+ * <h3>s22 架构审查(2026-07-13)</h3>
  *
- * <p>本类需要 {@link AgentLoopHarness},但 {@link AgentLoopHarness#agentLoop}
- * 本身要 {@code drainQueue},如果直接构造注入会成环。
+ * <p>拆解:
+ * <ul>
+ *   <li>本类只做"tick + drain queue + 交给 orchestrator" 的调度职责</li>
+ *   <li>Turn 编排(per-session lock + processOneQuery + delivery)搬到
+ *       {@link CronTurnOrchestrator}</li>
+ *   <li>Delivery 分派搬到 {@link CronDeliveryHandler}</li>
+ * </ul>
  *
- * <h3>Session 抽象后的锁语义</h3>
+ * <p>之前的实现在 {@code AgentLoopHarness.processCronTriggers} 里,harness
+ * 因此持有 {@code channelDelivererProvider} + 大段 cron 相关逻辑。s22 架构审查
+ * 借鉴 Hermes 的 {@code cron/scheduler.py} 结构,把 cron 编排从 harness 剥离。
  *
- * <p>cron 触发的 LLM run 路由到 {@link Session#CRON_DEFAULT_ID} session
- * (见 {@link AgentLoopHarness#processCronTriggers})。
- * 本 tick 抢的也是这个 session 的 lock —— 用户跟 cron-default session 交互时
- * (理论上不应该,但 web 给了 API 能走到),会跟 cron 互斥。
+ * <h3>Cron-default lock 语义</h3>
  *
- * <p>用户跟别的 session 对话时,cron 的 {@code cron-default} lock 完全独立,
- * 不会拖累 —— 这正是引入 session 抽象后想要的隔离。
+ * <p>本 tick 仍抢 {@link Session#CRON_DEFAULT_ID} 的 lock —— 但这个 lock
+ * 现在只保护 "queue drain 本身",不再等同于"cron turn 期间"。Turn 期间的
+ * per-session lock 由 {@link CronTurnOrchestrator#processFired} 内部按
+ * {@code job.sessionId} 重新抢,让 cron turn 跟对应 session 的 web/channel
+ * 请求真正互斥。
  */
 @Component
 @Slf4j
 public class CronQueueProcessor {
 
     private final CronService service;
-    private final AgentLoopHarness harness;
+    private final CronTurnOrchestrator orchestrator;
     private final AgentLockProvider lockProvider;
 
     public CronQueueProcessor(CronService service,
-                              @Lazy AgentLoopHarness harness,
+                              CronTurnOrchestrator orchestrator,
                               AgentLockProvider lockProvider) {
         this.service = service;
-        this.harness = harness;
+        this.orchestrator = orchestrator;
         this.lockProvider = lockProvider;
     }
 
@@ -74,7 +79,7 @@ public class CronQueueProcessor {
             List<CronJob> fired = service.drainQueue();
             if (fired.isEmpty()) return;
             log.info("[Cron] processing {} fired job(s)", fired.size());
-            harness.processCronTriggers(fired);
+            orchestrator.processFired(fired);
         } catch (Exception e) {
             log.warn("[Cron] processor tick failed: {}", e.toString());
         } finally {
