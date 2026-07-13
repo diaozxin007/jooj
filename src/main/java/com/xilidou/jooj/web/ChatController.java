@@ -1,6 +1,6 @@
 package com.xilidou.jooj.web;
 
-import com.xilidou.jooj.agent.InterruptRegistry;
+import com.xilidou.jooj.agent.AgentControl;
 import com.xilidou.jooj.channel.InboundDispatcher;
 import com.xilidou.jooj.channel.InboundDispatcher.DispatchRequest;
 import com.xilidou.jooj.channel.InboundDispatcher.DispatchResult;
@@ -74,17 +74,17 @@ public class ChatController {
     private final InboundDispatcher dispatcher;
     private final CompactConfig compactConfig;
     private final TranscriptService transcriptService;
-    private final InterruptRegistry interruptRegistry;
+    private final AgentControl agentControl;
     private final ObjectMapper json = JacksonConfig.newMapper();
 
     public ChatController(InboundDispatcher dispatcher,
                           CompactConfig compactConfig,
                           TranscriptService transcriptService,
-                          InterruptRegistry interruptRegistry) {
+                          AgentControl agentControl) {
         this.dispatcher = dispatcher;
         this.compactConfig = compactConfig;
         this.transcriptService = transcriptService;
-        this.interruptRegistry = interruptRegistry;
+        this.agentControl = agentControl;
     }
 
     /**
@@ -249,7 +249,7 @@ public class ChatController {
     /**
      * s22 D-8:用户主动打断当前 turn。
      *
-     * <p>把 sessionId 登记到 {@link InterruptRegistry} 挂起集合;agentLoop 在下一个检查点
+     * <p>把 sessionId 登记到 {@link AgentControl} 挂起集合;agentLoop 在下一个检查点
      * (while 顶部 / tool 循环之间)消费 flag 并抛 {@link com.xilidou.jooj.agent.AgentInterruptedException},
      * 由 processOneQuery 兜底 append {@code [Interrupted by user]} + publish
      * {@link com.xilidou.jooj.transcript.TurnInterrupted} 事件。
@@ -272,7 +272,7 @@ public class ChatController {
         if (sessionId == null || sessionId.isBlank()) {
             return ResponseEntity.badRequest().body(error("sessionId required"));
         }
-        boolean firstRequest = interruptRegistry.request(sessionId);
+        boolean firstRequest = agentControl.requestInterrupt(sessionId);
         log.info("[Interrupt] REST request sid={} firstRequest={}", sessionId, firstRequest);
         return ResponseEntity.ok(Map.of(
                 "requested", firstRequest,

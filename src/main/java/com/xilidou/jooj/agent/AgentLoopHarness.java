@@ -205,13 +205,16 @@ public class AgentLoopHarness {
     private final ApplicationEventPublisher eventPublisher;
 
     /**
-     * s22 D-8:用户主动打断当前 turn 的登记表。agentLoop 每轮 while 顶部 + tool 循环
-     * 每次迭代前调 {@link InterruptRegistry#consumeIfRequested(String)},true 时抛
+     * s22 D-8/D-10:用户主动打断当前 turn 的控制平面。agentLoop 每轮 while 顶部 + tool 循环
+     * 每次迭代前调 {@link AgentControl#consumeInterrupt(String)},true 时抛
      * {@link AgentInterruptedException} 冒泡到 processOneQuery。
      *
-     * <p>REST endpoint {@code POST /api/chat/{sid}/interrupt} 反向调 request。
+     * <p>REST endpoint {@code POST /api/chat/{sid}/interrupt} 反向调 requestInterrupt。
+     *
+     * <p>D-10-A rename:从 {@code InterruptRegistry} 上升到 {@link AgentControl} 接口,
+     * 为 D-10-B(permission ask 冒泡)/ D-10-D(teammate 接入)铺路。
      */
-    private final InterruptRegistry interruptRegistry;
+    private final AgentControl agentControl;
 
     /**
      * 唯一构造器 —— Spring 容器装配。
@@ -236,7 +239,7 @@ public class AgentLoopHarness {
                             SessionService sessionService,
                             AgentLockProvider lockProvider,
                             ApplicationEventPublisher eventPublisher,
-                            InterruptRegistry interruptRegistry) {
+                            AgentControl agentControl) {
         this.registry = registry;
         this.json = json;
         this.hooks = hooks;
@@ -252,7 +255,7 @@ public class AgentLoopHarness {
         this.sessionService = sessionService;
         this.lockProvider = lockProvider;
         this.eventPublisher = eventPublisher;
-        this.interruptRegistry = interruptRegistry;
+        this.agentControl = agentControl;
     }
 
     // ── 核心 Agent Loop ─────────────────────────────────────────
@@ -298,10 +301,10 @@ public class AgentLoopHarness {
         var recoveryState = recoveryCoordinator.newState();
 
         while (true) {
-            // s22 D-8:每轮 turn 开始前先检查用户是否请求打断。
-            // consumeIfRequested 会同时消费并清除 flag,防止跨 turn 幽灵触发。
+            // s22 D-8/D-10:每轮 turn 开始前先检查用户是否请求打断。
+            // consumeInterrupt 会同时消费并清除 flag,防止跨 turn 幽灵触发。
             // 抛出后由 processOneQuery 兜底 catch,append [Interrupted] + publish 事件。
-            if (interruptRegistry.consumeIfRequested(sessionId)) {
+            if (agentControl.consumeInterrupt(sessionId)) {
                 throw new AgentInterruptedException(sessionId);
             }
 
@@ -388,11 +391,11 @@ public class AgentLoopHarness {
 
             List<ToolResultBlock> toolResults = new ArrayList<>();
             for (ToolUseBlock toolUse : response.toolUses()) {
-                // s22 D-8:每个 tool 之间也检查一次。已跑完的 tool 结果保留在 toolResults 里,
+                // s22 D-8/D-10:每个 tool 之间也检查一次。已跑完的 tool 结果保留在 toolResults 里,
                 // 但不会 append 回 messages —— 抛异常直接跳出循环体和 while,messages 只到
                 // 上面 add(assistant response) 那一步。processOneQuery 兜底 catch 后
                 // append [Interrupted] user 消息,LLM 下一轮能看到"我上一轮被打断了"。
-                if (interruptRegistry.consumeIfRequested(sessionId)) {
+                if (agentControl.consumeInterrupt(sessionId)) {
                     throw new AgentInterruptedException(sessionId);
                 }
 

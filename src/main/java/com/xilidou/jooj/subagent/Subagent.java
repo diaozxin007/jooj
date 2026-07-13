@@ -3,8 +3,8 @@ package com.xilidou.jooj.subagent;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xilidou.jooj.JoojProperties;
+import com.xilidou.jooj.agent.AgentControl;
 import com.xilidou.jooj.agent.AgentInterruptedException;
-import com.xilidou.jooj.agent.InterruptRegistry;
 import com.xilidou.jooj.tool.ToolRegistry;
 import com.xilidou.jooj.tool.ToolCall;
 import com.xilidou.jooj.tool.ToolDefinition;
@@ -115,12 +115,14 @@ public class Subagent {
     private final HookManager hooks;
     private final Set<String> includedTools;
     /**
-     * s22 D-9:响应用户 interrupt。Subagent 是 lead 的"内部工具",lead 被打断时 subagent
-     * 也应该停 —— 用 {@link InterruptRegistry#isRequested(String)}(**只读**,不消费)
+     * s22 D-9/D-10:响应用户 interrupt。Subagent 是 lead 的"内部工具",lead 被打断时 subagent
+     * 也应该停 —— 用 {@link AgentControl#isInterruptRequested(String)}(**只读**,不消费)
      * 检查,让 flag 保留给 lead 消费一次(subagent 抛出后 → tool_result → lead 回到 while
      * 顶部再 consume 一次)。
+     *
+     * <p>D-10-A rename:从 {@code InterruptRegistry} 上升到 {@link AgentControl} 接口。
      */
-    private final InterruptRegistry interruptRegistry;
+    private final AgentControl agentControl;
 
     /**
      * 唯一构造器 —— Spring 容器装配。
@@ -134,14 +136,14 @@ public class Subagent {
                     @Qualifier("joojObjectMapper") ObjectMapper json,
                     HookManager hooks,
                     JoojProperties props,
-                    InterruptRegistry interruptRegistry) {
+                    AgentControl agentControl) {
         this.client = client;
         this.model = props.getAnthropic().getModel();
         this.registry = registry;
         this.json = json;
         this.hooks = hooks;
         this.includedTools = DEFAULT_INCLUDED_TOOLS;
-        this.interruptRegistry = interruptRegistry;
+        this.agentControl = agentControl;
     }
 
     /**
@@ -158,7 +160,7 @@ public class Subagent {
      * s22 D-9:响应用户 interrupt 的 spawn 入口。
      *
      * <p>{@code parentSessionId} 是 lead loop 的 sessionId。Subagent 在 for turn 顶部
-     * 和 tool 循环之间调 {@link InterruptRegistry#isRequested(String)}(**只读**)
+     * 和 tool 循环之间调 {@link AgentControl#isInterruptRequested(String)}(**只读**)
      * 检查 flag,true 时抛 {@link AgentInterruptedException}。
      *
      * <p><b>为什么只读不消费</b>:flag 该由 lead 的 while 顶部消费一次 —— subagent 抛出后
@@ -246,11 +248,11 @@ public class Subagent {
      * s22 D-9:interrupt 检查点辅助方法。
      *
      * <p>{@code parentSessionId=null} 时(测试/兼容路径)跳过检查。用
-     * {@link InterruptRegistry#isRequested} 只读检查,让 flag 保留给 lead 消费。
+     * {@link AgentControl#isInterruptRequested} 只读检查,让 flag 保留给 lead 消费。
      */
     private void checkInterrupt(String parentSessionId) {
-        if (parentSessionId == null || interruptRegistry == null) return;
-        if (interruptRegistry.isRequested(parentSessionId)) {
+        if (parentSessionId == null || agentControl == null) return;
+        if (agentControl.isInterruptRequested(parentSessionId)) {
             log.info("[Subagent] interrupted by user request for parent sid={}", parentSessionId);
             throw new AgentInterruptedException(parentSessionId);
         }

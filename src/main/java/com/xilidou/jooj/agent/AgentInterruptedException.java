@@ -2,7 +2,7 @@ package com.xilidou.jooj.agent;
 
 /**
  * s22 D-8:agentLoop 主动抛出的中断信号 —— 用户通过 REST/UI 请求打断当前 turn 时,
- * {@link InterruptRegistry#consumeIfRequested(String)} 会在 loop 检查点返回 true,
+ * {@link AgentControl#consumeInterrupt(String)} 会在 loop 检查点返回 true,
  * 检查点抛此异常向 processOneQuery 冒泡,由 processOneQuery 处理后续:
  *
  * <ul>

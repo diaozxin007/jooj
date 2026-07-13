@@ -108,7 +108,7 @@ public class TaskTool implements Tool {
      * <p>Subagent 抛 {@link AgentInterruptedException} 时:
      * <ul>
      *   <li>转成 tool_result {@code [Subagent interrupted by user]} 返给 lead</li>
-     *   <li><b>不消费</b> InterruptRegistry 的 flag(Subagent 用 isRequested 只读检查)</li>
+     *   <li><b>不消费</b> AgentControl 的 flag(Subagent 用 isInterruptRequested 只读检查)</li>
      *   <li>lead 拿到 tool_result 后回到 while 顶部,{@code consumeIfRequested} 真消费 + 抛,
      *       走 D-8 已有路径(append [Interrupted by user] + publish TurnInterrupted)</li>
      * </ul>

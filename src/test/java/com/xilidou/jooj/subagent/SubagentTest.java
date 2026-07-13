@@ -1,8 +1,8 @@
 package com.xilidou.jooj.subagent;
 
 import com.xilidou.jooj.JoojTestConfig;
+import com.xilidou.jooj.agent.AgentControl;
 import com.xilidou.jooj.agent.AgentInterruptedException;
-import com.xilidou.jooj.agent.InterruptRegistry;
 import com.xilidou.jooj.tool.ToolCall;
 import com.xilidou.jooj.tool.ToolDefinition;
 import com.xilidou.jooj.tool.ToolResult;
@@ -53,12 +53,12 @@ class SubagentTest {
     @Autowired MockAnthropicClient mock;
     @Autowired HookManager hooks;
     @Autowired SpyTool spyTool;
-    @Autowired InterruptRegistry interruptRegistry;
+    @Autowired AgentControl agentControl;
 
     @BeforeEach
     void setUp() {
         spyTool.reset();
-        interruptRegistry.clear("d9-parent-sid");
+        agentControl.clearInterrupt("d9-parent-sid");
     }
 
     @Test
@@ -183,7 +183,7 @@ class SubagentTest {
     void interrupt_disabled_when_parent_sid_null() {
         mock.reset(ResponseFixtures.endTurn("done"));
         // 即使 registry 里有 flag,只要 spawn 不传 parentSid,就不该检查(向后兼容)
-        interruptRegistry.request("d9-parent-sid");
+        agentControl.requestInterrupt("d9-parent-sid");
 
         // 走无 parentSid 的 spawn(单参重载)—— 老测试路径全部走这条,不该受影响
         String result = subagent.spawn("normal task");
@@ -195,7 +195,7 @@ class SubagentTest {
     void with_parent_sid_but_no_interrupt_completes_normally() {
         mock.reset(ResponseFixtures.endTurn("all good"));
         // registry 是干净的(setUp 里 clear 过)
-        assertFalse(interruptRegistry.isRequested("d9-parent-sid"));
+        assertFalse(agentControl.isInterruptRequested("d9-parent-sid"));
 
         String result = subagent.spawn("some task", "d9-parent-sid");
         assertEquals("all good", result);
@@ -205,7 +205,7 @@ class SubagentTest {
     @DisplayName("D-9 while 顶部检查点:进入第一轮 turn 前 request → 立即抛 AgentInterruptedException")
     void interrupt_at_turn_top_before_first_llm_call() {
         // 提前 request,subagent 一进 for 循环顶部就应该抛
-        interruptRegistry.request("d9-parent-sid");
+        agentControl.requestInterrupt("d9-parent-sid");
         mock.reset(req -> {
             throw new IllegalStateException("不该发起 LLM 请求,应先命中 turn 顶部检查点");
         });
@@ -215,7 +215,7 @@ class SubagentTest {
         assertEquals("d9-parent-sid", aie.getSessionId());
 
         // **关键**:flag 应该保留 —— subagent 用 isRequested(只读),让 lead 消费
-        assertTrue(interruptRegistry.isRequested("d9-parent-sid"),
+        assertTrue(agentControl.isInterruptRequested("d9-parent-sid"),
                 "subagent 只读检查,flag 应保留给 lead 消费");
     }
 
@@ -234,7 +234,7 @@ class SubagentTest {
             @Override public void run() {
                 if (toolCount.incrementAndGet() == 1) {
                     // 第一个 tool 执行完后 request interrupt
-                    interruptRegistry.request("d9-parent-sid");
+                    agentControl.requestInterrupt("d9-parent-sid");
                 }
             }
         };

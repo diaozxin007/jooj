@@ -55,7 +55,7 @@ class InterruptIT {
     @Autowired TranscriptService transcriptService;
     @Autowired TranscriptStore transcriptStore;
     @Autowired SessionService sessionService;
-    @Autowired InterruptRegistry interruptRegistry;
+    @Autowired AgentControl agentControl;
 
     private static final String SID = "s22d8-interrupt-it";
 
@@ -65,7 +65,7 @@ class InterruptIT {
             sessionService.createWithId(SID, "D-8 interrupt IT");
         }
         harness.clearHistory(SID);
-        interruptRegistry.clear(SID);
+        agentControl.clearInterrupt(SID);
         deleteTranscriptFiles(SID);
     }
 
@@ -74,7 +74,7 @@ class InterruptIT {
         mock.reset(req -> {
             throw new IllegalStateException("test forgot to call mock.reset(...)");
         });
-        interruptRegistry.clear(SID);
+        agentControl.clearInterrupt(SID);
         deleteTranscriptFiles(SID);
     }
 
@@ -95,13 +95,13 @@ class InterruptIT {
 
         // 提前 request interrupt —— agentLoop 会在第一次 while 迭代完 tool call 后
         // 回到 while 顶部检查时消费掉,不发起第 2 轮 LLM 请求
-        interruptRegistry.request(SID);
-        assertTrue(interruptRegistry.isRequested(SID));
+        agentControl.requestInterrupt(SID);
+        assertTrue(agentControl.isInterruptRequested(SID));
 
         harness.processOneQuery(SID, "please do a thing");
 
         // consume 应发生,pending 应清空
-        assertFalse(interruptRegistry.isRequested(SID), "interrupt flag 应被消费清除");
+        assertFalse(agentControl.isInterruptRequested(SID), "interrupt flag 应被消费清除");
 
         // messages 里应有 [Interrupted by user] user 消息(打断前状态 + 打断标记)
         List<MessageParam> history = sessionService.loadHistory(SID);
@@ -132,7 +132,7 @@ class InterruptIT {
         assertEquals("assistant", lines.get(1).role(),
                 "无 interrupt 时应发 AssistantResponseCompleted 而非 TurnInterrupted");
         assertEquals("all good", lines.get(1).content());
-        assertFalse(interruptRegistry.isRequested(SID), "无 interrupt 请求,pending 应空");
+        assertFalse(agentControl.isInterruptRequested(SID), "无 interrupt 请求,pending 应空");
     }
 
     // ── 私有工具 ─────────────────────────────────────────────────

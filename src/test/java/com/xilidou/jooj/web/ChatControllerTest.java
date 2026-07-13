@@ -5,8 +5,8 @@ import com.xilidou.jooj.JoojTestConfig;
 import com.xilidou.jooj.compact.CompactConfig;
 import com.xilidou.jooj.http.MockAnthropicClient;
 import com.xilidou.jooj.http.ResponseFixtures;
+import com.xilidou.jooj.agent.AgentControl;
 import com.xilidou.jooj.agent.AgentLoopHarness;
-import com.xilidou.jooj.agent.InterruptRegistry;
 import com.xilidou.jooj.session.AgentLockProvider;
 import com.xilidou.jooj.session.Session;
 import org.junit.jupiter.api.AfterEach;
@@ -57,7 +57,7 @@ class ChatControllerTest {
     @Autowired AgentLoopHarness harness;
     @Autowired AgentLockProvider lockProvider;
     @Autowired CompactConfig compactConfig;
-    @Autowired InterruptRegistry interruptRegistry;
+    @Autowired AgentControl agentControl;
 
     @BeforeEach
     void setUp() {
@@ -65,7 +65,7 @@ class ChatControllerTest {
         // 清残留 lock 状态(上一个测试可能没释放干净)
         ReentrantLock lock = lockProvider.lockFor(SID);
         while (lock.isHeldByCurrentThread()) lock.unlock();
-        interruptRegistry.clear(SID);
+        agentControl.clearInterrupt(SID);
     }
 
     @AfterEach
@@ -262,7 +262,7 @@ class ChatControllerTest {
     @DisplayName("POST /api/chat/{sid}/interrupt 首次请求返回 requested=true,登记到 registry")
     void interrupt_first_request_returns_true() throws Exception {
         org.junit.jupiter.api.Assertions.assertFalse(
-                interruptRegistry.isRequested(SID));
+                agentControl.isInterruptRequested(SID));
 
         mvc.perform(post("/api/chat/" + SID + "/interrupt"))
                 .andExpect(status().isOk())
@@ -270,14 +270,14 @@ class ChatControllerTest {
                 .andExpect(jsonPath("$.sessionId").value(SID));
 
         org.junit.jupiter.api.Assertions.assertTrue(
-                interruptRegistry.isRequested(SID),
+                agentControl.isInterruptRequested(SID),
                 "endpoint 应把 sid 登记进 registry");
     }
 
     @Test
     @DisplayName("POST /api/chat/{sid}/interrupt 重复请求返回 requested=false(幂等)")
     void interrupt_duplicate_request_returns_false() throws Exception {
-        interruptRegistry.request(SID);  // 提前登记
+        agentControl.requestInterrupt(SID);  // 提前登记
 
         mvc.perform(post("/api/chat/" + SID + "/interrupt"))
                 .andExpect(status().isOk())
