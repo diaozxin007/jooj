@@ -87,23 +87,14 @@ public class SessionService {
      */
     private final ApplicationEventPublisher eventPublisher;
 
-    public SessionService(SessionStore store) {
-        this(store, null, null, null);
-    }
-
-    /** s21 Demo 25 2 参:接 SearchService,不接 lockProvider(向后兼容)。 */
-    public SessionService(SessionStore store, SearchService searchService) {
-        this(store, searchService, null, null);
-    }
-
-    /** 3 参构造(向后兼容 s21 Demo 26 之前的装配点)。 */
-    public SessionService(SessionStore store, SearchService searchService,
-                          AgentLockProvider lockProvider) {
-        this(store, searchService, lockProvider, null);
-    }
-
     /**
-     * 完整 4 参构造器 —— 生产 Spring 装配走这条。s22 P4 起加入 eventPublisher。
+     * s22 架构审查(2026-07-13):删除 1/2/3 参构造器 boilerplate。
+     *
+     * <p>之前 4 层 ctor 里 3 层只是"传 null 到下一层",每次加新依赖(SearchService /
+     * lockProvider / eventPublisher)都要在每一层前面再加一个 delegate,重复。
+     * 生产装配走 {@link com.xilidou.jooj.session.SessionConfiguration} 只用 4 参 ctor,
+     * 测试用 {@link #forTests(SessionStore)} 系列工厂方法(package-private static)
+     * 显式表达"我知道我在测试" 意图,不让生产代码有机会走简化 ctor 路径。
      *
      * @param lockProvider   nullable;非 null 时 delete 调 {@link AgentLockProvider#release}
      * @param eventPublisher nullable;非 null 时 clearHistory / delete publish 事件
@@ -116,6 +107,27 @@ public class SessionService {
         this.searchService = searchService;
         this.lockProvider = lockProvider;
         this.eventPublisher = eventPublisher;
+    }
+
+    // ── 测试专用工厂方法(package-private) ─────────────────────
+    //
+    // 生产代码(包外)拿不到,强制走 4 参 ctor 显式装配所有依赖。
+    // 测试跟本类同包,可直接用。命名 forTests 意图明确。
+
+    /** 测试专用:只需要 SessionStore(无 search / lock / event)。 */
+    static SessionService forTests(SessionStore store) {
+        return new SessionService(store, null, null, null);
+    }
+
+    /** 测试专用:需要 SessionStore + SearchService,不接 lock / event。 */
+    static SessionService forTests(SessionStore store, SearchService searchService) {
+        return new SessionService(store, searchService, null, null);
+    }
+
+    /** 测试专用:需要 SessionStore + SearchService + AgentLockProvider,不接 event。 */
+    static SessionService forTests(SessionStore store, SearchService searchService,
+                                   AgentLockProvider lockProvider) {
+        return new SessionService(store, searchService, lockProvider, null);
     }
 
     /**
@@ -315,15 +327,35 @@ public class SessionService {
      * 调用方拿到的是**可变** list —— 这正是 AgentLoopHarness 想要的(直接 add,
      * 不用每次 get/set)。
      *
-     * <p>如果 sessionId 不在 index 里,会**自动注册一个**(标题用 ID 自己),
-     * 这是为了让 cli-default / cron-default / "test" 这种调用方第一次就能拿到 list。
+     * <p>兼容旧行为:sessionId 不在 index 里会**自动注册一个**(标题用 ID 自己),
+     * 这是为了让 cli-default / cron-default 等调用方第一次就能拿到 list。
      * 但仍然不会突破 {@link #MAX_SESSIONS} 上限。
+     *
+     * <p>s22 架构审查(2026-07-13):新签名 {@link #loadHistory(String, boolean)}
+     * 让 caller 显式选择要不要 auto-create。本方法保留旧默认 {@code createIfMissing=true}
+     * 供 AgentLoopHarness 等业务路径使用;严格路径(比如未来某个"只读查询" API)
+     * 直接走 3 参签名传 {@code false}。
      */
     public List<MessageParam> loadHistory(String sessionId) {
+        return loadHistory(sessionId, true);
+    }
+
+    /**
+     * 显式版本:控制 sessionId 不存在时的行为。
+     *
+     * @param sessionId       目标 session id
+     * @param createIfMissing true = 沿用老 loadHistory 的"优雅注册"副作用;
+     *                        false = 严格模式,不存在则抛 {@link NoSuchElementException}
+     * @throws NoSuchElementException 当 {@code createIfMissing=false} 且 session 不存在
+     */
+    public List<MessageParam> loadHistory(String sessionId, boolean createIfMissing) {
         if (sessionId == null || sessionId.isBlank()) {
             throw new IllegalArgumentException("sessionId must not be blank");
         }
         if (!exists(sessionId)) {
+            if (!createIfMissing) {
+                throw new NoSuchElementException("session not found: " + sessionId);
+            }
             // 优雅注册:让 cli-default / cron-default 等没经过 web create 流程的 session
             // 第一次访问时也能成功。
             createWithId(sessionId, sessionId);
@@ -380,6 +412,17 @@ public class SessionService {
         } finally {
             indexLock.unlock();
         }
+        // s22 架构审查(2026-07-13):cache 一致性 —— 让 historyCache 里的引用跟
+        // caller 传入的 list 保持同步。之前的隐性假设是"caller 总传 loadHistory 返的
+        // 那个引用",AgentLoopHarness 确实这么做,但 API 契约里没写。如果未来有 caller
+        // 传新 list,cache 里的旧引用永远不会更新 —— 下次 loadHistory 拿到空/过期数据。
+        //
+        // 语义:总是 put 一份 ArrayList 副本(如果 caller 传的就是 ArrayList,直接 put;
+        // 否则包一层。null 视为空 list)。这样 cache 里永远持"当前最新写入内容"的 list。
+        List<MessageParam> cached = history == null
+                ? new ArrayList<>()
+                : (history instanceof ArrayList<MessageParam> al ? al : new ArrayList<>(history));
+        historyCache.put(sessionId, cached);
         // s22 P3-b:SearchService 索引改为事件驱动,不再在 saveHistory 尾部整盘覆盖。
         // 事件流(UserMessageReceived / ScheduledPromptFired / AssistantResponseCompleted)
         // 已经在 AgentLoopHarness 发布,SearchService 作为 EventListener 直接 append。

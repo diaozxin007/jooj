@@ -76,7 +76,7 @@ class SessionServiceSearchHookTest {
         searchStore = new SearchStore(sc);
         searchService = new SearchService(searchStore, sc);
 
-        service = new SessionService(store, searchService);
+        service = SessionService.forTests(store, searchService);
         service.ensureBootstrap();
     }
 
@@ -199,7 +199,7 @@ class SessionServiceSearchHookTest {
     @Test
     @DisplayName("SessionService 1 参 ctor 仍合法 —— 测试老路径不退化")
     void single_arg_ctor_still_works() {
-        SessionService legacy = new SessionService(store);
+        SessionService legacy = SessionService.forTests(store);
         legacy.ensureBootstrap();
         Session s = legacy.create("legacy");
         List<MessageParam> hist = legacy.loadHistory(s.id());

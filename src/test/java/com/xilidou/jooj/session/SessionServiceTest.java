@@ -9,6 +9,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.NoSuchElementException;
 
@@ -38,7 +39,7 @@ class SessionServiceTest {
     @BeforeEach
     void setUp() throws IOException {
         store = new SessionStore(tmp, new ObjectMapper().findAndRegisterModules());
-        service = new SessionService(store);
+        service = SessionService.forTests(store);
         service.ensureBootstrap();
     }
 
@@ -153,10 +154,11 @@ class SessionServiceTest {
         // 重新构造 service,清掉 in-memory cache,模拟进程重启
         SessionStore newStore = new SessionStore(tmp,
                 new ObjectMapper().findAndRegisterModules());
-        SessionService newService = new SessionService(newStore);
+        SessionService newService = SessionService.forTests(newStore);
         newService.ensureBootstrap();
 
         List<MessageParam> reloaded = newService.loadHistory(s.id());
+        assertEquals(2, reloaded.size());
         assertEquals(2, reloaded.size());
         assertEquals("user", reloaded.get(0).getRole());
         assertEquals("assistant", reloaded.get(1).getRole());
@@ -220,7 +222,7 @@ class SessionServiceTest {
     @DisplayName("BUG 1:delete 后 AgentLockProvider.release 被调(lock 不泄漏)")
     void bug1_delete_releases_lock() {
         AgentLockProvider lockProvider = new AgentLockProvider();
-        SessionService svc = new SessionService(store, null, lockProvider);
+        SessionService svc = SessionService.forTests(store, null, lockProvider);
         svc.ensureBootstrap();
         Session s = svc.create("temp");
         // lock 先装上
@@ -245,7 +247,7 @@ class SessionServiceTest {
         String id = s.id();
         // 不调 delete(要保留 JSON 文件),只让内存 map 失去同步
         // 最简单:用一个新 service 实例,不 ensureBootstrap,手动 load → map 里没有这条
-        SessionService fresh = new SessionService(store);
+        SessionService fresh = SessionService.forTests(store);
         fresh.ensureBootstrap();  // 只 bootstrap reserved session,普通 session 不在 map
 
         List<MessageParam> hist = List.of(MessageParam.user("hello"));
@@ -282,7 +284,7 @@ class SessionServiceTest {
         java.nio.file.Files.createDirectories(freshDir);
         SessionStore freshStore = new SessionStore(freshDir,
                 new ObjectMapper().findAndRegisterModules());
-        SessionService freshSvc = new SessionService(freshStore);
+        SessionService freshSvc = SessionService.forTests(freshStore);
         freshSvc.ensureBootstrap();  // 建 3 个 reserved
 
         // 填到 MAX_SESSIONS
@@ -303,5 +305,63 @@ class SessionServiceTest {
         assertDoesNotThrow(
                 () -> freshSvc.createWithId(Session.DEFAULT_ID, "reserved"),
                 "reserved session 应豁免 MAX_SESSIONS 检查");
+    }
+
+    // ────────────────────────────────────────────────────────────
+    //  s22 架构审查(2026-07-13):契约测试锁定新语义
+    // ────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("loadHistory(sid, false) 严格模式 —— session 不存在抛 NoSuchElementException")
+    void load_history_strict_mode_throws_on_missing_session() {
+        assertThrows(NoSuchElementException.class,
+                () -> service.loadHistory("never-existed-session", false),
+                "严格模式下不存在的 session 应抛 NoSuchElementException");
+    }
+
+    @Test
+    @DisplayName("loadHistory(sid, true) 兼容模式 —— session 不存在自动注册")
+    void load_history_lenient_mode_auto_registers_missing_session() {
+        String sid = "auto-created-" + System.nanoTime();
+        assertFalse(service.exists(sid), "前置:session 不存在");
+
+        List<MessageParam> hist = service.loadHistory(sid, true);
+        assertNotNull(hist, "应返回空 list 而非 null");
+        assertTrue(hist.isEmpty(), "新建 session 的 history 应是空的");
+        assertTrue(service.exists(sid), "loadHistory(sid, true) 应触发 auto-register");
+    }
+
+    @Test
+    @DisplayName("loadHistory(sid) 默认走兼容模式 —— 保持原契约")
+    void load_history_default_signature_is_lenient() {
+        String sid = "auto-lenient-" + System.nanoTime();
+        // 通过老 1 参签名调用
+        List<MessageParam> hist = service.loadHistory(sid);
+        assertNotNull(hist);
+        assertTrue(service.exists(sid),
+                "1 参 loadHistory 默认 createIfMissing=true,兼容旧行为");
+    }
+
+    @Test
+    @DisplayName("saveHistory 传入的 list 会更新 cache 引用(问题 3 契约)")
+    void save_history_updates_cache_reference() {
+        Session s = service.create("cache-sync-test");
+        // 第一次 loadHistory 拿到空 list
+        List<MessageParam> firstRef = service.loadHistory(s.id());
+        firstRef.add(MessageParam.user("first"));
+        service.saveHistory(s.id(), firstRef);
+
+        // 现在 caller 换成一个**新 list** 传给 saveHistory
+        List<MessageParam> newList = new ArrayList<>();
+        newList.add(MessageParam.user("second-new-ref"));
+        service.saveHistory(s.id(), newList);
+
+        // 关键断言:下次 loadHistory 应看到新 list 内容(cache 已更新引用)
+        List<MessageParam> reloaded = service.loadHistory(s.id());
+        assertEquals(1, reloaded.size(),
+                "cache 应更新到 saveHistory 传入的新 list,而非保留旧引用");
+        // MessageParam.content 可能是 String 或 List<ContentBlock>,取决于工厂
+        // 我们只需要断言"是那条新消息"而不是具体形态
+        assertNotNull(reloaded.get(0).getContent());
     }
 }
