@@ -119,12 +119,50 @@
         <div>
           <div class="content">
             <span class="dots"><span></span><span></span><span></span></span>
-            <span>thinking...</span>
+            <span class="loading-status">thinking...</span>
           </div>
         </div>
       </div>`;
     messages.appendChild(bubble);
     bubble.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    // s22 D-11:暴露 setter 让 poll /events 循环更新气泡文字
+    bubble.setStatus = (text) => {
+      const el = bubble.querySelector('.loading-status');
+      if (el) el.textContent = text;
+    };
+    return bubble;
+  }
+
+  /**
+   * s22 D-11:turn 期间每 800ms poll /api/chat/{sid}/events,拿到 tool 摘要事件
+   * 更新 loading bubble 的 status 文字("正在: $ mvn test")。
+   *
+   * 返回 stop() 函数,调用它取消 poll(sendQuery finally 里必调)。
+   */
+  function startEventPolling(sessionId, loadingBubble) {
+    let sinceSeq = 0;
+    let stopped = false;
+    const tick = async () => {
+      if (stopped) return;
+      try {
+        const url = `/api/chat/${encodeURIComponent(sessionId)}/events?since=${sinceSeq}`;
+        const data = await getJson(url);
+        if (stopped) return;
+        if (data.events && data.events.length > 0) {
+          const last = data.events[data.events.length - 1];
+          sinceSeq = last.seq;
+          loadingBubble.setStatus(last.summary);
+        }
+      } catch (e) {
+        // poll 失败静默 —— 不影响主 request,console 记一下就够
+        console.debug('[events poll]', e.message || e);
+      }
+      if (!stopped) setTimeout(tick, 800);
+    };
+    // 首次立即 tick,让 UI 尽早显示第一条(不用等 800ms)
+    setTimeout(tick, 200);
+    return () => { stopped = true; };
+  }
     return bubble;
   }
 
@@ -255,11 +293,14 @@
     appendBubble({ role: 'user', text: query });
     const loading = appendLoadingBubble();
     setBusy(true);
+    // s22 D-11:启动 events poll,tool 摘要实时更新到 loading 气泡
+    const stopPolling = startEventPolling(currentSessionId, loading);
     try {
       const data = await postJson('/api/chat', {
         sessionId: currentSessionId,
         query,
       });
+      stopPolling();
       loading.remove();
       appendBubble({
         role: 'assistant',
@@ -270,6 +311,7 @@
       // 发完一条更新一下 session list(messageCount 变了)
       loadSessionsList();
     } catch (e) {
+      stopPolling();
       loading.remove();
       appendBubble({
         role: 'assistant',
