@@ -1,5 +1,13 @@
 package com.xilidou.jooj.agent;
 
+import com.xilidou.jooj.agent.control.Answer;
+import com.xilidou.jooj.agent.control.AskTimeoutException;
+import com.xilidou.jooj.agent.control.PendingQuestion;
+
+import java.time.Duration;
+import java.util.List;
+import java.util.Optional;
+
 /**
  * s22 D-10:agent 循环与外部世界的**双向控制平面**。
  *
@@ -73,6 +81,59 @@ public interface AgentControl {
      */
     void clearInterrupt(String sessionId);
 
-    // ── ask 部分 (D-10-B 补) ────────────────────────────────
-    // TODO(D-10-B): ask(sid, question, timeout) —— 挂起 loop 等 REST answer
+    // ── ask 部分 (D-10-B) ──────────────────────────────────────
+
+    /**
+     * 挂起当前 agent 线程,把 question 推到 sessionId 的 pending 队列,阻塞等答复。
+     *
+     * <p><b>Web 流程</b>:
+     * <ol>
+     *   <li>agent 线程调 ask(),内部 CompletableFuture 挂起</li>
+     *   <li>REST {@code GET /pending} 看到 question,前端弹框</li>
+     *   <li>用户点"允许"→ {@code POST /answer} → {@link #answer(String, String, Answer)}
+     *       → CompletableFuture.complete → agent 线程恢复,拿到 Answer</li>
+     *   <li>如果 timeout 到,抛 {@link AskTimeoutException}</li>
+     *   <li>如果期间 lead 被 interrupt 了,ask 被 cancel,抛
+     *       {@link AgentInterruptedException}(D-10-B step 4 打通)</li>
+     * </ol>
+     *
+     * <p><b>Console 流程</b>:实现方(如 CLI ConsoleAgentControl,D-10-C 可选建)
+     * 可以走 stdin 阻塞读,不进 pending 队列。契约相同。
+     *
+     * @param sessionId 会话 ID,前端 /pending?sid=xxx 按 sid 查询
+     * @param question  待问问题
+     * @param timeout   阻塞超时,超时抛 AskTimeoutException;调用方 catch 后自行 DENY 兜底
+     * @return 用户答复
+     * @throws AskTimeoutException          超时未答
+     * @throws AgentInterruptedException    挂起期间被 interrupt(D-10-B step 4)
+     * @throws InterruptedException         线程被物理 interrupt(不是用户 signal,是 JVM 层)
+     */
+    Answer ask(String sessionId, PendingQuestion question, Duration timeout)
+            throws AskTimeoutException, AgentInterruptedException, InterruptedException;
+
+    /**
+     * REST {@code GET /pending?sessionId=xxx} 的后端逻辑:
+     * 返当前 session 挂起的所有 pending question(可能 0 或多个,常见 1 个)。
+     */
+    List<PendingQuestion> listPending(String sessionId);
+
+    /**
+     * REST {@code POST /answer} 的后端逻辑:通过 askId 找到挂起的 CompletableFuture 并 complete。
+     *
+     * @return true = 找到了并唤醒;false = askId 不存在(可能已 timeout/cancel/answered)
+     */
+    boolean answer(String sessionId, String askId, Answer answer);
+
+    /**
+     * 只读查询单个 pending(测试 / 状态排查用)。
+     */
+    Optional<PendingQuestion> findPending(String sessionId, String askId);
+
+    /**
+     * 取消 session 下所有 pending question 的等待:用户 interrupt 时调用,
+     * 让挂起的 agent 线程抛 {@link AgentInterruptedException}(D-10-B step 4)。
+     *
+     * @return 被 cancel 的 pending 数量
+     */
+    int cancelPending(String sessionId);
 }

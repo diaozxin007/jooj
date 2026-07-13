@@ -1,6 +1,11 @@
 package com.xilidou.jooj.web;
 
 import com.xilidou.jooj.agent.AgentControl;
+import com.xilidou.jooj.agent.control.AllowAnswer;
+import com.xilidou.jooj.agent.control.Answer;
+import com.xilidou.jooj.agent.control.DenyAnswer;
+import com.xilidou.jooj.agent.control.PendingQuestion;
+import com.xilidou.jooj.agent.control.PermissionQuestion;
 import com.xilidou.jooj.channel.InboundDispatcher;
 import com.xilidou.jooj.channel.InboundDispatcher.DispatchRequest;
 import com.xilidou.jooj.channel.InboundDispatcher.DispatchResult;
@@ -277,6 +282,125 @@ public class ChatController {
         return ResponseEntity.ok(Map.of(
                 "requested", firstRequest,
                 "sessionId", sessionId));
+    }
+
+    /**
+     * s22 D-10-B:查询当前 session 挂起的 pending question(0 或多个)。
+     *
+     * <p>前端每秒 poll 一次;pending 非空时弹对话框。
+     *
+     * <p><b>Response 格式</b>:
+     * <pre>
+     *   {
+     *     "sessionId": "sid-xxx",
+     *     "pending": [
+     *       {
+     *         "askId": "uuid",
+     *         "type": "permission",
+     *         "askedAt": "2026-07-13T12:34:56.789Z",
+     *         "toolName": "bash",         // 各 question 类型自己的字段
+     *         "toolInput": "{cmd: rm -rf}",
+     *         "reason": "matched destructive command pattern"
+     *       }
+     *     ]
+     *   }
+     * </pre>
+     */
+    @GetMapping("/chat/{sessionId}/pending")
+    public ResponseEntity<?> pending(@PathVariable String sessionId) {
+        if (sessionId == null || sessionId.isBlank()) {
+            return ResponseEntity.badRequest().body(error("sessionId required"));
+        }
+        List<PendingQuestion> list = agentControl.listPending(sessionId);
+        // 每种 question 类型自己 flatten 一遍 —— 目前只有 permission
+        List<Map<String, Object>> serialized = new ArrayList<>(list.size());
+        for (PendingQuestion q : list) {
+            Map<String, Object> item = new java.util.LinkedHashMap<>();
+            item.put("askId", q.askId());
+            item.put("type", q.type());
+            item.put("askedAt", q.askedAt().toString());
+            if (q instanceof PermissionQuestion pq) {
+                item.put("toolName", pq.toolName());
+                item.put("toolInput", pq.toolInput());
+                item.put("reason", pq.reason());
+            }
+            serialized.add(item);
+        }
+        return ResponseEntity.ok(Map.of(
+                "sessionId", sessionId,
+                "pending", serialized));
+    }
+
+    /**
+     * s22 D-10-B:回复挂起的 pending question,唤醒 agent 线程。
+     *
+     * <p><b>Request 格式</b>:
+     * <pre>
+     *   POST /api/chat/{sid}/answer
+     *   {
+     *     "askId": "uuid",
+     *     "decision": "allow" | "deny",
+     *     "reason": "..." (仅 deny 时可选)
+     *   }
+     * </pre>
+     *
+     * <p><b>返回</b>:
+     * <ul>
+     *   <li>200 { answered: true, sessionId, askId } —— 成功唤醒 agent</li>
+     *   <li>400 —— 参数缺失 / decision 值非法</li>
+     *   <li>404 —— askId 不存在(可能已 timeout / cancel / 重复 answer)</li>
+     *   <li>409 —— askId 存在但 future 已完成(重复 answer,罕见但可能)</li>
+     * </ul>
+     */
+    @PostMapping("/chat/{sessionId}/answer")
+    public ResponseEntity<?> answer(@PathVariable String sessionId,
+                                    @RequestBody AnswerRequest req) {
+        if (sessionId == null || sessionId.isBlank()) {
+            return ResponseEntity.badRequest().body(error("sessionId required"));
+        }
+        if (req == null || req.askId == null || req.askId.isBlank()) {
+            return ResponseEntity.badRequest().body(error("askId required"));
+        }
+        if (req.decision == null) {
+            return ResponseEntity.badRequest().body(error("decision required ('allow' or 'deny')"));
+        }
+
+        // 先看 pending 是否还在(区分 404 vs 409)
+        if (agentControl.findPending(sessionId, req.askId).isEmpty()) {
+            return ResponseEntity.status(404).body(error(
+                    "askId not found (may have timed out, been cancelled, or already answered)"));
+        }
+
+        Answer answer = switch (req.decision.toLowerCase()) {
+            case "allow" -> AllowAnswer.INSTANCE;
+            case "deny" -> new DenyAnswer(req.reason != null && !req.reason.isBlank()
+                    ? req.reason : "user rejected");
+            default -> null;
+        };
+        if (answer == null) {
+            return ResponseEntity.badRequest().body(error(
+                    "decision must be 'allow' or 'deny', got: " + req.decision));
+        }
+
+        boolean ok = agentControl.answer(sessionId, req.askId, answer);
+        if (!ok) {
+            // 找到过 pending 但 future 已完成(极小概率:另一个线程刚 timeout/cancel)
+            return ResponseEntity.status(409).body(error(
+                    "askId is no longer waiting (race with timeout/cancel)"));
+        }
+        log.info("[Answer] REST answered sid={} askId={} decision={}",
+                sessionId, req.askId, req.decision);
+        return ResponseEntity.ok(Map.of(
+                "answered", true,
+                "sessionId", sessionId,
+                "askId", req.askId));
+    }
+
+    /** JSON DTO for {@link #answer(String, AnswerRequest)}. */
+    public static class AnswerRequest {
+        public String askId;
+        public String decision;
+        public String reason;
     }
 
     // ─────────────────────────────────────────────────────────────

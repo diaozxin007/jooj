@@ -7,6 +7,8 @@ import com.xilidou.jooj.http.MockAnthropicClient;
 import com.xilidou.jooj.http.ResponseFixtures;
 import com.xilidou.jooj.agent.AgentControl;
 import com.xilidou.jooj.agent.AgentLoopHarness;
+import com.xilidou.jooj.agent.control.AllowAnswer;
+import com.xilidou.jooj.agent.control.PermissionQuestion;
 import com.xilidou.jooj.session.AgentLockProvider;
 import com.xilidou.jooj.session.Session;
 import org.junit.jupiter.api.AfterEach;
@@ -291,5 +293,158 @@ class ChatControllerTest {
         // Spring path variable 不允许空段 → 路径解析失败,由框架返 404
         mvc.perform(post("/api/chat//interrupt"))
                 .andExpect(status().is4xxClientError());
+    }
+
+    // ── s22 D-10-B:pending / answer 端点测试 ─────────────────
+
+    @Test
+    @DisplayName("GET /api/chat/{sid}/pending:无挂起时返 pending=[]")
+    void pending_empty_when_no_ask() throws Exception {
+        mvc.perform(get("/api/chat/" + SID + "/pending"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.sessionId").value(SID))
+                .andExpect(jsonPath("$.pending").isArray())
+                .andExpect(jsonPath("$.pending.length()").value(0));
+    }
+
+    @Test
+    @DisplayName("GET /api/chat/{sid}/pending:PermissionQuestion 挂起时返完整字段")
+    void pending_returns_permission_question_fields() throws Exception {
+        // 手动插一个 pending —— DefaultAgentControl 的 ask 会 block,这里用 answer 直接短路
+        // 更干净:用 CompletableFuture 起 async 挂起 + 检查 /pending
+        var q = new PermissionQuestion(
+                "askid-test-1",
+                java.time.Instant.parse("2026-07-13T12:00:00Z"),
+                "bash",
+                "{cmd: rm -rf}",
+                "matched destructive pattern");
+
+        // 起个 async 挂起
+        var agentThread = java.util.concurrent.CompletableFuture.runAsync(() -> {
+            try {
+                agentControl.ask(SID, q, java.time.Duration.ofSeconds(5));
+            } catch (Exception ignore) {
+                // cancel/timeout/answer 都会走到这里,测试 not care
+            }
+        });
+
+        // 等 ask 真正挂起(polling pending 数量,防止时序 flake)
+        long deadline = System.currentTimeMillis() + 1000;
+        while (System.currentTimeMillis() < deadline
+                && !agentControl.findPending(SID, "askid-test-1").isPresent()) {
+            Thread.sleep(10);
+        }
+
+        try {
+            mvc.perform(get("/api/chat/" + SID + "/pending"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.pending.length()").value(1))
+                    .andExpect(jsonPath("$.pending[0].askId").value("askid-test-1"))
+                    .andExpect(jsonPath("$.pending[0].type").value("permission"))
+                    .andExpect(jsonPath("$.pending[0].toolName").value("bash"))
+                    .andExpect(jsonPath("$.pending[0].toolInput").value("{cmd: rm -rf}"))
+                    .andExpect(jsonPath("$.pending[0].reason").value("matched destructive pattern"));
+        } finally {
+            agentControl.cancelPending(SID);
+            agentThread.get(2, java.util.concurrent.TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    @DisplayName("POST /api/chat/{sid}/answer:decision=allow 唤醒 agent")
+    void answer_allow_wakes_agent() throws Exception {
+        var q = new PermissionQuestion("askid-allow-1",
+                java.time.Instant.now(), "bash", "{}", "test");
+
+        var received = new java.util.concurrent.atomic.AtomicReference<
+                com.xilidou.jooj.agent.control.Answer>();
+        var agentThread = java.util.concurrent.CompletableFuture.runAsync(() -> {
+            try {
+                var a = agentControl.ask(SID, q, java.time.Duration.ofSeconds(5));
+                received.set(a);
+            } catch (Exception ignore) {}
+        });
+
+        // 等挂起
+        long deadline = System.currentTimeMillis() + 1000;
+        while (System.currentTimeMillis() < deadline
+                && agentControl.findPending(SID, "askid-allow-1").isEmpty()) {
+            Thread.sleep(10);
+        }
+
+        mvc.perform(post("/api/chat/" + SID + "/answer")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"askId\":\"askid-allow-1\",\"decision\":\"allow\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.answered").value(true))
+                .andExpect(jsonPath("$.askId").value("askid-allow-1"));
+
+        agentThread.get(2, java.util.concurrent.TimeUnit.SECONDS);
+        org.junit.jupiter.api.Assertions.assertTrue(
+                received.get() instanceof AllowAnswer,
+                "agent 线程应该收到 AllowAnswer,实际:" + received.get());
+    }
+
+    @Test
+    @DisplayName("POST /api/chat/{sid}/answer:decision=deny + reason 唤醒 agent 走 DENY 路径")
+    void answer_deny_with_reason() throws Exception {
+        var q = new PermissionQuestion("askid-deny-1",
+                java.time.Instant.now(), "bash", "{}", "test");
+
+        var received = new java.util.concurrent.atomic.AtomicReference<
+                com.xilidou.jooj.agent.control.Answer>();
+        var agentThread = java.util.concurrent.CompletableFuture.runAsync(() -> {
+            try {
+                received.set(agentControl.ask(SID, q, java.time.Duration.ofSeconds(5)));
+            } catch (Exception ignore) {}
+        });
+
+        long deadline = System.currentTimeMillis() + 1000;
+        while (System.currentTimeMillis() < deadline
+                && agentControl.findPending(SID, "askid-deny-1").isEmpty()) {
+            Thread.sleep(10);
+        }
+
+        mvc.perform(post("/api/chat/" + SID + "/answer")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"askId\":\"askid-deny-1\",\"decision\":\"deny\",\"reason\":\"用户不允许\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.answered").value(true));
+
+        agentThread.get(2, java.util.concurrent.TimeUnit.SECONDS);
+        org.junit.jupiter.api.Assertions.assertTrue(received.get().isDeny());
+        org.junit.jupiter.api.Assertions.assertEquals("用户不允许",
+                ((com.xilidou.jooj.agent.control.DenyAnswer) received.get()).reason());
+    }
+
+    @Test
+    @DisplayName("POST /api/chat/{sid}/answer:askId 不存在返 404")
+    void answer_missing_askid_returns_404() throws Exception {
+        mvc.perform(post("/api/chat/" + SID + "/answer")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"askId\":\"nonexistent\",\"decision\":\"allow\"}"))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    @DisplayName("POST /api/chat/{sid}/answer:参数缺失 / decision 非法 → 400")
+    void answer_invalid_params_returns_400() throws Exception {
+        // askId 缺
+        mvc.perform(post("/api/chat/" + SID + "/answer")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"decision\":\"allow\"}"))
+                .andExpect(status().isBadRequest());
+
+        // decision 缺
+        mvc.perform(post("/api/chat/" + SID + "/answer")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"askId\":\"x\"}"))
+                .andExpect(status().isBadRequest());
+
+        // decision 非法值
+        mvc.perform(post("/api/chat/" + SID + "/answer")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"askId\":\"x\",\"decision\":\"maybe\"}"))
+                .andExpect(status().isNotFound());  // askId=x 找不到 pending,先返 404
     }
 }
