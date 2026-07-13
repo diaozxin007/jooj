@@ -33,7 +33,11 @@ jooj:
   compact:
     max-messages: 50
     snip-head-keep: 3
-    keep-recent: 3
+    # keep-recent: 保留最近 N 个 tool_result 原文;更早的替换成 placeholder
+    # 3 太激进 —— 读代码/多步调查场景往往需要跨 10+ 轮 tool 参考,3 个原文让 LLM
+    # 只看得到最近一两次 grep/sed 结果,历史全变 placeholder,失去上下文。
+    # 15 覆盖典型"探索一个功能"链路(5-8 次 read + 5-8 次 grep + 少量 bash)。
+    keep-recent: 15
     min-placeholder-len: 120
     max-tool-result-bytes: 10000
     summary-head-keep: 3

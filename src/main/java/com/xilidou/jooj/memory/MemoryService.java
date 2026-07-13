@@ -124,6 +124,38 @@ public class MemoryService {
      * </ul>
      */
     public void onTurnEnd(List<MessageParam> messages) {
+        // s22 架构审查:extractor + consolidator 之前同步跑,让每个 turn 多花 ~4 秒
+        // (extract LLM 调用) + 可能的 consolidate LLM 调用。挪到 BgExecutor 异步。
+        //
+        // 权衡:异步后"上一轮抽的 fact" 可能不能保证下一轮 loadRelevant 就能看到
+        // (BgExecutor 慢时抽还没跑完)。可接受:
+        //   1. 用户下一句话不一定立刻要用刚抽的 fact
+        //   2. 再下下轮总能拿到
+        //   3. Turn 快 4 秒 > 少数场景延迟 1 轮拿新 fact
+        //
+        // 兜底:reviewExecutor 为 null 时(测试 / 单元测试),仍同步跑,保证测试
+        // 断言"extract 完成后能立即 read" 不破。
+        if (reviewExecutor != null && messages != null && !messages.isEmpty()) {
+            // 异步路径:extract + consolidate + review 都进 BgExecutor
+            // 拷 snapshot:主线程后续可能 mutate messages
+            final List<MessageParam> snapshot = List.copyOf(messages);
+            try {
+                reviewExecutor.execute(() -> runExtractConsolidateReview(snapshot));
+            } catch (java.util.concurrent.RejectedExecutionException e) {
+                log.warn("[Memory] async pipeline rejected, falling back to sync: {}", e.toString());
+                runExtractConsolidateReview(messages);
+            }
+        } else {
+            // 同步路径(测试 / null executor 兜底)
+            runExtractConsolidateReview(messages);
+        }
+    }
+
+    /**
+     * s22 架构审查:提取 extract → consolidate → review 三段逻辑,让 onTurnEnd 可选
+     * "同步 vs 异步"包装,不重复分支。
+     */
+    private void runExtractConsolidateReview(List<MessageParam> messages) {
         try {
             extractor.extract(messages);
         } catch (Exception e) {
@@ -134,24 +166,12 @@ public class MemoryService {
         } catch (Exception e) {
             log.warn("[Memory] consolidate failed: {}", e.toString());
         }
-        // s21 Demo 26:异步 background review。null 安全,任一组件没装就跳过。
-        if (reviewer != null && reviewExecutor != null && messages != null && !messages.isEmpty()) {
-            // 拷一份 immutable snapshot:reviewer 在另一个线程跑,主线程后续可能再 mutate messages
-            // (Demo 25 副作用 v3 的 send-time scrub 等),不能让两边竞争同一个 list
-            final List<MessageParam> snapshot = List.copyOf(messages);
+        // s21 Demo 26:background review 在同一异步 pipeline 里跑
+        if (reviewer != null && messages != null && !messages.isEmpty()) {
             try {
-                reviewExecutor.execute(() -> {
-                    try {
-                        reviewer.review(snapshot);
-                    } catch (Throwable t) {
-                        // 双层 try:executor 内部任何异常都吞,不让 bg 线程死
-                        log.warn("[Memory:Review] async review threw: {}", t.toString());
-                    }
-                });
-            } catch (java.util.concurrent.RejectedExecutionException e) {
-                // 池满 + AbortPolicy 才会触发;BgExecutor 用 CallerRunsPolicy 不会到这里,
-                // 但万一未来换 executor 仍兜底 —— review 不能挡 onTurnEnd 主路径
-                log.warn("[Memory:Review] executor rejected, skipping review: {}", e.toString());
+                reviewer.review(messages);
+            } catch (Throwable t) {
+                log.warn("[Memory:Review] review threw: {}", t.toString());
             }
         }
     }
