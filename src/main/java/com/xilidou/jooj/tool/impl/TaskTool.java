@@ -107,6 +107,18 @@ public class TaskTool implements Tool {
      *       走 D-8 已有路径</li>
      * </ul>
      */
+    /**
+     * s22 D-11:摘要 —— {@code 🧠 task: <description 前 50 字>}。
+     */
+    @Override
+    public String summary(ToolCall call) {
+        if (call == null || call.getArguments() == null) return "🧠 task";
+        Object desc = call.getArguments().get("description");
+        String s = desc == null ? "" : desc.toString();
+        if (s.length() > 50) s = s.substring(0, 50) + "...";
+        return "🧠 task: " + s;
+    }
+
     @Override
     public ToolResult execute(ToolCall call) {
         if (!"task".equals(call.getToolName())) {

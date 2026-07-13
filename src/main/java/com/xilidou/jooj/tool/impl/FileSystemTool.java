@@ -139,6 +139,39 @@ public class FileSystemTool implements Tool {
     }
 
     /**
+     * s22 D-11:file tool 摘要 —— 按具体子命令展示 emoji + path/pattern。
+     * <ul>
+     *   <li>read_file → 📖 path[:limit]</li>
+     *   <li>write_file → 💾 path</li>
+     *   <li>edit_file → ✏️ path</li>
+     *   <li>glob → 🔍 pattern</li>
+     * </ul>
+     */
+    @Override
+    public String summary(ToolCall call) {
+        if (call == null) return getName();
+        Map<String, Object> args = call.getArguments() == null ? Map.of() : call.getArguments();
+        String name = call.getToolName();
+        String path = firstNonNull((String) args.get("path"), (String) args.get("pattern"), "");
+        if (path.length() > 60) path = "..." + path.substring(path.length() - 57);
+        return switch (name) {
+            case "read_file" -> {
+                Object limit = args.get("limit");
+                yield limit != null ? "📖 " + path + ":" + limit : "📖 " + path;
+            }
+            case "write_file" -> "💾 " + path;
+            case "edit_file" -> "✏️ " + path;
+            case "glob" -> "🔍 " + path;
+            default -> name + "(" + path + ")";
+        };
+    }
+
+    private static String firstNonNull(String... vals) {
+        for (String v : vals) if (v != null) return v;
+        return "";
+    }
+
+    /**
      * s18 新签名 —— 按 {@link ExecutionContext#cwd} 决定相对路径解析基准。
      *
      * <p>{@code resolveBase}(等于 ctx.cwd 或 workdir)用来:

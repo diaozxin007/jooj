@@ -96,6 +96,18 @@ public class SessionSearchTool implements Tool {
         ));
     }
 
+    /**
+     * s22 D-11:摘要 —— {@code 🔎 "<query>"}。
+     */
+    @Override
+    public String summary(ToolCall call) {
+        if (call == null || call.getArguments() == null) return "🔎 search";
+        Object q = call.getArguments().get("query");
+        String s = q == null ? "" : q.toString();
+        if (s.length() > 50) s = s.substring(0, 50) + "...";
+        return "🔎 \"" + s + "\"";
+    }
+
     @Override
     public ToolResult execute(ToolCall call) {
         if (!"session_search".equals(call.getToolName())) {

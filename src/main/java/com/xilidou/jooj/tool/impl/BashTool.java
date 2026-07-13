@@ -82,6 +82,21 @@ public class BashTool implements Tool {
      * <p>cwd null → fallback {@code user.dir}(跟 s17 行为完全一致)。
      * cwd 非 null → 进程切到 worktree 路径执行(队友隔离场景)。
      */
+    /**
+     * s22 D-11:摘要 = {@code $ <command>}(60 字截断,加 [bg] 标记如果 run_in_background)。
+     * 前端 loading 气泡显示 "$ rm -rf build/",比默认 {@code bash({command=rm -rf build/})} 友好。
+     */
+    @Override
+    public String summary(ToolCall call) {
+        if (call == null || call.getArguments() == null) return "$ ";
+        Object cmd = call.getArguments().get("command");
+        String s = cmd == null ? "" : cmd.toString();
+        if (s.length() > 60) s = s.substring(0, 60) + "...";
+        Object bg = call.getArguments().get("run_in_background");
+        boolean isBg = bg instanceof Boolean b && b;
+        return (isBg ? "[bg] $ " : "$ ") + s;
+    }
+
     @Override
     public ToolResult execute(ToolCall call, ExecutionContext ctx) {
         if (!"bash".equals(call.getToolName())) {

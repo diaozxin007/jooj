@@ -156,6 +156,25 @@ public class TeamTool implements Tool {
      * <p>Interrupt 覆盖:teammate 内部 outer while 也调 {@code isInterruptRequested(sid)},
      * lead 被 interrupt 时同 sid 下所有 teammate 下一个检查点一并停。
      */
+    /**
+     * s22 D-11:team tool 摘要 —— 按子命令展示动作。
+     */
+    @Override
+    public String summary(ToolCall call) {
+        if (call == null) return getName();
+        Map<String, Object> args = call.getArguments() == null ? Map.of() : call.getArguments();
+        return switch (call.getToolName()) {
+            case "spawn_teammate" -> "👥 spawn " + args.getOrDefault("name", "?")
+                    + " as " + args.getOrDefault("role", "?");
+            case "send_message" -> "💬 → " + args.getOrDefault("to", "?");
+            case "check_inbox" -> "📥 check inbox";
+            case "request_shutdown" -> "🛑 shutdown " + args.getOrDefault("name", "?");
+            case "request_plan" -> "📋 plan from " + args.getOrDefault("name", "?");
+            case "review_plan" -> "📝 review plan " + args.getOrDefault("plan_id", "?");
+            default -> call.getToolName();
+        };
+    }
+
     @Override
     public ToolResult execute(ToolCall call) {
         try {
