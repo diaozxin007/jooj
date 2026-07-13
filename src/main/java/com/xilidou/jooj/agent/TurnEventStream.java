@@ -74,9 +74,12 @@ public class TurnEventStream {
     public void push(String sessionId, TurnEvent event) {
         if (sessionId == null || sessionId.isBlank() || event == null) return;
         SessionEvents se = sessions.computeIfAbsent(sessionId, k -> new SessionEvents());
-        long seq = se.nextSeq.getAndIncrement();
-        TurnEvent stamped = new TurnEvent(seq, event.at(), event.type(), event.summary());
+        long seq;
+        // 整个 seq 分配 + offer 必须在同一 sync 块 —— 否则两个线程 race 到不同 seq 后
+        // offer 的顺序可能颠倒(先拿 seq 的线程晚 offer),违反 deque 里 seq 单调递增契约
         synchronized (se.deque) {
+            seq = se.nextSeq.getAndIncrement();
+            TurnEvent stamped = new TurnEvent(seq, event.at(), event.type(), event.summary());
             if (se.deque.size() >= MAX_PER_SESSION) {
                 se.deque.pollFirst();  // 丢最老
             }

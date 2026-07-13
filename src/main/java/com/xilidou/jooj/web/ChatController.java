@@ -1,6 +1,8 @@
 package com.xilidou.jooj.web;
 
 import com.xilidou.jooj.agent.AgentControl;
+import com.xilidou.jooj.agent.TurnEvent;
+import com.xilidou.jooj.agent.TurnEventStream;
 import com.xilidou.jooj.agent.control.AllowAnswer;
 import com.xilidou.jooj.agent.control.Answer;
 import com.xilidou.jooj.agent.control.DenyAnswer;
@@ -80,16 +82,20 @@ public class ChatController {
     private final CompactConfig compactConfig;
     private final TranscriptService transcriptService;
     private final AgentControl agentControl;
+    /** s22 D-11:agent turn 期间 tool 摘要事件流,前端 poll 拿实时进度。 */
+    private final TurnEventStream turnEventStream;
     private final ObjectMapper json = JacksonConfig.newMapper();
 
     public ChatController(InboundDispatcher dispatcher,
                           CompactConfig compactConfig,
                           TranscriptService transcriptService,
-                          AgentControl agentControl) {
+                          AgentControl agentControl,
+                          TurnEventStream turnEventStream) {
         this.dispatcher = dispatcher;
         this.compactConfig = compactConfig;
         this.transcriptService = transcriptService;
         this.agentControl = agentControl;
+        this.turnEventStream = turnEventStream;
     }
 
     /**
@@ -306,6 +312,56 @@ public class ChatController {
      *   }
      * </pre>
      */
+    /**
+     * s22 D-11:查询 agent turn 期间产生的**摘要事件流**,给前端 poll 更新 loading 气泡。
+     *
+     * <p>前端 turn 期间每 800ms poll,拿 seq > {@code since} 的增量事件,更新 UI:
+     * <pre>
+     *   ▶ 正在执行: $ mvn test
+     *   ▶ 正在执行: [sub] 📖 pom.xml
+     *   ▶ 正在执行: [teammate:alice] 🔎 "user auth"
+     * </pre>
+     *
+     * <p>用完即弃语义:{@code turnEventStream.clear(sid)} 在 processOneQuery 结束调
+     * (D-11-c),下一 turn 从 seq=1 重新开始。前端 turn 开始时 since=0 拉全量,
+     * 之后传上次 max seq 拉增量。
+     *
+     * <p><b>Response 格式</b>:
+     * <pre>
+     *   {
+     *     "sessionId": "sid-xxx",
+     *     "latestSeq": 42,
+     *     "events": [
+     *       {"seq": 41, "at": "2026-07-13T12:34:56Z", "type": "tool_start", "summary": "$ mvn test"},
+     *       {"seq": 42, "at": "2026-07-13T12:34:59Z", "type": "tool_start", "summary": "📖 pom.xml"}
+     *     ]
+     *   }
+     * </pre>
+     *
+     * <p>{@code events} 为空数组时 {@code latestSeq} 仍返当前值,前端下次可继续 since 从此。
+     */
+    @GetMapping("/chat/{sessionId}/events")
+    public ResponseEntity<?> events(@PathVariable String sessionId,
+                                    @RequestParam(defaultValue = "0") long since) {
+        if (sessionId == null || sessionId.isBlank()) {
+            return ResponseEntity.badRequest().body(error("sessionId required"));
+        }
+        List<TurnEvent> events = turnEventStream.since(sessionId, since);
+        List<Map<String, Object>> serialized = new ArrayList<>(events.size());
+        for (TurnEvent e : events) {
+            Map<String, Object> item = new java.util.LinkedHashMap<>();
+            item.put("seq", e.seq());
+            item.put("at", e.at().toString());
+            item.put("type", e.type());
+            item.put("summary", e.summary());
+            serialized.add(item);
+        }
+        return ResponseEntity.ok(Map.of(
+                "sessionId", sessionId,
+                "latestSeq", turnEventStream.latestSeq(sessionId),
+                "events", serialized));
+    }
+
     @GetMapping("/chat/{sessionId}/pending")
     public ResponseEntity<?> pending(@PathVariable String sessionId) {
         if (sessionId == null || sessionId.isBlank()) {

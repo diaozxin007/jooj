@@ -60,6 +60,7 @@ class ChatControllerTest {
     @Autowired AgentLockProvider lockProvider;
     @Autowired CompactConfig compactConfig;
     @Autowired AgentControl agentControl;
+    @Autowired com.xilidou.jooj.agent.TurnEventStream turnEventStream;
 
     @BeforeEach
     void setUp() {
@@ -446,5 +447,64 @@ class ChatControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"askId\":\"x\",\"decision\":\"maybe\"}"))
                 .andExpect(status().isNotFound());  // askId=x 找不到 pending,先返 404
+    }
+
+    // ── s22 D-11:events 端点测试 ─────────────────────────────
+
+    @Test
+    @DisplayName("GET /api/chat/{sid}/events:无事件时返 events=[],latestSeq=0")
+    void events_empty_when_no_pushes() throws Exception {
+        turnEventStream.clear(SID);
+        mvc.perform(get("/api/chat/" + SID + "/events"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.sessionId").value(SID))
+                .andExpect(jsonPath("$.events").isArray())
+                .andExpect(jsonPath("$.events.length()").value(0))
+                .andExpect(jsonPath("$.latestSeq").value(0));
+    }
+
+    @Test
+    @DisplayName("GET /api/chat/{sid}/events:push 后返完整字段")
+    void events_returns_pushed_summaries() throws Exception {
+        turnEventStream.clear(SID);
+        turnEventStream.push(SID, com.xilidou.jooj.agent.TurnEvent.toolStart("$ mvn test"));
+        turnEventStream.push(SID, com.xilidou.jooj.agent.TurnEvent.toolStart("📖 pom.xml"));
+
+        mvc.perform(get("/api/chat/" + SID + "/events"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.events.length()").value(2))
+                .andExpect(jsonPath("$.events[0].seq").value(1))
+                .andExpect(jsonPath("$.events[0].type").value("tool_start"))
+                .andExpect(jsonPath("$.events[0].summary").value("$ mvn test"))
+                .andExpect(jsonPath("$.events[1].seq").value(2))
+                .andExpect(jsonPath("$.events[1].summary").value("📖 pom.xml"))
+                .andExpect(jsonPath("$.latestSeq").value(2));
+
+        turnEventStream.clear(SID);
+    }
+
+    @Test
+    @DisplayName("GET /api/chat/{sid}/events?since=N:增量返 seq > N")
+    void events_since_returns_delta_only() throws Exception {
+        turnEventStream.clear(SID);
+        turnEventStream.push(SID, com.xilidou.jooj.agent.TurnEvent.toolStart("a"));
+        turnEventStream.push(SID, com.xilidou.jooj.agent.TurnEvent.toolStart("b"));
+        turnEventStream.push(SID, com.xilidou.jooj.agent.TurnEvent.toolStart("c"));
+
+        mvc.perform(get("/api/chat/" + SID + "/events?since=2"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.events.length()").value(1))
+                .andExpect(jsonPath("$.events[0].seq").value(3))
+                .andExpect(jsonPath("$.events[0].summary").value("c"))
+                .andExpect(jsonPath("$.latestSeq").value(3));
+
+        turnEventStream.clear(SID);
+    }
+
+    @Test
+    @DisplayName("GET /api/chat//events(空 sid)返 4xx")
+    void events_missing_sid_returns_4xx() throws Exception {
+        mvc.perform(get("/api/chat//events"))
+                .andExpect(status().is4xxClientError());
     }
 }
