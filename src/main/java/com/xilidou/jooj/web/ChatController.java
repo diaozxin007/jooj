@@ -1,5 +1,6 @@
 package com.xilidou.jooj.web;
 
+import com.xilidou.jooj.agent.InterruptRegistry;
 import com.xilidou.jooj.channel.InboundDispatcher;
 import com.xilidou.jooj.channel.InboundDispatcher.DispatchRequest;
 import com.xilidou.jooj.channel.InboundDispatcher.DispatchResult;
@@ -73,14 +74,17 @@ public class ChatController {
     private final InboundDispatcher dispatcher;
     private final CompactConfig compactConfig;
     private final TranscriptService transcriptService;
+    private final InterruptRegistry interruptRegistry;
     private final ObjectMapper json = JacksonConfig.newMapper();
 
     public ChatController(InboundDispatcher dispatcher,
                           CompactConfig compactConfig,
-                          TranscriptService transcriptService) {
+                          TranscriptService transcriptService,
+                          InterruptRegistry interruptRegistry) {
         this.dispatcher = dispatcher;
         this.compactConfig = compactConfig;
         this.transcriptService = transcriptService;
+        this.interruptRegistry = interruptRegistry;
     }
 
     /**
@@ -240,6 +244,39 @@ public class ChatController {
             return ResponseEntity.status(409).body(error("Session busy. Please retry."));
         }
         return ResponseEntity.ok(new ChatResponse(null, 0, List.of(), List.of()));
+    }
+
+    /**
+     * s22 D-8:用户主动打断当前 turn。
+     *
+     * <p>把 sessionId 登记到 {@link InterruptRegistry} 挂起集合;agentLoop 在下一个检查点
+     * (while 顶部 / tool 循环之间)消费 flag 并抛 {@link com.xilidou.jooj.agent.AgentInterruptedException},
+     * 由 processOneQuery 兜底 append {@code [Interrupted by user]} + publish
+     * {@link com.xilidou.jooj.transcript.TurnInterrupted} 事件。
+     *
+     * <p><b>不 block 等 turn 真结束</b>:endpoint 立即返 200(登记成功) / 400(sid 空)。
+     * 前端应该:
+     * <ol>
+     *   <li>发起 POST /interrupt(不 await 结果)</li>
+     *   <li>继续等待原来那个 POST /chat 请求返回 —— 拿到的 response 会是"截断到打断点"的状态</li>
+     * </ol>
+     *
+     * <p>幂等:重复调返 200 但 body 里 {@code requested=false},表示已在挂起状态。
+     * 前端可用于判断"我上次点了没?"。
+     *
+     * @param sessionId 目标 session
+     * @return 200 with { requested: true|false, sessionId }
+     */
+    @PostMapping("/chat/{sessionId}/interrupt")
+    public ResponseEntity<?> interrupt(@PathVariable String sessionId) {
+        if (sessionId == null || sessionId.isBlank()) {
+            return ResponseEntity.badRequest().body(error("sessionId required"));
+        }
+        boolean firstRequest = interruptRegistry.request(sessionId);
+        log.info("[Interrupt] REST request sid={} firstRequest={}", sessionId, firstRequest);
+        return ResponseEntity.ok(Map.of(
+                "requested", firstRequest,
+                "sessionId", sessionId));
     }
 
     // ─────────────────────────────────────────────────────────────
