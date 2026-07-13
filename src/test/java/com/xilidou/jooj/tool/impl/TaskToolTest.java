@@ -1,5 +1,6 @@
 package com.xilidou.jooj.tool.impl;
 
+import com.xilidou.jooj.agent.AgentInterruptedException;
 import com.xilidou.jooj.subagent.Subagent;
 import com.xilidou.jooj.tool.ToolCall;
 import com.xilidou.jooj.tool.ToolDefinition;
@@ -77,20 +78,22 @@ class TaskToolTest {
     @Test
     @DisplayName("正常路径:转发到 subagent.spawn,返回 success + 子 agent 摘要")
     void delegates_to_subagent_and_wraps_result() {
-        when(subagent.spawn("分析 X 模块")).thenReturn("X 模块的关键文件是 Foo.java");
+        // s22 D-9:TaskTool 现在调 2-arg spawn(desc, parentSid);测试走 1-arg execute →
+        // ExecutionContext.lead() 提供 sid,mock stub 2-arg 版本
+        when(subagent.spawn(eq("分析 X 模块"), any())).thenReturn("X 模块的关键文件是 Foo.java");
 
         ToolResult result = tool.execute(new ToolCall("task",
                 Map.of("description", "分析 X 模块")));
 
         assertTrue(result.isSuccess());
         assertEquals("X 模块的关键文件是 Foo.java", result.getOutput());
-        verify(subagent, times(1)).spawn("分析 X 模块");
+        verify(subagent, times(1)).spawn(eq("分析 X 模块"), any());
     }
 
     @Test
     @DisplayName("subagent.spawn 抛异常 → 包成 fail ToolResult,不传播")
     void wraps_subagent_exception() {
-        when(subagent.spawn(any())).thenThrow(new RuntimeException("LLM 挂了"));
+        when(subagent.spawn(any(), any())).thenThrow(new RuntimeException("LLM 挂了"));
 
         ToolResult result = tool.execute(new ToolCall("task",
                 Map.of("description", "any task")));
@@ -100,6 +103,21 @@ class TaskToolTest {
                 "应包含 'Subagent failed' 标识,实际:" + result.getOutput());
         assertTrue(result.getOutput().contains("LLM 挂了"),
                 "应包含原始异常 message,实际:" + result.getOutput());
+    }
+
+    @Test
+    @DisplayName("D-9:subagent 抛 AgentInterruptedException → 转成 [Subagent interrupted] tool_result,不算 subagent failed")
+    void interrupt_exception_becomes_interrupt_tool_result() {
+        when(subagent.spawn(any(), any())).thenThrow(new AgentInterruptedException("sid-x"));
+
+        ToolResult result = tool.execute(new ToolCall("task",
+                Map.of("description", "some task")));
+
+        assertFalse(result.isSuccess(), "interrupt 走 success=false");
+        assertTrue(result.getOutput().contains("[Subagent interrupted"),
+                "应含明确的 interrupt 标识,让 lead 下一轮 while 顶部能通过 tool_result 识别;实际:" + result.getOutput());
+        assertFalse(result.getOutput().toLowerCase().contains("subagent failed"),
+                "不该走 generic Subagent failed 路径 —— interrupt 不是错误,是用户显式操作");
     }
 
     @Test

@@ -3,6 +3,8 @@ package com.xilidou.jooj.subagent;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xilidou.jooj.JoojProperties;
+import com.xilidou.jooj.agent.AgentInterruptedException;
+import com.xilidou.jooj.agent.InterruptRegistry;
 import com.xilidou.jooj.tool.ToolRegistry;
 import com.xilidou.jooj.tool.ToolCall;
 import com.xilidou.jooj.tool.ToolDefinition;
@@ -112,6 +114,13 @@ public class Subagent {
     private final ObjectMapper json;
     private final HookManager hooks;
     private final Set<String> includedTools;
+    /**
+     * s22 D-9:响应用户 interrupt。Subagent 是 lead 的"内部工具",lead 被打断时 subagent
+     * 也应该停 —— 用 {@link InterruptRegistry#isRequested(String)}(**只读**,不消费)
+     * 检查,让 flag 保留给 lead 消费一次(subagent 抛出后 → tool_result → lead 回到 while
+     * 顶部再 consume 一次)。
+     */
+    private final InterruptRegistry interruptRegistry;
 
     /**
      * 唯一构造器 —— Spring 容器装配。
@@ -124,19 +133,44 @@ public class Subagent {
                     ToolRegistry registry,
                     @Qualifier("joojObjectMapper") ObjectMapper json,
                     HookManager hooks,
-                    JoojProperties props) {
+                    JoojProperties props,
+                    InterruptRegistry interruptRegistry) {
         this.client = client;
         this.model = props.getAnthropic().getModel();
         this.registry = registry;
         this.json = json;
         this.hooks = hooks;
         this.includedTools = DEFAULT_INCLUDED_TOOLS;
+        this.interruptRegistry = interruptRegistry;
     }
 
     /**
      * 派生一个子 Agent 跑给定任务,返回最终摘要文本。
+     *
+     * <p>s22 D-9:向后兼容入口 —— 不传 parentSessionId。用于测试路径 / 无 session 场景。
+     * 生产路径应走 {@link #spawn(String, String)},让用户 interrupt 能穿透到 subagent 内部。
      */
     public String spawn(String description) {
+        return spawn(description, null);
+    }
+
+    /**
+     * s22 D-9:响应用户 interrupt 的 spawn 入口。
+     *
+     * <p>{@code parentSessionId} 是 lead loop 的 sessionId。Subagent 在 for turn 顶部
+     * 和 tool 循环之间调 {@link InterruptRegistry#isRequested(String)}(**只读**)
+     * 检查 flag,true 时抛 {@link AgentInterruptedException}。
+     *
+     * <p><b>为什么只读不消费</b>:flag 该由 lead 的 while 顶部消费一次 —— subagent 抛出后
+     * TaskTool 会把它转成 {@code [Subagent interrupted]} tool_result 返给 lead;lead 拿到
+     * tool_result 后回到 while 顶部,那次 {@code consumeIfRequested} 才真消费 + 抛出 →
+     * 走 D-8 已建立的路径(append [Interrupted by user] + publish TurnInterrupted)。
+     *
+     * @param description       子任务描述
+     * @param parentSessionId   lead loop 的 sessionId;{@code null} 时禁用 interrupt 检查(向后兼容)
+     * @throws AgentInterruptedException 若 subagent 运行期间用户请求打断
+     */
+    public String spawn(String description, String parentSessionId) {
         if (description == null || description.isBlank()) {
             return "Subagent error: empty task description";
         }
@@ -150,6 +184,9 @@ public class Subagent {
         List<ToolDef> tools = buildSubTools();
 
         for (int turn = 0; turn < MAX_TURNS; turn++) {
+            // s22 D-9:每轮 turn 顶部检查 interrupt(只读,不消费)
+            checkInterrupt(parentSessionId);
+
             CreateMessageRequest request = CreateMessageRequest.builder()
                     .model(model)
                     .system(SUB_SYSTEM_PROMPT)
@@ -169,6 +206,10 @@ public class Subagent {
 
             List<ToolResultBlock> toolResults = new ArrayList<>();
             for (ToolUseBlock toolUse : response.toolUses()) {
+                // s22 D-9:每个 tool 之间也检查 —— 用户点 stop 后已跑完的 tool 结果不进 messages,
+                // subagent 直接抛出。跟 lead 的检查点粒度对齐。
+                checkInterrupt(parentSessionId);
+
                 Map<String, Object> args = parseToolInput(toolUse);
 
                 Optional<String> blocked = hooks.triggerPreToolUse(toolUse);
@@ -199,6 +240,20 @@ public class Subagent {
         }
         System.out.println(PURPLE + "[Subagent done — max turns]" + RESET);
         return result;
+    }
+
+    /**
+     * s22 D-9:interrupt 检查点辅助方法。
+     *
+     * <p>{@code parentSessionId=null} 时(测试/兼容路径)跳过检查。用
+     * {@link InterruptRegistry#isRequested} 只读检查,让 flag 保留给 lead 消费。
+     */
+    private void checkInterrupt(String parentSessionId) {
+        if (parentSessionId == null || interruptRegistry == null) return;
+        if (interruptRegistry.isRequested(parentSessionId)) {
+            log.info("[Subagent] interrupted by user request for parent sid={}", parentSessionId);
+            throw new AgentInterruptedException(parentSessionId);
+        }
     }
 
     private List<ToolDef> buildSubTools() {

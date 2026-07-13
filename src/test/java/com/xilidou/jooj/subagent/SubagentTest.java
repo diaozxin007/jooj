@@ -1,6 +1,8 @@
 package com.xilidou.jooj.subagent;
 
 import com.xilidou.jooj.JoojTestConfig;
+import com.xilidou.jooj.agent.AgentInterruptedException;
+import com.xilidou.jooj.agent.InterruptRegistry;
 import com.xilidou.jooj.tool.ToolCall;
 import com.xilidou.jooj.tool.ToolDefinition;
 import com.xilidou.jooj.tool.ToolResult;
@@ -51,10 +53,12 @@ class SubagentTest {
     @Autowired MockAnthropicClient mock;
     @Autowired HookManager hooks;
     @Autowired SpyTool spyTool;
+    @Autowired InterruptRegistry interruptRegistry;
 
     @BeforeEach
     void setUp() {
         spyTool.reset();
+        interruptRegistry.clear("d9-parent-sid");
     }
 
     @Test
@@ -172,6 +176,84 @@ class SubagentTest {
         assertEquals(2, spyTool.executionCount.get(), "两个工具调用都应执行");
     }
 
+    // ── s22 D-9:interrupt 检查点测试 ─────────────────────────
+
+    @Test
+    @DisplayName("D-9 parentSessionId=null 时向后兼容,interrupt registry 有 flag 也不抛")
+    void interrupt_disabled_when_parent_sid_null() {
+        mock.reset(ResponseFixtures.endTurn("done"));
+        // 即使 registry 里有 flag,只要 spawn 不传 parentSid,就不该检查(向后兼容)
+        interruptRegistry.request("d9-parent-sid");
+
+        // 走无 parentSid 的 spawn(单参重载)—— 老测试路径全部走这条,不该受影响
+        String result = subagent.spawn("normal task");
+        assertEquals("done", result);
+    }
+
+    @Test
+    @DisplayName("D-9 parentSid 传入 + 未 request → 正常完成")
+    void with_parent_sid_but_no_interrupt_completes_normally() {
+        mock.reset(ResponseFixtures.endTurn("all good"));
+        // registry 是干净的(setUp 里 clear 过)
+        assertFalse(interruptRegistry.isRequested("d9-parent-sid"));
+
+        String result = subagent.spawn("some task", "d9-parent-sid");
+        assertEquals("all good", result);
+    }
+
+    @Test
+    @DisplayName("D-9 while 顶部检查点:进入第一轮 turn 前 request → 立即抛 AgentInterruptedException")
+    void interrupt_at_turn_top_before_first_llm_call() {
+        // 提前 request,subagent 一进 for 循环顶部就应该抛
+        interruptRegistry.request("d9-parent-sid");
+        mock.reset(req -> {
+            throw new IllegalStateException("不该发起 LLM 请求,应先命中 turn 顶部检查点");
+        });
+
+        AgentInterruptedException aie = assertThrows(AgentInterruptedException.class,
+                () -> subagent.spawn("some task", "d9-parent-sid"));
+        assertEquals("d9-parent-sid", aie.getSessionId());
+
+        // **关键**:flag 应该保留 —— subagent 用 isRequested(只读),让 lead 消费
+        assertTrue(interruptRegistry.isRequested("d9-parent-sid"),
+                "subagent 只读检查,flag 应保留给 lead 消费");
+    }
+
+    @Test
+    @DisplayName("D-9 tool 之间检查点:第 1 个 tool 跑完后 request → 第 2 个 tool 前抛")
+    void interrupt_between_tools() {
+        AtomicInteger toolCount = new AtomicInteger();
+        // 让 spy_tool 第 1 次跑完后,外部 request interrupt,再让第 2 个 tool_use 被 subagent 处理
+        // 用 SpyTool 的自定义副作用触发 request(在真实场景是 REST 端点触发)
+        // 为了让第 2 个 tool 之前有个"外部 request"发生,我们让 mock 第一轮返回单个 tool_use,
+        // 然后在 spy 执行完时 request,第二轮返回 endTurn(但 subagent 应该在下一次 turn 顶部
+        // 检查点就抛,永远到不了第 2 轮 LLM call)
+
+        // 简化:第 1 轮返 tool_use → spy 执行时自己 request → 下一轮 turn 顶部就抛
+        var toolAction = new Runnable() {
+            @Override public void run() {
+                if (toolCount.incrementAndGet() == 1) {
+                    // 第一个 tool 执行完后 request interrupt
+                    interruptRegistry.request("d9-parent-sid");
+                }
+            }
+        };
+        spyTool.beforeExecute = toolAction;
+
+        mock.reset(
+                ResponseFixtures.toolUse("spy_tool", Map.of("arg", "1"), "tu_001"),
+                ResponseFixtures.endTurn("shouldnt reach")
+        );
+
+        AgentInterruptedException aie = assertThrows(AgentInterruptedException.class,
+                () -> subagent.spawn("run tool then continue", "d9-parent-sid"));
+        assertEquals("d9-parent-sid", aie.getSessionId());
+        // spy_tool 应该跑过 1 次(第一个 tool_use),然后下一轮 turn 顶部抛
+        assertEquals(1, spyTool.executionCount.get());
+        // 应该只调用 1 次 LLM(第 2 次会在 turn 顶部被拦)
+        assertEquals(1, mock.getCallCount());
+    }
+
     // ── 测试用 Spy Tool + 假名字工具(用来验证 excludedTools)──────────────
 
     @TestConfiguration
@@ -194,6 +276,8 @@ class SubagentTest {
     /** 真实工具:记录调用次数,返回 ok */
     static class SpyTool implements Tool {
         final AtomicInteger executionCount = new AtomicInteger();
+        /** s22 D-9:测试用副作用,execute 前调 —— 让测试可以在 tool 执行边界触发副作用(如 request interrupt) */
+        Runnable beforeExecute = null;
 
         @Override public String getName() { return "spy"; }
         @Override public String getDescription() { return "Spy tool"; }
@@ -209,11 +293,12 @@ class SubagentTest {
 
         @Override
         public ToolResult execute(ToolCall call) {
+            if (beforeExecute != null) beforeExecute.run();
             executionCount.incrementAndGet();
             return new ToolResult(true, "ok");
         }
 
-        void reset() { executionCount.set(0); }
+        void reset() { executionCount.set(0); beforeExecute = null; }
     }
 
     /** 假名字 Tool:用来验证 excludedTools 过滤 */
