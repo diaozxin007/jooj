@@ -3,8 +3,8 @@ package com.xilidou.jooj.weixin;
 import cn.langchat.openclaw.weixin.OpenClawWeixinSdk;
 import cn.langchat.openclaw.weixin.model.WeixinAccount;
 import com.xilidou.jooj.http.dto.InputSchema;
+import com.xilidou.jooj.tool.ChannelTool;
 import com.xilidou.jooj.tool.ExecutionContext;
-import com.xilidou.jooj.tool.Tool;
 import com.xilidou.jooj.tool.ToolCall;
 import com.xilidou.jooj.tool.ToolDefinition;
 import com.xilidou.jooj.tool.ToolResult;
@@ -41,11 +41,22 @@ import java.util.Set;
  *
  * <p>跟 {@link WeixinConfiguration} 共享 {@code jooj.weixin.enabled=true}。disabled 时
  * 这个 bean 不存在,ToolRegistry 自然不会注册 → LLM SYSTEM 提示也不会列。
+ *
+ * <h3>Session 隔离</h3>
+ *
+ * <p>继承 {@link ChannelTool},自动获得 3 层 gate(见基类注释):
+ * <ol>
+ *   <li>Channel gate:只在 {@code ctx.deliveryHint().channel() == "weixin"} 时放行</li>
+ *   <li>Peer 深度防御:通过 {@code verifyPeer} helper,{@code weixin_send_text} 里显式调</li>
+ *   <li>旧签名默认拒:{@code execute(ToolCall)} 由基类实现拒绝</li>
+ * </ol>
+ *
+ * <p>本类**不再持有**这些通用 gate 代码 —— 全在基类,只留业务(sdk 调用 + 参数校验)。
  */
 @Component
 @ConditionalOnProperty(prefix = "jooj.weixin", name = "enabled", havingValue = "true")
 @Slf4j
-public class WeixinTool implements Tool {
+public class WeixinTool extends ChannelTool {
 
     private static final Set<String> TOOL_NAMES = Set.of(
             "weixin_status", "weixin_list_peers", "weixin_send_text");
@@ -58,6 +69,11 @@ public class WeixinTool implements Tool {
         this.sdk = sdk;
         this.props = props;
         this.accountState = accountState;
+    }
+
+    @Override
+    public String expectedChannel() {
+        return "weixin";
     }
 
     @Override
@@ -101,70 +117,13 @@ public class WeixinTool implements Tool {
     }
 
     @Override
-    public ToolResult execute(ToolCall call) {
-        // 兼容旧签名调用点(测试 / 手工构造)—— 但生产 harness 走新签名,ctx 检查在那里。
-        // 旧签名场景默认拒绝所有动作,避免"绕过 ctx 检查"路径。
-        log.warn("[Weixin] tool {} invoked via legacy signature (no ExecutionContext) — refusing",
-                call.getToolName());
-        return new ToolResult(false,
-                "weixin tools require ExecutionContext (session isolation). " +
-                "This tool is only callable from a chat_weixin_* session.");
-    }
-
-    /**
-     * s22 架构审查(2026-07-13):严格 session 隔离 —— weixin 工具族只能在
-     * "微信触发进来的 session" 里被 LLM 调用。web / CLI / cron / subagent 场景直接拒。
-     *
-     * <h3>为什么</h3>
-     *
-     * <p>报告的实际 bug:web-default session 里 LLM 调 {@code weixin_send_text} 主动
-     * outbound 给某个 peer,导致 web 用户敲的消息回复被推到该 peer 的手机上。
-     * 根因不是 sessionId 混淆,是**权限边界**:LLM 在任何 session 都能调 weixin 工具。
-     *
-     * <h3>判定</h3>
-     *
-     * <p>只放行 {@code ctx.deliveryHint().channel() == "weixin"} 的调用。其他一律
-     * 返 ToolResult(false, ...),LLM 会拿到明确的拒绝理由,不会静默失败。
-     *
-     * <h3>不做的事</h3>
-     *
-     * <ul>
-     *   <li>不做 admin 豁免 —— 若 CLI/web 管理员需要 debug weixin 连接,走 slash 命令或日志</li>
-     *   <li>不豁免 {@code weixin_status}(只读)—— 语义一致优先,跨 session 不该看到别的 channel 状态</li>
-     *   <li>不给 LLM 传"当前 session 是不是 weixin channel" 的元信息 —— 由本 gate 决定,
-     *       LLM 只需要"要么能调要么不能" 的二元结果</li>
-     * </ul>
-     */
-    @Override
-    public ToolResult execute(ToolCall call, ExecutionContext ctx) {
-        if (!isWeixinChannelContext(ctx)) {
-            String toolName = call.getToolName();
-            log.info("[Weixin] refused {} — current session is not a weixin channel session",
-                    toolName);
-            return new ToolResult(false,
-                    "This tool (" + toolName + ") can only be called from a weixin channel " +
-                    "session (i.e. a conversation initiated by an incoming weixin message). " +
-                    "The current session is not linked to any weixin peer, so weixin tools " +
-                    "are unavailable to prevent cross-session outbound.");
-        }
-        try {
-            return switch (call.getToolName()) {
-                case "weixin_status" -> doStatus();
-                case "weixin_list_peers" -> doListPeers();
-                case "weixin_send_text" -> doSendText(call, ctx);
-                default -> new ToolResult(false, "Unknown tool: " + call.getToolName());
-            };
-        } catch (Exception e) {
-            log.warn("[Weixin] tool {} failed", call.getToolName(), e);
-            return new ToolResult(false, "Error: " + e.getClass().getSimpleName() + ": " + e.getMessage());
-        }
-    }
-
-    /** 判定当前 ExecutionContext 是不是"微信 channel 发起的对话"。 */
-    private static boolean isWeixinChannelContext(ExecutionContext ctx) {
-        if (ctx == null) return false;
-        ExecutionContext.DeliveryHint hint = ctx.deliveryHint();
-        return hint != null && "weixin".equals(hint.channel());
+    protected ToolResult executeGated(ToolCall call, ExecutionContext ctx) {
+        return switch (call.getToolName()) {
+            case "weixin_status" -> doStatus();
+            case "weixin_list_peers" -> doListPeers();
+            case "weixin_send_text" -> doSendText(call, ctx);
+            default -> new ToolResult(false, "Unknown tool: " + call.getToolName());
+        };
     }
 
     private ToolResult doStatus() {
@@ -205,18 +164,9 @@ public class WeixinTool implements Tool {
         String text = textArg.toString();
         if (text.isBlank()) return new ToolResult(false, "Error: 'text' must not be blank");
 
-        // s22 架构审查:深度防御 —— peer 必须等于当前 session 关联的 peer。
-        // 即使 outer gate isWeixinChannelContext 已通过,也要防 LLM 在 peer-A 的会话里
-        // 试图发消息给 peer-B(cross-peer outbound 也是隔离违规)。
-        String expectedPeer = ctx.deliveryHint().peerId();
-        if (expectedPeer == null || !expectedPeer.equals(peer)) {
-            log.info("[Weixin] refused send_text: session peer={} but tool arg peer={}",
-                    expectedPeer, peer);
-            return new ToolResult(false,
-                    "Cross-peer outbound refused: this session is linked to peer '" + expectedPeer +
-                    "', but the tool was called with peer='" + peer + "'. " +
-                    "You can only reply to the peer whose message initiated this conversation.");
-        }
+        // 深度防御:peer 必须匹配 ctx 的 peerId。基类 helper 处理 —— null 表示通过
+        ToolResult crossPeer = verifyPeer(call, ctx, peer);
+        if (crossPeer != null) return crossPeer;
 
         String acc = accountState.getActiveAccountId();
         if (sdk.accounts().load(acc).isEmpty()) {
