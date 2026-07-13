@@ -539,8 +539,9 @@ public class AgentLoopHarness {
 
         List<MessageParam> history = sessionService.loadHistory(sessionId);
         String enriched = query;
+        // s22 P3-a:传 cleanQuery 优先做召回,避免倒扫 history 时吃到上轮的 memory prefix 污染。
         // Memory 全局共享(Demo 13:1-user 假设下 user 长期事实跨会话可见)
-        String injection = memoryService.loadRelevant(history);
+        String injection = memoryService.loadRelevant(history, query);
         if (injection != null && !injection.isBlank()) {
             enriched = injection + "\n\n" + query;
             log.info("[Memory] injected {} chars of relevant memories", injection.length());

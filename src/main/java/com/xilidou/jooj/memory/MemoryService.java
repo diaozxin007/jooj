@@ -88,8 +88,21 @@ public class MemoryService {
      * <p>返回空字符串表示无相关 memory(SYSTEM 不需要追加额外内容)。
      */
     public String loadRelevant(List<MessageParam> messages) {
+        return loadRelevant(messages, null);
+    }
+
+    /**
+     * s22 P3-a:cleanQuery 版本 —— 让当前 turn 的干净用户原文优先作为召回信号。
+     *
+     * <p>为什么加这个参数:{@link AgentLoopHarness#processOneQuery} 在 memory prefetch **之前**
+     * 就已拿到干净 query,直接传给 MemoryService 避免 selector 倒扫 history 时
+     * 可能吃到上一轮已经被 memory prefix 污染过的 user 消息(embedding 相似度会被扭曲)。
+     *
+     * <p>cleanQuery 为 null / blank 时降级到旧行为(倒扫 history 最近 N 条 user 文本)。
+     */
+    public String loadRelevant(List<MessageParam> messages, String cleanQuery) {
         try {
-            return selector.load(messages);
+            return selector.load(messages, cleanQuery);
         } catch (Exception e) {
             log.warn("[Memory] loadRelevant failed: {}", e.toString());
             return "";

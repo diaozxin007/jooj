@@ -197,6 +197,53 @@ public class SearchStore implements AutoCloseable {
         }
     }
 
+    /**
+     * s22 P3-b:appendOne —— 事件驱动的增量索引入口。
+     *
+     * <p>每次 TranscriptEvent 派发时调一次,直接 INSERT 一行到 FTS。
+     * 跟 {@link #replaceSession} 的区别:
+     * <ul>
+     *   <li>没有 DELETE 前置(单行不做覆盖,累积增量索引)</li>
+     *   <li>没有 msg_index / block_index 概念(事件流没有"第几条")—— 都写 -1 占位</li>
+     *   <li>kind 固定为 "text"(scheduled / user / assistant 都是纯文本 event)</li>
+     * </ul>
+     *
+     * <p><b>去重</b>:调用方 (SearchService) 用 eventId LRU 保证同一事件只调一次。
+     *
+     * @param sessionId session id
+     * @param role      "user" / "scheduled" / "assistant"
+     * @param content   干净原文
+     * @param savedAt   时间戳(用于 FTS 查询按时间排序)
+     */
+    public void appendOne(String sessionId, String role, String content, Instant savedAt) {
+        if (sessionId == null || sessionId.isBlank()) {
+            throw new IllegalArgumentException("sessionId must not be blank");
+        }
+        if (content == null || content.isEmpty()) return;
+        long savedAtMillis = (savedAt != null ? savedAt : Instant.now()).toEpochMilli();
+        String sql = """
+                INSERT INTO fts(content, session_id, msg_index, block_index,
+                                role, kind, tool_name, tool_use_id, saved_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """;
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, tokenizeForIndex(content));
+            ps.setString(2, sessionId);
+            ps.setInt(3, -1);
+            ps.setInt(4, -1);
+            ps.setString(5, role);
+            ps.setString(6, "text");
+            ps.setNull(7, java.sql.Types.VARCHAR);
+            ps.setNull(8, java.sql.Types.VARCHAR);
+            ps.setLong(9, savedAtMillis);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            log.warn("[Search] appendOne({}, role={}) failed: {}",
+                    sessionId, role, e.toString());
+            throw new IllegalStateException("appendOne failed: " + e.getMessage(), e);
+        }
+    }
+
     private void insertHistory(String sessionId, List<MessageParam> history, long savedAtMillis)
             throws SQLException {
         // toolUseId → toolName 反查表(跨 message 累计):assistant 一条 message 里的 ToolUseBlock

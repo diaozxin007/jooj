@@ -307,4 +307,66 @@ class MemorySelectorTest {
         assertEquals(1, out.size());
         assertEquals("user-tabs.md", out.get(0));
     }
+
+    // ─────────────────────────────────────────────────────────────
+    //  s22 P3-a:cleanQuery 参数优先级
+    // ─────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("s22 P3-a: cleanQuery 提供时优先用它,不倒扫 history")
+    void clean_query_takes_precedence_over_history(@TempDir Path tempDir) {
+        MemoryStore store = freshStore(tempDir);
+        store.write(sample("user-tabs", MemoryFile.Type.USER, "User prefers tabs", "body"));
+        store.write(sample("project-auth", MemoryFile.Type.PROJECT, "Auth module rewrite", "body"));
+
+        // null client → 走关键词路径
+        MemorySelector selector = new MemorySelector(store, null, null);
+
+        // history 里最近 user 消息是 "auth stuff" —— 单看 history 会命中 project-auth
+        // 但 cleanQuery = "about tabs" —— cleanQuery 应该优先,命中 user-tabs
+        List<String> out = selector.select(
+                List.of(userText("auth stuff"), userText("more auth")),
+                "about tabs");
+        assertEquals(1, out.size());
+        assertEquals("user-tabs.md", out.get(0),
+                "cleanQuery 应该覆盖 history,只命中 tabs 相关");
+    }
+
+    @Test
+    @DisplayName("s22 P3-a: cleanQuery=null 时降级到扫 history(旧行为)")
+    void null_clean_query_falls_back_to_history() throws Exception {
+        Path tempDir = Path.of(System.getProperty("java.io.tmpdir"),
+                "memsel-fallback-" + System.nanoTime());
+        java.nio.file.Files.createDirectories(tempDir);
+        try {
+            MemoryStore store = freshStore(tempDir);
+            store.write(sample("user-tabs", MemoryFile.Type.USER, "User prefers tabs", "body"));
+
+            MemorySelector selector = new MemorySelector(store, null, null);
+            List<String> out = selector.select(
+                    List.of(userText("about tabs")), null);
+            assertEquals(1, out.size());
+            assertEquals("user-tabs.md", out.get(0),
+                    "cleanQuery=null → 降级用 history 最近 user 文本");
+        } finally {
+            // best-effort cleanup
+            try (var s = java.nio.file.Files.walk(tempDir)) {
+                s.sorted(java.util.Comparator.reverseOrder())
+                 .forEach(p -> { try { java.nio.file.Files.deleteIfExists(p); } catch (Exception ignore) {} });
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("s22 P3-a: cleanQuery=\"\" 或 blank 时也降级到 history")
+    void blank_clean_query_also_falls_back(@TempDir Path tempDir) {
+        MemoryStore store = freshStore(tempDir);
+        store.write(sample("user-tabs", MemoryFile.Type.USER, "User prefers tabs", "body"));
+
+        MemorySelector selector = new MemorySelector(store, null, null);
+        List<String> out = selector.select(
+                List.of(userText("about tabs")), "   ");
+        assertEquals(1, out.size(), "blank cleanQuery 走 history 兜底");
+        assertEquals("user-tabs.md", out.get(0));
+    }
 }

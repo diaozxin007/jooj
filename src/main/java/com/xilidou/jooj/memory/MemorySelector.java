@@ -116,10 +116,35 @@ public class MemorySelector {
      * @return 选中的文件名(空列表 = 无相关或无 memory)
      */
     public List<String> select(List<MessageParam> messages) {
+        return select(messages, null);
+    }
+
+    /**
+     * s22 P3-a:加 cleanQuery 参数版本 —— 让当前 turn 的原始 user 输入优先作为召回信号,
+     * 不用倒扫 history 里可能被 memory prefix 污染过的旧消息。
+     *
+     * <p><b>业务约束</b>:cleanQuery 只在 history **非空** 时生效。第一轮对话
+     * (history 为空)时故意短路 —— 用户刚开口,还没有对话背景,memory selection
+     * 意义不大且要额外一次 LLM 调用,不划算。跟旧行为(倒扫 history 拿到空 → 返空)
+     * 一致,只是走的判断分支不同。
+     *
+     * <p>调用方(AgentLoopHarness.processOneQuery)在 memory prefetch 前已经拿到干净 query,
+     * 把它显式传进来。history 非空 + cleanQuery 非 blank 时,直接用 cleanQuery 作为
+     * embedding query,不再倒扫 history(避免吃到上一轮的 memory prefix 污染)。
+     *
+     * @param messages   对话历史(第一轮为空 → 直接返 empty,不触发 selection)
+     * @param cleanQuery 当前 turn 的干净用户原文;null / blank 时降级到扫 history
+     */
+    public List<String> select(List<MessageParam> messages, String cleanQuery) {
         List<MemoryFile> files = store.list();
         if (files.isEmpty()) return List.of();
 
-        String recent = collectRecentUserText(messages);
+        // 业务约束:第一轮短路 —— 没有对话背景,不做 memory selection,省 LLM 调用
+        if (messages == null || messages.isEmpty()) return List.of();
+
+        String recent = (cleanQuery != null && !cleanQuery.isBlank())
+                ? cleanQuery
+                : collectRecentUserText(messages);
         if (recent.isBlank()) return List.of();
 
         // Path 1: LLM side-query
@@ -143,7 +168,14 @@ public class MemorySelector {
      * @return 拼好的字符串(无相关 memory 时返回空字符串)
      */
     public String load(List<MessageParam> messages) {
-        List<String> selected = select(messages);
+        return load(messages, null);
+    }
+
+    /**
+     * s22 P3-a:cleanQuery 版本 —— 见 {@link #select(List, String)}。
+     */
+    public String load(List<MessageParam> messages, String cleanQuery) {
+        List<String> selected = select(messages, cleanQuery);
         if (selected.isEmpty()) return "";
 
         StringBuilder sb = new StringBuilder("<relevant_memories>\n");

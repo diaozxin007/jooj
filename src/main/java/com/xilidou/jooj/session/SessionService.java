@@ -355,25 +355,26 @@ public class SessionService {
         } finally {
             indexLock.unlock();
         }
-        // s21 Demo 25:SearchService 钩子放 indexLock 外,不让 SQLite IO 拖住 sessions map 锁。
-        if (searchService != null) {
-            searchService.onSaveHistory(sessionId, history);
-        }
+        // s22 P3-b:SearchService 索引改为事件驱动,不再在 saveHistory 尾部整盘覆盖。
+        // 事件流(UserMessageReceived / ScheduledPromptFired / AssistantResponseCompleted)
+        // 已经在 AgentLoopHarness 发布,SearchService 作为 EventListener 直接 append。
+        // 好处:搜索只索引干净原文,不再命中 <memories>...</memories> 之类污染。
     }
 
     /**
      * 清空 history(in-memory + 盘)。reserved session 也允许 clear,
      * 跟 delete 不同 —— clear 只是重置内容。
      *
-     * <p>BUG 3 修复:删掉多余的 {@code searchService.onClearHistory} 调用。
-     * {@link #saveHistory} 末尾已调 {@code onSaveHistory(sessionId, emptyList)},
-     * 它走 {@code store.replaceSession(sid, []) = DELETE WHERE session_id=? + 不 INSERT},
-     * 语义等同于 clear。再显式调 {@code onClearHistory} 多 1 次 SQLite DELETE,是冗余。
-     * 如果未来 saveHistory 钩子改语义,在 saveHistory 那里修就够了,clearHistory 里不该有第二份逻辑。
+     * <p>s22 P3-b:saveHistory 不再自动写 FTS 后,clearHistory 必须显式调
+     * {@code onClearHistory} 才能清 FTS。回补之前 BUG 3 修复删掉的调用 ——
+     * 那次删除的前提是 saveHistory 会 replaceSession(sid, []),现在这个前提已不成立。
      */
     public void clearHistory(String sessionId) {
         List<MessageParam> hist = loadHistory(sessionId);
         hist.clear();
         saveHistory(sessionId, hist);
+        if (searchService != null) {
+            searchService.onClearHistory(sessionId);
+        }
     }
 }
