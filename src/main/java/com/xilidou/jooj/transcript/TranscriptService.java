@@ -144,6 +144,30 @@ public class TranscriptService {
         }
     }
 
+    /**
+     * s22 D-8:用户主动打断 turn 事件。
+     *
+     * <p>落一条特殊 role="interrupted" 的 TranscriptLine —— 让前端 mapper 能按 role
+     * 派发出"[已中断]"系统气泡。partialContent 是打断前 lead-agent 已 append 的 assistant
+     * 文本(可能为空);为空时只落一条空 content 的中断标记,前端渲染"仅中断"气泡。
+     */
+    @EventListener
+    public void onTurnInterrupted(TurnInterrupted e) {
+        if (!acquireEvent(e.eventId())) {
+            log.debug("[Transcript] dedup skip interrupted event {}", e.eventId());
+            return;
+        }
+        try {
+            String content = e.partialContent() == null ? "" : e.partialContent();
+            store.append(e.sessionId(),
+                    new TranscriptLine("interrupted", content, e.timestamp(), null));
+        } catch (Exception ex) {
+            releaseOnFailure(e.eventId());
+            log.warn("[Transcript] append interrupted event failed sid={}: {}",
+                    e.sessionId(), ex.toString());
+        }
+    }
+
     // ── D11 幂等 gate ─────────────────────────────────────────
 
     /** @return true 表示这个 eventId 首次见,可以处理;false 表示是重复事件。 */

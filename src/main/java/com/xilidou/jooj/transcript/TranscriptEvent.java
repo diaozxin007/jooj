@@ -24,6 +24,7 @@ import java.util.UUID;
  *   <li>{@link SessionDeleted} —— session 从 index 移除,transcript 软归档</li>
  *   <li>{@link SessionHistoryCleared} —— session 保留但清历史,transcript 同样软归档
  *       (语义区分见事件类注释)</li>
+ *   <li>{@link TurnInterrupted} —— s22 D-8:用户主动打断当前 turn,前端渲染中断气泡</li>
  * </ul>
  *
  * <p><b>s22 架构审查(2026-07-13, B1 refactor)</b>:删除 {@code ScheduledPromptFired}
@@ -48,7 +49,7 @@ import java.util.UUID;
 public sealed interface TranscriptEvent
         permits UserMessageReceived,
                 AssistantResponseCompleted, SessionDeleted,
-                SessionHistoryCleared {
+                SessionHistoryCleared, TurnInterrupted {
 
     /** D11 幂等锚点。发布方 UUID.randomUUID() 生成,listener 用于去重。 */
     UUID eventId();

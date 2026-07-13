@@ -30,6 +30,7 @@ import com.xilidou.jooj.memory.MemoryService;
 import com.xilidou.jooj.prompt.SystemPromptAssembler;
 import com.xilidou.jooj.todo.TodoStore;
 import com.xilidou.jooj.transcript.AssistantResponseCompleted;
+import com.xilidou.jooj.transcript.TurnInterrupted;
 import com.xilidou.jooj.transcript.UserMessageReceived;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -204,6 +205,15 @@ public class AgentLoopHarness {
     private final ApplicationEventPublisher eventPublisher;
 
     /**
+     * s22 D-8:用户主动打断当前 turn 的登记表。agentLoop 每轮 while 顶部 + tool 循环
+     * 每次迭代前调 {@link InterruptRegistry#consumeIfRequested(String)},true 时抛
+     * {@link AgentInterruptedException} 冒泡到 processOneQuery。
+     *
+     * <p>REST endpoint {@code POST /api/chat/{sid}/interrupt} 反向调 request。
+     */
+    private final InterruptRegistry interruptRegistry;
+
+    /**
      * 唯一构造器 —— Spring 容器装配。
      *
      * <p>s21 Demo 27 review:删 {@code permissions} 入参。
@@ -225,7 +235,8 @@ public class AgentLoopHarness {
                             ProtocolRegistry protocols,
                             SessionService sessionService,
                             AgentLockProvider lockProvider,
-                            ApplicationEventPublisher eventPublisher) {
+                            ApplicationEventPublisher eventPublisher,
+                            InterruptRegistry interruptRegistry) {
         this.registry = registry;
         this.json = json;
         this.hooks = hooks;
@@ -241,6 +252,7 @@ public class AgentLoopHarness {
         this.sessionService = sessionService;
         this.lockProvider = lockProvider;
         this.eventPublisher = eventPublisher;
+        this.interruptRegistry = interruptRegistry;
     }
 
     // ── 核心 Agent Loop ─────────────────────────────────────────
@@ -286,6 +298,13 @@ public class AgentLoopHarness {
         var recoveryState = recoveryCoordinator.newState();
 
         while (true) {
+            // s22 D-8:每轮 turn 开始前先检查用户是否请求打断。
+            // consumeIfRequested 会同时消费并清除 flag,防止跨 turn 幽灵触发。
+            // 抛出后由 processOneQuery 兜底 catch,append [Interrupted] + publish 事件。
+            if (interruptRegistry.consumeIfRequested(sessionId)) {
+                throw new AgentInterruptedException(sessionId);
+            }
+
             // Nag 守卫(s20 Demo 7 修复):
             // 1) 阈值轮数没到 → skip
             // 2) messages 为空 → skip(没有上文可挂)
@@ -369,6 +388,14 @@ public class AgentLoopHarness {
 
             List<ToolResultBlock> toolResults = new ArrayList<>();
             for (ToolUseBlock toolUse : response.toolUses()) {
+                // s22 D-8:每个 tool 之间也检查一次。已跑完的 tool 结果保留在 toolResults 里,
+                // 但不会 append 回 messages —— 抛异常直接跳出循环体和 while,messages 只到
+                // 上面 add(assistant response) 那一步。processOneQuery 兜底 catch 后
+                // append [Interrupted] user 消息,LLM 下一轮能看到"我上一轮被打断了"。
+                if (interruptRegistry.consumeIfRequested(sessionId)) {
+                    throw new AgentInterruptedException(sessionId);
+                }
+
                 Map<String, Object> args = parseToolInput(toolUse);
 
                 printToolHeader(toolUse, args);
@@ -555,7 +582,18 @@ public class AgentLoopHarness {
         ExecutionContext ctx = deliveryHint != null
                 ? ExecutionContext.leadInChannel(sessionId, deliveryHint.channel(), deliveryHint.peerId())
                 : ExecutionContext.leadInSession(sessionId);
-        agentLoop(history, ctx);
+
+        boolean interrupted = false;
+        try {
+            agentLoop(history, ctx);
+        } catch (AgentInterruptedException aie) {
+            // s22 D-8:用户主动打断 —— 把 partial state 落盘,发中断事件,不进入
+            // 正常的 memoryService.onTurnEnd / drainLeadInbox / AssistantResponseCompleted 流程。
+            // messages 保留 partial(可能包含最后一次 assistant response),LLM 下一轮能看到"上轮被打断"上下文。
+            interrupted = true;
+            history.add(MessageParam.user("[Interrupted by user]"));
+            log.info("[Interrupt] turn interrupted sid={} history_size={}", sessionId, history.size());
+        }
 
         memoryService.onTurnEnd(history);
 
@@ -568,7 +606,14 @@ public class AgentLoopHarness {
         // s22 P2:发 assistant 事件 —— 只取纯文本 final reply,不含 tool 中间态(D3)。
         // 若 assistant 只调工具没文本,reply 为 blank,TranscriptService 会跳过 append。
         String reply = lastAssistantTextSince(history, historyBefore);
-        if (reply != null && !reply.isBlank()) {
+        if (interrupted) {
+            // s22 D-8:打断路径独占事件类型,前端可以按 role="interrupted" 渲染系统气泡。
+            // partialContent 为空时前端只渲染"[已中断]"标记,非空时可以附上"这是打断前的部分回答"。
+            eventPublisher.publishEvent(new TurnInterrupted(
+                    UUID.randomUUID(), sessionId,
+                    reply != null && !reply.isBlank() ? reply : "",
+                    Instant.now()));
+        } else if (reply != null && !reply.isBlank()) {
             eventPublisher.publishEvent(new AssistantResponseCompleted(
                     UUID.randomUUID(), sessionId, reply, Instant.now()));
         }
