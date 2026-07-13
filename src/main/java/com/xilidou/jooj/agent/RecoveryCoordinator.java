@@ -167,7 +167,10 @@ public class RecoveryCoordinator {
                         "Output truncated, max recovery retries reached");
             }
 
-            // 成功拿到非 max_tokens 截断的 response
+            // 成功拿到非 max_tokens 截断的 response —— 顺手把 usage 推给 CompactPipeline,
+            // 让下一轮 turn 开始前可以基于**精确 token 数**决定是否 compact(s22 D)。
+            // update 是 null-safe 的,response.usage 为 null 时不更新。
+            compactPipeline.updateFromResponse(response.getUsage());
             return response;
         }
     }

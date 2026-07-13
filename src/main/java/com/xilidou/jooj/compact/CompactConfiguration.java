@@ -59,6 +59,8 @@ public class CompactConfiguration {
      *   <li>L4 reactive 摘要走真 client</li>
      *   <li>s21 Demo 24:把 MemoryService 注入 pipeline,启用 pre-compression extraction
      *       —— L4 触发前先抢救永久 fact 进 MEMORY.md,再让 L4 摘要(防"被压缩 lossy 丢失")</li>
+     *   <li>s22 D:token-aware 触发 —— 从 JoojProperties 读 contextLength +
+     *       thresholdPercent,pipeline 内部据此判定 shouldCompress</li>
      * </ul>
      */
     @Bean
@@ -66,6 +68,8 @@ public class CompactConfiguration {
                                            AnthropicClient client,
                                            JoojProperties props,
                                            MemoryService memoryService) {
-        return new CompactPipeline(config, client, props.getAnthropic().getModel(), memoryService);
+        var c = props.getCompact();
+        return new CompactPipeline(config, client, props.getAnthropic().getModel(), memoryService,
+                c.getContextLength(), c.getThresholdPercent());
     }
 }

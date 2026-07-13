@@ -303,7 +303,18 @@ public class AgentLoopHarness {
                 roundsSinceTodo = 0;
             }
 
-            compactPipeline.apply(messages);
+            // s22 D:token-aware 触发门禁。上一次 API response 的
+            // input_tokens + cache_read_input_tokens ≥ threshold(默认 70% context)时才 compact。
+            // 优点:精确(用 provider 报的真实 token 数),不再靠"数量估计"。
+            //
+            // 行为矩阵:
+            //   token-aware 关闭(contextLength=0):**总是** apply,维持旧行为(L1/L2/L3 内部
+            //     阈值兜底 —— L1 messages>50 才生效,L2 tool_results>keepRecent 才生效...)
+            //   token-aware 开启 + 未过阈值:skip apply,让 messages 自然增长
+            //   token-aware 开启 + 过阈值:apply,压掉大 tool_result / snip 中段 / L4 摘要
+            if (!compactPipeline.isTokenAwareEnabled() || compactPipeline.shouldCompress()) {
+                compactPipeline.apply(messages);
+            }
 
             // s21 Demo 25 副作用 v3:不变量级防御 —— 任何路径(SnipCompactor / cron 注入 /
             // channel 入站) 把孤儿 tool_use / tool_result 塞进 messages,都在 send 给

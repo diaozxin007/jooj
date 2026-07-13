@@ -86,7 +86,11 @@ class CompactPipelineTest {
         assertEquals(9, messages.size(), "L1 snip 后总 9 条");
 
         assertEquals("user", messages.get(2).getRole());
-        assertEquals("[snipped 18 messages]", messages.get(2).getContent());
+        // SnipCompactor 归档成功会带 archive path,失败降级为不带 path 的旧格式,只锁定前缀 + 计数
+        Object placeholder = messages.get(2).getContent();
+        assertTrue(placeholder instanceof String);
+        assertTrue(((String) placeholder).startsWith("[snipped 18 messages"),
+                "占位应以 [snipped 18 messages 开头,实际:" + placeholder);
 
         // tail 6 条 = 3 对 (tu_9_use, tu_9_result, tu_10_use, tu_10_result, tu_11_use, tu_11_result)
         // 含 3 个 tool_result, keepRecent=2 → L2 替换 1 个
@@ -128,7 +132,10 @@ class CompactPipelineTest {
         // tail [11..17) 6 条 = 3 对配对 → 停。snipped=11-1=10
         // result = head 1 + placeholder + tail 6 = 8
         assertEquals(8, messages.size());
-        assertEquals("[snipped 10 messages]", messages.get(1).getContent());
+        Object ph = messages.get(1).getContent();
+        assertTrue(ph instanceof String);
+        assertTrue(((String) ph).startsWith("[snipped 10 messages"),
+                "占位应以 [snipped 10 messages 开头,实际:" + ph);
 
         // tail 6 条 = 3 对 → 3 个 tool_result, keepRecent=2 → replace 1
         int placeholderCount = 0;
@@ -230,5 +237,87 @@ class CompactPipelineTest {
                 }
             }
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    //  s22 D:token-aware 触发门禁测试
+    // ─────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("token-aware 禁用(contextLength=0)时 shouldCompress 恒 false,isTokenAwareEnabled false")
+    void token_aware_disabled_by_default() {
+        var pipeline = new com.xilidou.jooj.compact.CompactPipeline();
+        assertFalse(pipeline.isTokenAwareEnabled(), "默认构造器应禁用 token-aware");
+        assertFalse(pipeline.shouldCompress(), "禁用时 shouldCompress 恒 false");
+
+        // 即使塞 usage 也不改变
+        var usage = new com.xilidou.jooj.http.dto.Usage(999_999, 0, 0, 0);
+        pipeline.updateFromResponse(usage);
+        assertFalse(pipeline.shouldCompress(), "禁用时无视 usage");
+    }
+
+    @Test
+    @DisplayName("token-aware 启用:pressure < threshold 不触发")
+    void token_aware_under_threshold_no_compress() {
+        var config = new CompactConfig(50, 3, 3, 120);
+        // contextLength=200_000, threshold=0.7 → threshold_tokens = 140_000
+        var pipeline = new com.xilidou.jooj.compact.CompactPipeline(
+                config, null, null, null, 200_000, 0.70);
+        assertTrue(pipeline.isTokenAwareEnabled());
+        assertEquals(140_000L, pipeline.thresholdTokens());
+
+        // 塞 10K input + 5K cache_read = 15K,远低于 140K
+        pipeline.updateFromResponse(new com.xilidou.jooj.http.dto.Usage(10_000, 0, 0, 5_000));
+        assertEquals(15_000L, pipeline.lastPromptTokens());
+        assertFalse(pipeline.shouldCompress(), "15K < 140K 不该触发");
+    }
+
+    @Test
+    @DisplayName("token-aware 启用:pressure ≥ threshold 触发")
+    void token_aware_over_threshold_triggers_compress() {
+        var config = new CompactConfig(50, 3, 3, 120);
+        var pipeline = new com.xilidou.jooj.compact.CompactPipeline(
+                config, null, null, null, 200_000, 0.70);
+
+        // 塞 100K input + 45K cache_read = 145K > 140K
+        pipeline.updateFromResponse(new com.xilidou.jooj.http.dto.Usage(100_000, 0, 0, 45_000));
+        assertEquals(145_000L, pipeline.lastPromptTokens());
+        assertTrue(pipeline.shouldCompress(), "145K > 140K 应触发");
+    }
+
+    @Test
+    @DisplayName("updateFromResponse null-safe")
+    void update_from_response_null_safe() {
+        var config = new CompactConfig(50, 3, 3, 120);
+        var pipeline = new com.xilidou.jooj.compact.CompactPipeline(
+                config, null, null, null, 200_000, 0.70);
+
+        // null usage 不改
+        pipeline.updateFromResponse(null);
+        assertEquals(0L, pipeline.lastPromptTokens());
+
+        // 全 0 usage 不改
+        pipeline.updateFromResponse(new com.xilidou.jooj.http.dto.Usage(0, 0, 0, 0));
+        assertEquals(0L, pipeline.lastPromptTokens());
+
+        // 有值才更新
+        pipeline.updateFromResponse(new com.xilidou.jooj.http.dto.Usage(1000, 0, 0, 0));
+        assertEquals(1000L, pipeline.lastPromptTokens());
+
+        // 再来个 null,值保留
+        pipeline.updateFromResponse(null);
+        assertEquals(1000L, pipeline.lastPromptTokens(), "null 应保留旧值不重置");
+    }
+
+    @Test
+    @DisplayName("thresholdPercent 边界:0 或 >1 直接抛 IAE")
+    void threshold_percent_validation() {
+        var config = new CompactConfig(50, 3, 3, 120);
+        assertThrows(IllegalArgumentException.class,
+                () -> new com.xilidou.jooj.compact.CompactPipeline(
+                        config, null, null, null, 200_000, 0.0));
+        assertThrows(IllegalArgumentException.class,
+                () -> new com.xilidou.jooj.compact.CompactPipeline(
+                        config, null, null, null, 200_000, 1.5));
     }
 }

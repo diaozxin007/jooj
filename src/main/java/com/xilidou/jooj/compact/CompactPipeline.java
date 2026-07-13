@@ -2,7 +2,9 @@ package com.xilidou.jooj.compact;
 
 import com.xilidou.jooj.http.AnthropicClient;
 import com.xilidou.jooj.http.dto.MessageParam;
+import com.xilidou.jooj.http.dto.Usage;
 import com.xilidou.jooj.memory.MemoryService;
+import lombok.extern.slf4j.Slf4j;
 
 import java.util.List;
 import java.util.Objects;
@@ -48,6 +50,7 @@ import java.util.Objects;
  * com.xilidou.jooj.http.AnthropicClient, com.xilidou.jooj.JoojProperties)}
  * 通过 {@code @Bean} 装配。
  */
+@Slf4j
 public class CompactPipeline {
 
     private final BudgetCompactor budget;
@@ -61,33 +64,69 @@ public class CompactPipeline {
      */
     private final MemoryService memoryService;
 
+    // ── s22 D:token-aware 触发门禁 ────────────────────────────
+
+    /**
+     * 模型 context 窗口(tokens)。0 时禁用 token-aware 触发,退回 message-count 兜底
+     * (由 L1 SnipCompactor 判"messages > maxMessages 才生效"覆盖)。
+     */
+    private final int contextLength;
+
+    /**
+     * 触发阈值百分比(0.0 ~ 1.0)。上一次 API response 的
+     * {@code input_tokens + cache_read_input_tokens} ≥ {@code contextLength * thresholdPercent}
+     * 时,下一轮 turn 开始前 {@link #shouldCompress()} 返回 true。
+     */
+    private final double thresholdPercent;
+
+    /**
+     * 上一次 API response 提供的 pressure 值(input + cache_read)。0 表示还没跑过
+     * 任何 turn 或 response 未提供 usage。**volatile** 是因为 update / read 可能
+     * 跨线程(agent loop 线程写,cron orchestrator 线程读)。
+     */
+    private volatile long lastPromptTokens = 0L;
+
     /** 默认配置 + 无 L4(client=null,reactive 不可用)。*/
     public CompactPipeline() {
-        this(new CompactConfig(), null, null, null);
+        this(new CompactConfig(), null, null, null, 0, 0.70);
     }
 
     /** L1+L2+L3 配置(L4 不可用,常用于测试)。*/
     public CompactPipeline(CompactConfig config) {
-        this(config, null, null, null);
+        this(config, null, null, null, 0, 0.70);
     }
 
     /**
      * L1+L2+L3+L4 配置,**无 pre-compression extraction**(向后兼容,Demo 24 之前的 ctor 签名)。
      */
     public CompactPipeline(CompactConfig config, AnthropicClient client, String model) {
-        this(config, client, model, null);
+        this(config, client, model, null, 0, 0.70);
     }
 
     /**
-     * 完整构造器:L1+L2+L3+L4 + 可选 pre-compression extraction。
-     *
-     * @param config        配置
-     * @param client        LLM 客户端(L4 摘要用),null = 禁用 L4
-     * @param model         L4 摘要用模型(client 非 null 时必填)
-     * @param memoryService 可选,L4 触发前抢救永久 fact 用 —— null 时跳过抢救阶段
+     * L1+L2+L3+L4 + 可选 pre-compression extraction —— **禁用 token-aware 触发**。
+     * 向后兼容 Demo 24 起的 4 参 ctor。测试路径走这条,不需要 token 门禁。
      */
     public CompactPipeline(CompactConfig config, AnthropicClient client, String model,
                            MemoryService memoryService) {
+        this(config, client, model, memoryService, 0, 0.70);
+    }
+
+    /**
+     * 完整构造器:L1+L2+L3+L4 + 可选 pre-compression extraction + s22 D token-aware 触发。
+     *
+     * @param config           配置
+     * @param client           LLM 客户端(L4 摘要用),null = 禁用 L4
+     * @param model            L4 摘要用模型(client 非 null 时必填)
+     * @param memoryService    可选,L4 触发前抢救永久 fact 用 —— null 时跳过抢救阶段
+     * @param contextLength    模型 context 窗口(tokens);0 = 禁用 token-aware 触发
+     * @param thresholdPercent 触发阈值百分比(0.0 ~ 1.0);上一次 response 的 prompt_tokens
+     *                         ≥ {@code contextLength * thresholdPercent} 时 {@link #shouldCompress()}
+     *                         返回 true
+     */
+    public CompactPipeline(CompactConfig config, AnthropicClient client, String model,
+                           MemoryService memoryService,
+                           int contextLength, double thresholdPercent) {
         Objects.requireNonNull(config, "config");
         this.budget = new BudgetCompactor(config);
         this.snip = new SnipCompactor(config);
@@ -99,6 +138,12 @@ public class CompactPipeline {
             this.history = null;
         }
         this.memoryService = memoryService;
+        if (contextLength < 0) throw new IllegalArgumentException("contextLength must be >= 0");
+        if (thresholdPercent <= 0 || thresholdPercent > 1) {
+            throw new IllegalArgumentException("thresholdPercent must be in (0, 1], got: " + thresholdPercent);
+        }
+        this.contextLength = contextLength;
+        this.thresholdPercent = thresholdPercent;
     }
 
     /**
@@ -172,5 +217,61 @@ public class CompactPipeline {
     /** 测试用:是否启用了 pre-compression extraction(s21 Demo 24)。*/
     public boolean hasPreCompressionExtraction() {
         return memoryService != null;
+    }
+
+    // ── s22 D:token-aware 门禁 API ─────────────────────────
+
+    /**
+     * 从 API response 的 {@link Usage} 更新最近的 pressure 值。
+     *
+     * <p>由 {@link com.xilidou.jooj.agent.RecoveryCoordinator} 在每次成功获得
+     * response 后调用。pressure = {@code input_tokens + cache_read_input_tokens}
+     * —— 匹配 Hermes 语义(cache_read 也是 LLM 实际看到的 context)。
+     *
+     * <p>null-safe:usage 为 null 或全 0 时不更新(保留上次值)。
+     *
+     * @param usage API response 的 usage 字段
+     */
+    public void updateFromResponse(Usage usage) {
+        if (usage == null) return;
+        // cacheReadInputTokens 是 Integer(nullable) —— null 表示"没用 prompt cache",视为 0
+        Integer cacheRead = usage.getCacheReadInputTokens();
+        long pressure = (long) usage.getInputTokens() + (cacheRead != null ? cacheRead : 0);
+        if (pressure > 0) {
+            lastPromptTokens = pressure;
+        }
+    }
+
+    /**
+     * 检查是否应该触发 compact。
+     *
+     * <p>只在 {@link #contextLength} > 0 且 {@link #lastPromptTokens} ≥ threshold 时返回 true。
+     * threshold = {@link #contextLength} × {@link #thresholdPercent}。
+     *
+     * <p>禁用 token-aware 触发时({@code contextLength=0})始终返回 false,由现有的
+     * message-count 逻辑(L1 SnipCompactor 内部的 {@code messages > maxMessages} 判定)
+     * 兜底。
+     *
+     * @return true = 下一轮 turn 开始前应跑 {@link #apply}
+     */
+    public boolean shouldCompress() {
+        if (contextLength <= 0) return false;   // 禁用 token-aware
+        if (lastPromptTokens <= 0) return false; // 还没跑过任何 turn / 未拿到 usage
+        return lastPromptTokens >= thresholdTokens();
+    }
+
+    /** 阈值 tokens 数(整数)。 */
+    public long thresholdTokens() {
+        return (long) (contextLength * thresholdPercent);
+    }
+
+    /** 上一次 API response 报告的 pressure 值(测试 + 调试用)。 */
+    public long lastPromptTokens() {
+        return lastPromptTokens;
+    }
+
+    /** 测试用:是否启用了 token-aware 触发。 */
+    public boolean isTokenAwareEnabled() {
+        return contextLength > 0;
     }
 }
