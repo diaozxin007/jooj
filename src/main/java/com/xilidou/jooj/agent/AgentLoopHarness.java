@@ -31,9 +31,13 @@ import com.xilidou.jooj.hook.HookManager;
 import com.xilidou.jooj.memory.MemoryService;
 import com.xilidou.jooj.prompt.SystemPromptAssembler;
 import com.xilidou.jooj.todo.TodoStore;
+import com.xilidou.jooj.transcript.AssistantResponseCompleted;
+import com.xilidou.jooj.transcript.ScheduledPromptFired;
+import com.xilidou.jooj.transcript.UserMessageReceived;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
 
 import java.nio.charset.StandardCharsets;
@@ -43,8 +47,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Scanner;
+import java.util.UUID;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
+import java.time.Instant;
 
 /**
  * AgentLoopHarness - s01_agent_loop.py 的 Java 实现。
@@ -193,6 +199,15 @@ public class AgentLoopHarness {
     private final org.springframework.beans.factory.ObjectProvider<com.xilidou.jooj.channel.ChannelDeliverer> channelDelivererProvider;
 
     /**
+     * s22 P2:Transcript 事件 publisher —— 独立 domain 记录 user↔lead-agent 对话。
+     *
+     * <p>只在 {@link #processOneQuery} / {@link #processCronTriggers} 两个入口发事件,
+     * loop 内部 nag / continuation / drainLeadInbox 等都**不发**(D13 边界)。
+     * 详细清单参考 s22 文档 §4.6。
+     */
+    private final ApplicationEventPublisher eventPublisher;
+
+    /**
      * 唯一构造器 —— Spring 容器装配。
      *
      * <p>s21 Demo 27 review:删 {@code permissions} 入参。
@@ -216,7 +231,8 @@ public class AgentLoopHarness {
                             SessionService sessionService,
                             AgentLockProvider lockProvider,
                             JoojProperties props,
-                            org.springframework.beans.factory.ObjectProvider<com.xilidou.jooj.channel.ChannelDeliverer> channelDelivererProvider) {
+                            org.springframework.beans.factory.ObjectProvider<com.xilidou.jooj.channel.ChannelDeliverer> channelDelivererProvider,
+                            ApplicationEventPublisher eventPublisher) {
         this.client = client;
         this.model = props.getAnthropic().getModel();
         this.registry = registry;
@@ -234,6 +250,7 @@ public class AgentLoopHarness {
         this.sessionService = sessionService;
         this.lockProvider = lockProvider;
         this.channelDelivererProvider = channelDelivererProvider;
+        this.eventPublisher = eventPublisher;
         this.recoveryCfg = props.getRecovery();
     }
 
@@ -513,6 +530,13 @@ public class AgentLoopHarness {
         if (sessionId == null || sessionId.isBlank()) {
             throw new IllegalArgumentException("sessionId must not be blank");
         }
+
+        // s22 P2:一进门发 user 事件(干净原文,不带任何 memory/skill 前缀污染)。
+        // 详细语义:s22 文档 §4.6 边界清单。source 反映入口来源,便于前端渲染 + 审计。
+        String source = deliveryHint != null ? "channel:" + deliveryHint.channel() : "session";
+        eventPublisher.publishEvent(new UserMessageReceived(
+                UUID.randomUUID(), sessionId, query, Instant.now(), source));
+
         List<MessageParam> history = sessionService.loadHistory(sessionId);
         String enriched = query;
         // Memory 全局共享(Demo 13:1-user 假设下 user 长期事实跨会话可见)
@@ -522,6 +546,7 @@ public class AgentLoopHarness {
             log.info("[Memory] injected {} chars of relevant memories", injection.length());
         }
         history.add(MessageParam.user(enriched));
+        int historyBefore = history.size();
 
         // s21 Demo 20: 构造完整 ctx(sessionId + deliveryHint),透传到 agent loop
         ExecutionContext ctx = deliveryHint != null
@@ -531,11 +556,19 @@ public class AgentLoopHarness {
 
         memoryService.onTurnEnd(history);
 
-        // 末尾 drain lead inbox(s15)
+        // 末尾 drain lead inbox(s15)—— D13:这里 add 的 user 消息不发事件,是 loop 内部行为
         drainLeadInbox(history);
 
         // 保存 history 到盘
         sessionService.saveHistory(sessionId, history);
+
+        // s22 P2:发 assistant 事件 —— 只取纯文本 final reply,不含 tool 中间态(D3)。
+        // 若 assistant 只调工具没文本,reply 为 blank,TranscriptService 会跳过 append。
+        String reply = lastAssistantTextSince(history, historyBefore);
+        if (reply != null && !reply.isBlank()) {
+            eventPublisher.publishEvent(new AssistantResponseCompleted(
+                    UUID.randomUUID(), sessionId, reply, Instant.now()));
+        }
     }
 
     /**
@@ -578,9 +611,13 @@ public class AgentLoopHarness {
             List<MessageParam> history = sessionService.loadHistory(sessionId);
             int historyBefore = history.size();
             for (CronJob job : jobsThisSession) {
+                // LLM 视图仍加 [Scheduled] 前缀(帮 model 理解是定时触发)
                 history.add(MessageParam.user("[Scheduled] " + job.getPrompt()));
                 log.info("[Cron] injected fired job {} prompt into session {}",
                         job.getId(), sessionId);
+                // s22 P2 D7:transcript 视图走独立事件,role=scheduled,prompt 是干净原文
+                eventPublisher.publishEvent(new ScheduledPromptFired(
+                        UUID.randomUUID(), sessionId, job.getPrompt(), job.getId(), Instant.now()));
             }
             agentLoop(history, sessionId);
             memoryService.onTurnEnd(history);
@@ -589,6 +626,13 @@ public class AgentLoopHarness {
             // s21 Demo 20:每个 fired job 按自己的 deliveryType 路由(self-describing)。
             // 同 session 多 jobs 共享同一段 reply(它们的 prompt 都串接进了 turn)。
             String reply = lastAssistantTextSince(history, historyBefore);
+
+            // s22 P2 D8:cron 触发的 assistant 走同一条事件,前端不区分入口
+            if (reply != null && !reply.isBlank()) {
+                eventPublisher.publishEvent(new AssistantResponseCompleted(
+                        UUID.randomUUID(), sessionId, reply, Instant.now()));
+            }
+
             for (CronJob job : jobsThisSession) {
                 deliverCronResult(job, reply);
             }

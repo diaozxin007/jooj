@@ -22,6 +22,13 @@ import static org.junit.jupiter.api.Assertions.*;
 /**
  * Spring 装配 + 事件流转集成测试。
  *
+ * <p><b>命名约定</b>:类名后缀 {@code IT},{@code mvn test} 默认不跑
+ * (surefire 默认只包含 {@code *Test})。要跑本类需显式指定:
+ * <pre>
+ *   mvn -Dtest='TranscriptSpringIT' test
+ *   mvn -Dtest='*IT' test              # 跑所有 IT
+ * </pre>
+ *
  * <p>覆盖:
  * <ul>
  *   <li>{@link TranscriptConfiguration} 装成 bean(依赖 {@code joojObjectMapper} 存在)</li>
