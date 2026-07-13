@@ -161,6 +161,48 @@ public class CompactPipeline {
     }
 
     /**
+     * s22 D:门禁 + apply 一体化入口。caller 一行调用,不再自己判 gate。
+     *
+     * <p><b>决策规则</b>:
+     * <ul>
+     *   <li>token-aware 关闭 ({@code contextLength=0}):**总是** apply,维持旧行为
+     *       (L1 内部 {@code messages > maxMessages} 兜底)</li>
+     *   <li>token-aware 开启 + 未过阈值:skip apply,让所有 tool_result 原文保留</li>
+     *   <li>token-aware 开启 + 过阈值:apply,压掉大 tool_result / 削中间历史</li>
+     * </ul>
+     *
+     * <p><b>可观测性</b>:每次决策都打 DEBUG 一行;实际 apply 且改动了 messages 时,
+     * 额外打 INFO(生产默认可见 —— 压缩发生是有价值的事件)。
+     *
+     * @param messages 对话历史(可能被原地修改)
+     * @return 是否实际 apply 并触发了至少一层压缩
+     */
+    public boolean compressIfNeeded(List<MessageParam> messages) {
+        int sizeBefore = messages.size();
+        boolean tokenAware = isTokenAwareEnabled();
+        long pressure = lastPromptTokens;
+        long threshold = thresholdTokens();
+        boolean should = !tokenAware || shouldCompress();
+
+        if (log.isDebugEnabled()) {
+            log.debug("[Compact gate] tokenAware={}, pressure={}, threshold={}, msgs={}, decision={}",
+                    tokenAware, pressure, threshold, sizeBefore,
+                    should ? "APPLY" : "SKIP");
+        }
+
+        if (!should) {
+            return false;
+        }
+
+        boolean changed = apply(messages);
+        if (changed) {
+            log.info("[Compact] applied: msgs {} → {}, pressure={}, threshold={}, tokenAware={}",
+                    sizeBefore, messages.size(), pressure, threshold, tokenAware);
+        }
+        return changed;
+    }
+
+    /**
      * L4 reactive 摘要(消耗 API token)。
      *
      * <p>调用方:{@link com.xilidou.jooj.agent.AgentLoopHarness} 在收到

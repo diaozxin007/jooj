@@ -320,4 +320,101 @@ class CompactPipelineTest {
                 () -> new com.xilidou.jooj.compact.CompactPipeline(
                         config, null, null, null, 200_000, 1.5));
     }
+
+    // ─────────────────────────────────────────────────────────────
+    //  s22 D-5:compressIfNeeded 决策 + log 场景测试
+    //
+    //  模拟一段真实 agent turn 序列(pressure 从低到高):
+    //  turn 1 (15K):门禁 skip → messages 数量 & 内容全保留
+    //  turn 2 (100K):门禁 skip → 仍然保留
+    //  turn 3 (145K > 140K threshold):门禁 apply → 触发 L1 snip
+    //
+    //  这个测试是 D 的**行为证据**:证明 gate 会把"apply" 延后到真正接近爆炸,
+    //  而不是每轮 turn 都无脑削。
+    // ─────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("compressIfNeeded 决策序列:低压 skip → 高压 apply")
+    void compress_if_needed_decision_sequence() {
+        // maxMessages=8 → L1 会在 messages > 8 时触发
+        var config = new CompactConfig(8, 2, 2, 50);
+        var pipeline = new com.xilidou.jooj.compact.CompactPipeline(
+                config, null, null, null, 200_000, 0.70);
+
+        // 造一段长历史(至少 20 条对话),让 L1 有削减空间
+        var messages = new ArrayList<MessageParam>();
+        messages.add(userText("query"));
+        for (int i = 0; i < 12; i++) {
+            messages.add(assistantToolUse("tu_" + i));
+            messages.add(userToolResult("tu_" + i, longContent(80)));
+        }
+        int fullSize = messages.size();
+        assertEquals(25, fullSize, "sanity: 1 + 12*2 = 25 条");
+
+        // ── turn 1: pressure=15K,远低于 140K threshold ──
+        pipeline.updateFromResponse(new com.xilidou.jooj.http.dto.Usage(10_000, 0, 0, 5_000));
+        boolean applied1 = pipeline.compressIfNeeded(messages);
+        assertFalse(applied1, "turn 1 15K < 140K,不该压");
+        assertEquals(fullSize, messages.size(), "turn 1 messages 数量应保留");
+
+        // ── turn 2: pressure=100K,还没到 140K ──
+        pipeline.updateFromResponse(new com.xilidou.jooj.http.dto.Usage(80_000, 0, 0, 20_000));
+        boolean applied2 = pipeline.compressIfNeeded(messages);
+        assertFalse(applied2, "turn 2 100K < 140K,不该压");
+        assertEquals(fullSize, messages.size(), "turn 2 messages 数量应保留");
+
+        // ── turn 3: pressure=145K,超过 140K → 触发压缩 ──
+        pipeline.updateFromResponse(new com.xilidou.jooj.http.dto.Usage(100_000, 0, 0, 45_000));
+        assertEquals(145_000L, pipeline.lastPromptTokens());
+        boolean applied3 = pipeline.compressIfNeeded(messages);
+        assertTrue(applied3, "turn 3 145K > 140K,应该压");
+        assertTrue(messages.size() < fullSize,
+                "L1 应削短 messages, before=" + fullSize + ", after=" + messages.size());
+    }
+
+    @Test
+    @DisplayName("compressIfNeeded 门禁关闭(contextLength=0):总是 apply,兜底旧行为")
+    void compress_if_needed_gate_disabled_always_applies() {
+        // token-aware 关闭 —— maxMessages=8,messages=25 会命中 L1 兜底
+        var config = new CompactConfig(8, 2, 2, 50);
+        var pipeline = new com.xilidou.jooj.compact.CompactPipeline(config);
+        assertFalse(pipeline.isTokenAwareEnabled());
+
+        var messages = new ArrayList<MessageParam>();
+        messages.add(userText("query"));
+        for (int i = 0; i < 12; i++) {
+            messages.add(assistantToolUse("tu_" + i));
+            messages.add(userToolResult("tu_" + i, longContent(80)));
+        }
+
+        // 从未 updateFromResponse —— pressure=0,但门禁关闭时"总是 apply"
+        boolean applied = pipeline.compressIfNeeded(messages);
+        assertTrue(applied, "门禁关闭时 apply 一定会跑;messages=25 > maxMessages=8,L1 兜底应触发");
+        assertTrue(messages.size() < 25, "L1 应削短");
+    }
+
+    @Test
+    @DisplayName("compressIfNeeded 门禁开启 + 未过阈值:apply 完全不跑(messages 一字不动)")
+    void compress_if_needed_gate_blocks_apply_when_under_threshold() {
+        // 关键:即使 messages 远超 maxMessages,只要 pressure 没到阈值,门禁就应该拦住
+        // —— 这是 D 相对旧行为的核心区别(旧行为会依赖 message-count 兜底立刻压掉)
+        var config = new CompactConfig(8, 2, 2, 50);
+        var pipeline = new com.xilidou.jooj.compact.CompactPipeline(
+                config, null, null, null, 200_000, 0.70);
+
+        var messages = new ArrayList<MessageParam>();
+        messages.add(userText("query"));
+        for (int i = 0; i < 12; i++) {
+            messages.add(assistantToolUse("tu_" + i));
+            messages.add(userToolResult("tu_" + i, longContent(80)));
+        }
+        int before = messages.size();
+
+        // pressure=5K,远低于 140K → 门禁拦住,即使 messages 已远超 maxMessages
+        pipeline.updateFromResponse(new com.xilidou.jooj.http.dto.Usage(5_000, 0, 0, 0));
+        boolean applied = pipeline.compressIfNeeded(messages);
+        assertFalse(applied, "pressure 未过阈值,门禁应完全拦住");
+        assertEquals(before, messages.size(),
+                "messages 应一字不动(即使 count 超 maxMessages 也不该 apply)");
+    }
 }
