@@ -136,6 +136,26 @@ public class TranscriptService {
         }
     }
 
+    /**
+     * SessionHistoryCleared 事件 —— session 保留但清历史。
+     * 跟 {@link #onSessionDeleted} 相同处理:softDelete 到 {@code .deleted/} 归档。
+     * 之后再有事件发布会重新创建 {@code <sid>.jsonl},实现"清空历史但保留 session"语义。
+     */
+    @EventListener
+    public void onSessionHistoryCleared(SessionHistoryCleared e) {
+        if (!acquireEvent(e.eventId())) {
+            log.debug("[Transcript] dedup skip cleared event {}", e.eventId());
+            return;
+        }
+        try {
+            store.softDelete(e.sessionId(), e.timestamp());
+        } catch (Exception ex) {
+            releaseOnFailure(e.eventId());
+            log.warn("[Transcript] softDelete on clear failed sid={}: {}",
+                    e.sessionId(), ex.toString());
+        }
+    }
+
     // ── D11 幂等 gate ─────────────────────────────────────────
 
     /** @return true 表示这个 eventId 首次见,可以处理;false 表示是重复事件。 */

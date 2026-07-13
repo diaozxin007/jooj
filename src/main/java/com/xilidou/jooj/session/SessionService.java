@@ -2,7 +2,10 @@ package com.xilidou.jooj.session;
 
 import com.xilidou.jooj.http.dto.MessageParam;
 import com.xilidou.jooj.search.SearchService;
+import com.xilidou.jooj.transcript.SessionDeleted;
+import com.xilidou.jooj.transcript.SessionHistoryCleared;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.ApplicationEventPublisher;
 
 import java.time.Instant;
 import java.time.ZoneId;
@@ -76,26 +79,43 @@ public class SessionService {
     /** in-memory history 缓存:同 session 多次访问不重复读盘。 */
     private final Map<String, List<MessageParam>> historyCache = new ConcurrentHashMap<>();
 
+    /**
+     * s22 P4:transcript 事件发布器。可空 —— 老 ctor 场景 / 测试直接 new 时不需要。
+     * 有值时 {@link #clearHistory} publish {@code SessionHistoryCleared}
+     * / {@link #delete} publish {@code SessionDeleted},让 TranscriptService +
+     * SearchService 各自处理。
+     */
+    private final ApplicationEventPublisher eventPublisher;
+
     public SessionService(SessionStore store) {
-        this(store, null, null);
+        this(store, null, null, null);
     }
 
     /** s21 Demo 25 2 参:接 SearchService,不接 lockProvider(向后兼容)。 */
     public SessionService(SessionStore store, SearchService searchService) {
-        this(store, searchService, null);
+        this(store, searchService, null, null);
+    }
+
+    /** 3 参构造(向后兼容 s21 Demo 26 之前的装配点)。 */
+    public SessionService(SessionStore store, SearchService searchService,
+                          AgentLockProvider lockProvider) {
+        this(store, searchService, lockProvider, null);
     }
 
     /**
-     * 完整 3 参构造器 —— 生产 Spring 装配走这条。
+     * 完整 4 参构造器 —— 生产 Spring 装配走这条。s22 P4 起加入 eventPublisher。
      *
-     * @param lockProvider  nullable;非 null 时 delete 调 {@link AgentLockProvider#release}
+     * @param lockProvider   nullable;非 null 时 delete 调 {@link AgentLockProvider#release}
+     * @param eventPublisher nullable;非 null 时 clearHistory / delete publish 事件
      */
     public SessionService(SessionStore store, SearchService searchService,
-                          AgentLockProvider lockProvider) {
+                          AgentLockProvider lockProvider,
+                          ApplicationEventPublisher eventPublisher) {
         if (store == null) throw new IllegalArgumentException("store must not be null");
         this.store = store;
         this.searchService = searchService;
         this.lockProvider = lockProvider;
+        this.eventPublisher = eventPublisher;
     }
 
     /**
@@ -279,6 +299,11 @@ public class SessionService {
         if (searchService != null) {
             searchService.onDeleteSession(id);
         }
+        // s22 P4:publish SessionDeleted 事件,让 TranscriptService 软归档 transcript
+        if (eventPublisher != null) {
+            eventPublisher.publishEvent(new SessionDeleted(
+                    java.util.UUID.randomUUID(), id, Instant.now()));
+        }
     }
 
     // ── History API ─────────────────────────────────────────────
@@ -368,6 +393,10 @@ public class SessionService {
      * <p>s22 P3-b:saveHistory 不再自动写 FTS 后,clearHistory 必须显式调
      * {@code onClearHistory} 才能清 FTS。回补之前 BUG 3 修复删掉的调用 ——
      * 那次删除的前提是 saveHistory 会 replaceSession(sid, []),现在这个前提已不成立。
+     *
+     * <p>s22 P4:同时 publish {@link SessionHistoryCleared} 事件,让 TranscriptService
+     * 软归档 transcript,让 SearchService(通过 event listener)也清索引 —— 双通道
+     * 兼容:eventPublisher 可空的老装配走 searchService 直调兜底。
      */
     public void clearHistory(String sessionId) {
         List<MessageParam> hist = loadHistory(sessionId);
@@ -375,6 +404,10 @@ public class SessionService {
         saveHistory(sessionId, hist);
         if (searchService != null) {
             searchService.onClearHistory(sessionId);
+        }
+        if (eventPublisher != null) {
+            eventPublisher.publishEvent(new SessionHistoryCleared(
+                    java.util.UUID.randomUUID(), sessionId, Instant.now()));
         }
     }
 }

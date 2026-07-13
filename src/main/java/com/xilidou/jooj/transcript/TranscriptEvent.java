@@ -15,13 +15,15 @@ import java.util.UUID;
  * <p>方案:把"用户可见对话"抬到独立 domain,靠事件流分叉。
  * loop 里往 {@code history} 加什么都不影响 transcript,transcript 只接收显式发布的事件。
  *
- * <h3>4 个具体事件类型</h3>
+ * <h3>5 个具体事件类型</h3>
  *
  * <ul>
  *   <li>{@link UserMessageReceived} —— 用户在 Web/CLI/Channel 发起的对话</li>
  *   <li>{@link ScheduledPromptFired} —— cron 触发(独立事件,不伪装 user;role="scheduled")</li>
  *   <li>{@link AssistantResponseCompleted} —— lead-agent 最终回复(cron 触发也走这条)</li>
- *   <li>{@link SessionDeleted} —— session 删除,软归档到 {@code transcripts/.deleted/}</li>
+ *   <li>{@link SessionDeleted} —— session 从 index 移除,transcript 软归档</li>
+ *   <li>{@link SessionHistoryCleared} —— session 保留但清历史,transcript 同样软归档
+ *       (语义区分见事件类注释)</li>
  * </ul>
  *
  * <h3>边界(D13)</h3>
@@ -40,7 +42,8 @@ import java.util.UUID;
  */
 public sealed interface TranscriptEvent
         permits UserMessageReceived, ScheduledPromptFired,
-                AssistantResponseCompleted, SessionDeleted {
+                AssistantResponseCompleted, SessionDeleted,
+                SessionHistoryCleared {
 
     /** D11 幂等锚点。发布方 UUID.randomUUID() 生成,listener 用于去重。 */
     UUID eventId();

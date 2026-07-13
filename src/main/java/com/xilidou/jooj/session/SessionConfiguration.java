@@ -5,6 +5,7 @@ import com.xilidou.jooj.bootstrap.JoojHome;
 import com.xilidou.jooj.search.SearchService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -58,8 +59,9 @@ public class SessionConfiguration {
     @Bean(initMethod = "ensureBootstrap")
     public SessionService sessionService(SessionStore store,
                                          SearchService searchService,
-                                         AgentLockProvider lockProvider) {
-        return new SessionService(store, searchService, lockProvider);
+                                         AgentLockProvider lockProvider,
+                                         ApplicationEventPublisher eventPublisher) {
+        return new SessionService(store, searchService, lockProvider, eventPublisher);
     }
 
     @Bean

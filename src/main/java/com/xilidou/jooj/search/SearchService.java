@@ -7,6 +7,7 @@ import com.xilidou.jooj.session.SessionStore;
 import com.xilidou.jooj.transcript.AssistantResponseCompleted;
 import com.xilidou.jooj.transcript.ScheduledPromptFired;
 import com.xilidou.jooj.transcript.SessionDeleted;
+import com.xilidou.jooj.transcript.SessionHistoryCleared;
 import com.xilidou.jooj.transcript.UserMessageReceived;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.event.EventListener;
@@ -133,6 +134,22 @@ public class SearchService {
         } catch (Throwable t) {
             releaseOnFailure(e.eventId());
             log.warn("[Search] onSessionDeleted({}) failed: {}", e.sessionId(), t.toString());
+        }
+    }
+
+    /**
+     * SessionHistoryCleared 事件 —— 跟 delete 相同处理:清索引。
+     * 从用户"看不到之前对话"的视角出发,历史索引不该再命中。
+     */
+    @EventListener
+    public void onSessionHistoryCleared(SessionHistoryCleared e) {
+        if (!acquireEvent(e.eventId())) return;
+        try {
+            store.clearSession(e.sessionId());
+        } catch (Throwable t) {
+            releaseOnFailure(e.eventId());
+            log.warn("[Search] onSessionHistoryCleared({}) failed: {}",
+                    e.sessionId(), t.toString());
         }
     }
 
