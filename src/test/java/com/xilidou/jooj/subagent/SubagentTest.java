@@ -179,61 +179,62 @@ class SubagentTest {
     // ── s22 D-9:interrupt 检查点测试 ─────────────────────────
 
     @Test
-    @DisplayName("D-9 parentSessionId=null 时向后兼容,interrupt registry 有 flag 也不抛")
-    void interrupt_disabled_when_parent_sid_null() {
+    @DisplayName("D-9 无 SessionContext 绑定时 interrupt registry 里的 flag 也不生效(无 sid 无法检查)")
+    void interrupt_disabled_when_no_session_context() {
         mock.reset(ResponseFixtures.endTurn("done"));
-        // 即使 registry 里有 flag,只要 spawn 不传 parentSid,就不该检查(向后兼容)
+        // 即使 registry 里有 flag,只要 SessionContext 没 push sid,subagent 就没法检查
         agentControl.requestInterrupt("d9-parent-sid");
 
-        // 走无 parentSid 的 spawn(单参重载)—— 老测试路径全部走这条,不该受影响
+        // 无 SessionContext.push → checkInterrupt 静默跳过
         String result = subagent.spawn("normal task");
         assertEquals("done", result);
     }
 
     @Test
-    @DisplayName("D-9 parentSid 传入 + 未 request → 正常完成")
-    void with_parent_sid_but_no_interrupt_completes_normally() {
+    @DisplayName("D-9 SessionContext 绑定 + 未 request → 正常完成")
+    void with_session_context_but_no_interrupt_completes_normally() {
         mock.reset(ResponseFixtures.endTurn("all good"));
-        // registry 是干净的(setUp 里 clear 过)
         assertFalse(agentControl.isInterruptRequested("d9-parent-sid"));
 
-        String result = subagent.spawn("some task", "d9-parent-sid");
-        assertEquals("all good", result);
+        String prev = com.xilidou.jooj.agent.SessionContext.push("d9-parent-sid");
+        try {
+            String result = subagent.spawn("some task");
+            assertEquals("all good", result);
+        } finally {
+            com.xilidou.jooj.agent.SessionContext.pop(prev);
+        }
     }
 
     @Test
     @DisplayName("D-9 while 顶部检查点:进入第一轮 turn 前 request → 立即抛 AgentInterruptedException")
     void interrupt_at_turn_top_before_first_llm_call() {
-        // 提前 request,subagent 一进 for 循环顶部就应该抛
+        // 提前 request + push SessionContext,subagent 一进 for 循环顶部就应该抛
         agentControl.requestInterrupt("d9-parent-sid");
         mock.reset(req -> {
             throw new IllegalStateException("不该发起 LLM 请求,应先命中 turn 顶部检查点");
         });
 
-        AgentInterruptedException aie = assertThrows(AgentInterruptedException.class,
-                () -> subagent.spawn("some task", "d9-parent-sid"));
-        assertEquals("d9-parent-sid", aie.getSessionId());
+        String prev = com.xilidou.jooj.agent.SessionContext.push("d9-parent-sid");
+        try {
+            AgentInterruptedException aie = assertThrows(AgentInterruptedException.class,
+                    () -> subagent.spawn("some task"));
+            assertEquals("d9-parent-sid", aie.getSessionId());
 
-        // **关键**:flag 应该保留 —— subagent 用 isRequested(只读),让 lead 消费
-        assertTrue(agentControl.isInterruptRequested("d9-parent-sid"),
-                "subagent 只读检查,flag 应保留给 lead 消费");
+            // **关键**:flag 应该保留 —— subagent 用 isInterruptRequested(只读),让 lead 消费
+            assertTrue(agentControl.isInterruptRequested("d9-parent-sid"),
+                    "subagent 只读检查,flag 应保留给 lead 消费");
+        } finally {
+            com.xilidou.jooj.agent.SessionContext.pop(prev);
+        }
     }
 
     @Test
     @DisplayName("D-9 tool 之间检查点:第 1 个 tool 跑完后 request → 第 2 个 tool 前抛")
     void interrupt_between_tools() {
         AtomicInteger toolCount = new AtomicInteger();
-        // 让 spy_tool 第 1 次跑完后,外部 request interrupt,再让第 2 个 tool_use 被 subagent 处理
-        // 用 SpyTool 的自定义副作用触发 request(在真实场景是 REST 端点触发)
-        // 为了让第 2 个 tool 之前有个"外部 request"发生,我们让 mock 第一轮返回单个 tool_use,
-        // 然后在 spy 执行完时 request,第二轮返回 endTurn(但 subagent 应该在下一次 turn 顶部
-        // 检查点就抛,永远到不了第 2 轮 LLM call)
-
-        // 简化:第 1 轮返 tool_use → spy 执行时自己 request → 下一轮 turn 顶部就抛
         var toolAction = new Runnable() {
             @Override public void run() {
                 if (toolCount.incrementAndGet() == 1) {
-                    // 第一个 tool 执行完后 request interrupt
                     agentControl.requestInterrupt("d9-parent-sid");
                 }
             }
@@ -245,13 +246,18 @@ class SubagentTest {
                 ResponseFixtures.endTurn("shouldnt reach")
         );
 
-        AgentInterruptedException aie = assertThrows(AgentInterruptedException.class,
-                () -> subagent.spawn("run tool then continue", "d9-parent-sid"));
-        assertEquals("d9-parent-sid", aie.getSessionId());
-        // spy_tool 应该跑过 1 次(第一个 tool_use),然后下一轮 turn 顶部抛
-        assertEquals(1, spyTool.executionCount.get());
-        // 应该只调用 1 次 LLM(第 2 次会在 turn 顶部被拦)
-        assertEquals(1, mock.getCallCount());
+        String prev = com.xilidou.jooj.agent.SessionContext.push("d9-parent-sid");
+        try {
+            AgentInterruptedException aie = assertThrows(AgentInterruptedException.class,
+                    () -> subagent.spawn("run tool then continue"));
+            assertEquals("d9-parent-sid", aie.getSessionId());
+            // spy_tool 应该跑过 1 次(第一个 tool_use),然后下一轮 turn 顶部抛
+            assertEquals(1, spyTool.executionCount.get());
+            // 应该只调用 1 次 LLM(第 2 次会在 turn 顶部被拦)
+            assertEquals(1, mock.getCallCount());
+        } finally {
+            com.xilidou.jooj.agent.SessionContext.pop(prev);
+        }
     }
 
     // ── 测试用 Spy Tool + 假名字工具(用来验证 excludedTools)──────────────

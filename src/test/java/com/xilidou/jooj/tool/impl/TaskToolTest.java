@@ -78,22 +78,20 @@ class TaskToolTest {
     @Test
     @DisplayName("正常路径:转发到 subagent.spawn,返回 success + 子 agent 摘要")
     void delegates_to_subagent_and_wraps_result() {
-        // s22 D-9:TaskTool 现在调 2-arg spawn(desc, parentSid);测试走 1-arg execute →
-        // ExecutionContext.lead() 提供 sid,mock stub 2-arg 版本
-        when(subagent.spawn(eq("分析 X 模块"), any())).thenReturn("X 模块的关键文件是 Foo.java");
+        when(subagent.spawn("分析 X 模块")).thenReturn("X 模块的关键文件是 Foo.java");
 
         ToolResult result = tool.execute(new ToolCall("task",
                 Map.of("description", "分析 X 模块")));
 
         assertTrue(result.isSuccess());
         assertEquals("X 模块的关键文件是 Foo.java", result.getOutput());
-        verify(subagent, times(1)).spawn(eq("分析 X 模块"), any());
+        verify(subagent, times(1)).spawn("分析 X 模块");
     }
 
     @Test
     @DisplayName("subagent.spawn 抛异常 → 包成 fail ToolResult,不传播")
     void wraps_subagent_exception() {
-        when(subagent.spawn(any(), any())).thenThrow(new RuntimeException("LLM 挂了"));
+        when(subagent.spawn(anyString())).thenThrow(new RuntimeException("LLM 挂了"));
 
         ToolResult result = tool.execute(new ToolCall("task",
                 Map.of("description", "any task")));
@@ -108,7 +106,7 @@ class TaskToolTest {
     @Test
     @DisplayName("D-9:subagent 抛 AgentInterruptedException → 转成 [Subagent interrupted] tool_result,不算 subagent failed")
     void interrupt_exception_becomes_interrupt_tool_result() {
-        when(subagent.spawn(any(), any())).thenThrow(new AgentInterruptedException("sid-x"));
+        when(subagent.spawn(anyString())).thenThrow(new AgentInterruptedException("sid-x"));
 
         ToolResult result = tool.execute(new ToolCall("task",
                 Map.of("description", "some task")));

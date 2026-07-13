@@ -3,7 +3,6 @@ package com.xilidou.jooj.tool.impl;
 import com.xilidou.jooj.agent.AgentInterruptedException;
 import com.xilidou.jooj.http.dto.InputSchema;
 import com.xilidou.jooj.subagent.Subagent;
-import com.xilidou.jooj.tool.ExecutionContext;
 import com.xilidou.jooj.tool.Tool;
 import com.xilidou.jooj.tool.ToolCall;
 import com.xilidou.jooj.tool.ToolDefinition;
@@ -95,26 +94,21 @@ public class TaskTool implements Tool {
         ));
     }
 
-    @Override
-    public ToolResult execute(ToolCall call) {
-        // 兼容旧签名 —— 无 ctx 时 subagent 内部禁用 interrupt 检查(parentSessionId=null)
-        return execute(call, ExecutionContext.lead());
-    }
-
     /**
-     * s22 D-9:2-arg 入口,从 {@link ExecutionContext} 拿 lead 的 sessionId 传给 subagent,
-     * subagent 内部据此响应用户 interrupt。
+     * s22 D-10-D:1-arg execute 就够 —— subagent 内部从 {@link com.xilidou.jooj.agent.SessionContext}
+     * (ThreadLocal)读 sid,不需要工具层显式传。这是"同线程栈内所有层统一走 ThreadLocal"
+     * 的架构决定,契约保持简洁。
      *
      * <p>Subagent 抛 {@link AgentInterruptedException} 时:
      * <ul>
      *   <li>转成 tool_result {@code [Subagent interrupted by user]} 返给 lead</li>
      *   <li><b>不消费</b> AgentControl 的 flag(Subagent 用 isInterruptRequested 只读检查)</li>
-     *   <li>lead 拿到 tool_result 后回到 while 顶部,{@code consumeIfRequested} 真消费 + 抛,
-     *       走 D-8 已有路径(append [Interrupted by user] + publish TurnInterrupted)</li>
+     *   <li>lead 拿到 tool_result 后回到 while 顶部,{@code consumeInterrupt} 真消费 + 抛,
+     *       走 D-8 已有路径</li>
      * </ul>
      */
     @Override
-    public ToolResult execute(ToolCall call, ExecutionContext ctx) {
+    public ToolResult execute(ToolCall call) {
         if (!"task".equals(call.getToolName())) {
             return new ToolResult(false, "Unknown tool: " + call.getToolName());
         }
@@ -127,14 +121,11 @@ public class TaskTool implements Tool {
             return new ToolResult(false, "Error: 'description' must not be blank");
         }
 
-        String parentSid = ctx != null ? ctx.sessionId() : null;
-        log.info("[Task] spawning subagent (parentSid={}): {}", parentSid,
+        log.info("[Task] spawning subagent: {}",
                 description.length() > 80 ? description.substring(0, 80) + "..." : description);
         try {
-            return new ToolResult(true, subagent.spawn(description, parentSid));
+            return new ToolResult(true, subagent.spawn(description));
         } catch (AgentInterruptedException aie) {
-            // s22 D-9:用户 interrupt 到 subagent。tool_result 反馈给 lead,lead 下一轮
-            // while 顶部会再次 consume(那次真消费清 flag)+ 抛出 → 走 D-8 路径。
             log.info("[Task] subagent interrupted by user, returning interrupt tool_result");
             return new ToolResult(false, "[Subagent interrupted by user]");
         } catch (Exception e) {

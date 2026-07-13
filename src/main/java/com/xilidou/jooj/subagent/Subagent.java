@@ -149,30 +149,21 @@ public class Subagent {
     /**
      * 派生一个子 Agent 跑给定任务,返回最终摘要文本。
      *
-     * <p>s22 D-9:向后兼容入口 —— 不传 parentSessionId。用于测试路径 / 无 session 场景。
-     * 生产路径应走 {@link #spawn(String, String)},让用户 interrupt 能穿透到 subagent 内部。
+     * <p>s22 D-9/D-10-D:sid 从 {@link SessionContext#current()} 读(lead 线程栈已经
+     * push 过)。不显式传参 —— tool / hook / approver 深层调用统一从 ThreadLocal 拿,
+     * 保持契约简洁。
+     *
+     * <p>Subagent 在 for turn 顶部 + tool 循环之间调 {@link AgentControl#isInterruptRequested}
+     * (**只读**)检查 flag,true 时抛 {@link AgentInterruptedException}。
+     *
+     * <p><b>为什么只读不消费</b>:flag 由 lead 的 while 顶部消费一次 —— subagent 抛出后
+     * TaskTool 会转成 {@code [Subagent interrupted]} tool_result 返给 lead;lead 拿到
+     * tool_result 后回到 while 顶部,那次 {@code consumeInterrupt} 才真消费 + 抛出 →
+     * 走 D-8 已建立的路径。
+     *
+     * @throws AgentInterruptedException 若运行期间用户请求打断
      */
     public String spawn(String description) {
-        return spawn(description, null);
-    }
-
-    /**
-     * s22 D-9:响应用户 interrupt 的 spawn 入口。
-     *
-     * <p>{@code parentSessionId} 是 lead loop 的 sessionId。Subagent 在 for turn 顶部
-     * 和 tool 循环之间调 {@link AgentControl#isInterruptRequested(String)}(**只读**)
-     * 检查 flag,true 时抛 {@link AgentInterruptedException}。
-     *
-     * <p><b>为什么只读不消费</b>:flag 该由 lead 的 while 顶部消费一次 —— subagent 抛出后
-     * TaskTool 会把它转成 {@code [Subagent interrupted]} tool_result 返给 lead;lead 拿到
-     * tool_result 后回到 while 顶部,那次 {@code consumeIfRequested} 才真消费 + 抛出 →
-     * 走 D-8 已建立的路径(append [Interrupted by user] + publish TurnInterrupted)。
-     *
-     * @param description       子任务描述
-     * @param parentSessionId   lead loop 的 sessionId;{@code null} 时禁用 interrupt 检查(向后兼容)
-     * @throws AgentInterruptedException 若 subagent 运行期间用户请求打断
-     */
-    public String spawn(String description, String parentSessionId) {
         if (description == null || description.isBlank()) {
             return "Subagent error: empty task description";
         }
@@ -187,7 +178,7 @@ public class Subagent {
 
         for (int turn = 0; turn < MAX_TURNS; turn++) {
             // s22 D-9:每轮 turn 顶部检查 interrupt(只读,不消费)
-            checkInterrupt(parentSessionId);
+            checkInterrupt();
 
             CreateMessageRequest request = CreateMessageRequest.builder()
                     .model(model)
@@ -210,7 +201,7 @@ public class Subagent {
             for (ToolUseBlock toolUse : response.toolUses()) {
                 // s22 D-9:每个 tool 之间也检查 —— 用户点 stop 后已跑完的 tool 结果不进 messages,
                 // subagent 直接抛出。跟 lead 的检查点粒度对齐。
-                checkInterrupt(parentSessionId);
+                checkInterrupt();
 
                 Map<String, Object> args = parseToolInput(toolUse);
 
@@ -221,7 +212,9 @@ public class Subagent {
                     continue;
                 }
 
-                ToolResult execResult = registry.execute(new ToolCall(toolUse.getName(), args));
+                ToolResult execResult = registry.execute(
+                        new ToolCall(toolUse.getName(), args),
+                        com.xilidou.jooj.tool.ExecutionContext.lead());
                 String output = execResult.getOutput();
 
                 String preview = output.length() > 100 ? output.substring(0, 100) + "..." : output;
@@ -245,16 +238,19 @@ public class Subagent {
     }
 
     /**
-     * s22 D-9:interrupt 检查点辅助方法。
+     * s22 D-9/D-10-D:interrupt 检查点辅助方法。sid 从 {@link SessionContext#current()} 读
+     * (lead 线程栈已 push 过);用 {@link AgentControl#isInterruptRequested} 只读检查,
+     * 让 flag 保留给 lead 消费。
      *
-     * <p>{@code parentSessionId=null} 时(测试/兼容路径)跳过检查。用
-     * {@link AgentControl#isInterruptRequested} 只读检查,让 flag 保留给 lead 消费。
+     * <p>无 sid 绑定(测试直接 new Subagent)或 agentControl null 时静默跳过。
      */
-    private void checkInterrupt(String parentSessionId) {
-        if (parentSessionId == null || agentControl == null) return;
-        if (agentControl.isInterruptRequested(parentSessionId)) {
-            log.info("[Subagent] interrupted by user request for parent sid={}", parentSessionId);
-            throw new AgentInterruptedException(parentSessionId);
+    private void checkInterrupt() {
+        if (agentControl == null) return;
+        String sid = com.xilidou.jooj.agent.SessionContext.current();
+        if (sid == null || sid.isBlank()) return;
+        if (agentControl.isInterruptRequested(sid)) {
+            log.info("[Subagent] interrupted by user request for sid={}", sid);
+            throw new AgentInterruptedException(sid);
         }
     }
 

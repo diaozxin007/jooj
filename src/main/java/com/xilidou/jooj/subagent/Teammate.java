@@ -3,6 +3,9 @@ package com.xilidou.jooj.subagent;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xilidou.jooj.JoojProperties;
+import com.xilidou.jooj.agent.AgentControl;
+import com.xilidou.jooj.agent.AgentInterruptedException;
+import com.xilidou.jooj.agent.SessionContext;
 import com.xilidou.jooj.config.JoojExecutors;
 import com.xilidou.jooj.hook.HookManager;
 import com.xilidou.jooj.http.AnthropicClient;
@@ -176,6 +179,11 @@ public class Teammate {
     private final long idlePollMs;
     /** s17:idle 总超时(ms),来自 jooj.team.idle-timeout-ms。 */
     private final long idleTimeoutMs;
+    /**
+     * s22 D-10-D:响应用户 interrupt 的控制平面 + 让 teammate 内 tool 命中
+     * {@link com.xilidou.jooj.permission.WebUserApprover} 时能 escalate 到 lead 的 pending 队列。
+     */
+    private final AgentControl agentControl;
 
     public Teammate(AnthropicClient client,
                     ToolRegistry registry,
@@ -187,7 +195,8 @@ public class Teammate {
                     AutonomousIdle autonomousIdle,
                     WorktreeService worktreeService,
                     com.xilidou.jooj.tasks.TaskService taskService,
-                    JoojProperties props) {
+                    JoojProperties props,
+                    AgentControl agentControl) {
         this.client = client;
         this.model = props.getAnthropic().getModel();
         this.registry = registry;
@@ -201,6 +210,7 @@ public class Teammate {
         this.taskService = taskService;
         this.idlePollMs = props.getTeam().getIdlePollMs();
         this.idleTimeoutMs = props.getTeam().getIdleTimeoutMs();
+        this.agentControl = agentControl;
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -210,10 +220,16 @@ public class Teammate {
     /**
      * 派一个新队友。立即返回 status 字符串,真实工作在 daemon thread 跑。
      *
+     * <p>s22 D-10-D:{@code parentSessionId} 是派它的 lead sid,teammate 线程在 runLoop
+     * 顶部 {@link SessionContext#push(String)} 后,内部 tool 调用命中
+     * {@link com.xilidou.jooj.permission.WebUserApprover} 时能冒泡到 lead 的 pending 队列。
+     * 同时 runLoop 的 outer while 顶部会调 {@link AgentControl#isInterruptRequested(String)},
+     * lead 被打断时 teammate 一并停(用户点 stop 一处覆盖 lead / subagent / teammate)。
+     *
+     * @param parentSessionId 派此 teammate 的 lead sessionId;生产必传,测试可传 null
      * @return {@code "Spawned <name> as <role>"} 成功;{@code "Error: <reason>"} 失败
-     *         (重名 / 参数缺失等)
      */
-    public String spawn(String name, String role, String prompt) {
+    public String spawn(String name, String role, String prompt, String parentSessionId) {
         if (name == null || name.isBlank()) return "Error: name must not be blank";
         if (role == null || role.isBlank()) return "Error: role must not be blank";
         if (prompt == null || prompt.isBlank()) return "Error: prompt must not be blank";
@@ -228,13 +244,16 @@ public class Teammate {
         }
 
         Runnable teammateWork = () -> {
+            // s22 D-10-D:teammate 线程 push 父 sid,深层 tool 调用 → WebUserApprover 用它
+            String prevSid = SessionContext.push(parentSessionId);
             try {
-                runLoop(name, role, prompt);
+                runLoop(name, role, prompt, parentSessionId);
             } catch (Exception e) {
                 log.error("[Teammate {}] crashed", name, e);
                 bus.send(name, "lead",
                         "Teammate " + name + " crashed: " + e.getMessage(), "error");
             } finally {
+                SessionContext.pop(prevSid);
                 activeTeammates.remove(name);
                 log.info("[Teammate {}] exited", name);
             }
@@ -269,7 +288,7 @@ public class Teammate {
     //  daemon thread loop
     // ─────────────────────────────────────────────────────────────
 
-    private void runLoop(String name, String role, String prompt) {
+    private void runLoop(String name, String role, String prompt, String parentSessionId) {
         System.out.println();
         System.out.println(PURPLE + "[Teammate " + name + " spawned as " + role + "]" + RESET);
 
@@ -303,6 +322,14 @@ public class Teammate {
         // + 等 inbox。有新活回 WORK,无活超时退出。
         outer:
         while (!shutdownRequested && activeTurnTotal < MAX_ACTIVE_TURNS) {
+
+            // s22 D-10-D:每个 outer 迭代顶部检查 lead interrupt。只读不消费(让 lead 消费),
+            // 抛 AgentInterruptedException 走 spawn Runnable 的 crash 分支 → 通知 lead + 清 activeTeammates。
+            if (parentSessionId != null && agentControl != null
+                    && agentControl.isInterruptRequested(parentSessionId)) {
+                log.info("[Teammate {}] interrupted by user (parent sid={})", name, parentSessionId);
+                throw new AgentInterruptedException(parentSessionId);
+            }
 
             // ── 身份重注入(s17)──
             // compact 之后 messages 可能被压缩成一段摘要,LLM 失忆"我是谁"。

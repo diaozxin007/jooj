@@ -147,6 +147,15 @@ public class TeamTool implements Tool {
         );
     }
 
+    /**
+     * s22 D-10-D:1-arg execute 就够 —— teammate 是**跨线程**边界(spawn 到 worker pool),
+     * spawn 时把 sid 一次性传进去(在 doSpawn 内部从 {@link com.xilidou.jooj.agent.SessionContext}
+     * 读),Runnable 顶部再 push 一次 —— 这样 teammate 线程栈就有 sid,内部 tool 调用
+     * 命中 {@code WebUserApprover} 时能冒泡到 lead 的 pending 队列。
+     *
+     * <p>Interrupt 覆盖:teammate 内部 outer while 也调 {@code isInterruptRequested(sid)},
+     * lead 被 interrupt 时同 sid 下所有 teammate 下一个检查点一并停。
+     */
     @Override
     public ToolResult execute(ToolCall call) {
         try {
@@ -179,7 +188,10 @@ public class TeamTool implements Tool {
         if (role == null) return new ToolResult(false, "Error: 'role' is required");
         if (prompt == null) return new ToolResult(false, "Error: 'prompt' is required");
 
-        String result = teammate.spawn(name.toString(), role.toString(), prompt.toString());
+        // s22 D-10-D:从 SessionContext (ThreadLocal) 读 lead sid,一次性传给 teammate.spawn。
+        // 跨线程边界,ThreadLocal 传不过去,必须显式传参。teammate 的 Runnable 顶部会重新 push。
+        String parentSid = com.xilidou.jooj.agent.SessionContext.current();
+        String result = teammate.spawn(name.toString(), role.toString(), prompt.toString(), parentSid);
         boolean success = result.startsWith("Spawned ");
         if (success) {
             System.out.println("  " + CYAN + "[team] " + result + RESET);

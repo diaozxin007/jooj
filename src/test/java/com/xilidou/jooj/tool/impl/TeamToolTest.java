@@ -70,7 +70,9 @@ class TeamToolTest {
     @Test
     @DisplayName("spawn_teammate 正常路径:转发到 Teammate.spawn 并返回 success")
     void spawn_teammate_happy_path() {
-        when(teammate.spawn("alice", "backend dev", "set up DB"))
+        // s22 D-10-D:teammate.spawn 现在是 4-arg (name, role, prompt, parentSid)。
+        // 测试路径无 SessionContext.push,TeamTool 内部 SessionContext.current() 返 null。
+        when(teammate.spawn(eq("alice"), eq("backend dev"), eq("set up DB"), isNull()))
                 .thenReturn("Spawned alice as backend dev");
 
         ToolResult r = call("spawn_teammate", Map.of(
@@ -80,13 +82,13 @@ class TeamToolTest {
 
         assertTrue(r.isSuccess());
         assertEquals("Spawned alice as backend dev", r.getOutput());
-        verify(teammate).spawn("alice", "backend dev", "set up DB");
+        verify(teammate).spawn(eq("alice"), eq("backend dev"), eq("set up DB"), isNull());
     }
 
     @Test
     @DisplayName("spawn_teammate Teammate 返 Error 字符串 → success=false")
     void spawn_teammate_returns_error_when_service_fails() {
-        when(teammate.spawn(any(), any(), any()))
+        when(teammate.spawn(any(), any(), any(), any()))
                 .thenReturn("Error: teammate 'alice' already exists");
 
         ToolResult r = call("spawn_teammate", Map.of(
