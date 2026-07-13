@@ -294,6 +294,16 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   background: var(--accent-hover); border-color: var(--accent-hover);
 }
 
+/* s22 D-8:stop 按钮 —— busy 时才可见,红色警示 */
+#stopBtn {
+  background: #b0413e; border-color: #b0413e; color: #fff;
+  font-weight: 500; padding: 8px 22px;
+}
+#stopBtn:hover:not(:disabled) {
+  background: #c94a47; border-color: #c94a47;
+}
+#stopBtn[hidden] { display: none; }
+
 /* ── Messages ──────────────────────────────────────────────── */
 
 main {

@@ -24,6 +24,9 @@ import java.util.List;
  *       <td>cron 触发,前端渲染系统气泡 "⏰ Scheduled by cron:jobId"</td></tr>
  *   <tr><td>{@code "assistant"}</td><td>{@link ChatItem.Type#ASSISTANT_TEXT}</td>
  *       <td>lead-agent 最终纯文本回复</td></tr>
+ *   <tr><td>{@code "interrupted"}</td>
+ *       <td>{@link ChatItem.Type#SYSTEM_NOTICE}({@link ChatItem.SystemNotice.Source#CRON})</td>
+ *       <td>s22 D-8:用户主动打断,前端渲染系统气泡 "[已中断]" + 可选 partial content</td></tr>
  * </table>
  *
  * <p><b>失去的展示能力</b>(选择 P4 A 方案的必然代价,参考 s22 文档 §4.5):
@@ -58,7 +61,11 @@ public final class TranscriptToChatItemMapper {
         List<ChatItem> items = new ArrayList<>(lines.size());
         for (int i = 0; i < lines.size(); i++) {
             TranscriptLine line = lines.get(i);
-            if (line == null || line.content() == null || line.content().isBlank()) continue;
+            if (line == null) continue;
+            // s22 D-8:interrupted 事件允许 blank content(打断时 assistant 还没出文本),
+            // 其他 role 空 content 跳过
+            boolean isInterrupted = "interrupted".equals(line.role());
+            if (!isInterrupted && (line.content() == null || line.content().isBlank())) continue;
             ChatItem item = mapLine(line, "tr-" + i);
             if (item != null) items.add(item);
         }
@@ -92,6 +99,22 @@ public final class TranscriptToChatItemMapper {
                     line.content(),
                     null, null,
                     createdAt);
+            case "interrupted" -> {
+                // s22 D-8:用户主动打断的一轮。content 可能是 partial assistant text 或空。
+                // 渲染时前端显示 "[已中断]" 主标题 + partial 作为 details(如果有)。
+                // 沿用 SYSTEM_NOTICE 通道保持前端 mapping 简单,不新增 Type。
+                String partial = line.content() == null ? "" : line.content();
+                yield new ChatItem(
+                        id,
+                        ChatItem.Type.SYSTEM_NOTICE,
+                        "system",
+                        null, null,
+                        new ChatItem.SystemNotice(
+                                ChatItem.SystemNotice.Source.CRON,
+                                "⛔ 已中断",
+                                partial.isBlank() ? "(用户在 lead-agent 出文本前打断)" : partial),
+                        createdAt);
+            }
             default -> null; // 未知 role,忽略(留 forward-compat 空间)
         };
     }

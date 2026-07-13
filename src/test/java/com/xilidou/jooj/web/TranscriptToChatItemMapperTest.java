@@ -156,4 +156,36 @@ class TranscriptToChatItemMapperTest {
         assertEquals(ChatItem.Type.USER_INPUT, items.get(2).type());
         assertEquals(ChatItem.Type.ASSISTANT_TEXT, items.get(3).type());
     }
+
+    // ── s22 D-8:interrupted role mapping ────────────────────────
+
+    @Test
+    @DisplayName("D-8 interrupted with partial content → SYSTEM_NOTICE 带 partial detail")
+    void interrupted_with_partial_content() {
+        List<ChatItem> items = TranscriptToChatItemMapper.map(List.of(
+                new TranscriptLine("interrupted", "I was thinking about...",
+                        Instant.parse("2026-07-13T14:00:00Z"), null)));
+
+        assertEquals(1, items.size());
+        ChatItem item = items.get(0);
+        assertEquals(ChatItem.Type.SYSTEM_NOTICE, item.type());
+        assertEquals("system", item.role());
+        assertNotNull(item.notice());
+        assertEquals("⛔ 已中断", item.notice().summary());
+        assertEquals("I was thinking about...", item.notice().fullText());
+    }
+
+    @Test
+    @DisplayName("D-8 interrupted with blank content 仍应保留(占位说明用户在出文本前打断)")
+    void interrupted_with_blank_content_kept() {
+        List<ChatItem> items = TranscriptToChatItemMapper.map(List.of(
+                new TranscriptLine("interrupted", "",
+                        Instant.parse("2026-07-13T14:00:00Z"), null)));
+
+        assertEquals(1, items.size(),
+                "interrupted 空 content 不该被过滤(它本身是有意义的系统事件)");
+        assertEquals(ChatItem.Type.SYSTEM_NOTICE, items.get(0).type());
+        assertTrue(items.get(0).notice().fullText().contains("打断"),
+                "占位说明应含关键词'打断'");
+    }
 }

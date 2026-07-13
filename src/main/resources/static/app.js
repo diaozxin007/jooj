@@ -11,6 +11,7 @@
   const form = $('chatForm');
   const input = $('queryInput');
   const sendBtn = $('sendBtn');
+  const stopBtn = $('stopBtn');
   const clearBtn = $('clearBtn');
   const status = $('status');
   const histSizeEl = $('historySize');
@@ -33,8 +34,14 @@
 
   function setBusy(busy) {
     input.disabled = busy;
+    // s22 D-8:busy 时藏 send 显示 stop,idle 时反过来 —— 用户永远只看到一个可点按钮
+    sendBtn.hidden = busy;
     sendBtn.disabled = busy;
     clearBtn.disabled = busy;
+    if (stopBtn) {
+      stopBtn.hidden = !busy;
+      stopBtn.disabled = false;  // 每次进入 busy 都恢复可点
+    }
     setStatus(busy ? 'busy' : 'idle', busy ? 'thinking' : 'idle');
   }
 
@@ -311,6 +318,30 @@
       input.focus();
     }
   });
+
+  // s22 D-8:stop 按钮 —— 打断当前正跑的 turn。
+  // 语义:立即 POST /api/chat/{sid}/interrupt(不等 turn 真结束);
+  // agentLoop 会在下一个检查点抛 AgentInterruptedException,进入 processOneQuery
+  // 的 catch 分支 append [Interrupted by user] + publish TurnInterrupted 事件。
+  // 原先那个 POST /api/chat 请求会继续等,但拿到的 response 是"打断到检查点"的状态。
+  if (stopBtn) {
+    stopBtn.addEventListener('click', async () => {
+      if (!currentSessionId) return;
+      stopBtn.disabled = true;   // 防连点,server 端幂等但 UI 反馈更清晰
+      try {
+        const res = await fetch(`/api/chat/${encodeURIComponent(currentSessionId)}/interrupt`, {
+          method: 'POST',
+        });
+        if (!res.ok) {
+          console.warn('[interrupt] server returned', res.status);
+        }
+        // 不改变 busy 状态 —— 等 /api/chat 那个 request 自己返回 + finally 里的 setBusy(false)
+      } catch (e) {
+        console.error('[interrupt] failed', e);
+        stopBtn.disabled = false;  // 请求发不出去,恢复可点
+      }
+    });
+  }
 
   // ── Sessions panel ──
 
