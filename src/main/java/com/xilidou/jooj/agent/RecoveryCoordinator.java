@@ -77,72 +77,99 @@ public class RecoveryCoordinator {
     }
 
     /**
-     * 调用 LLM + 处理三条恢复路径。一次成功的 {@link #call} 返回 {@link RecoveryResult.Done};
-     * 需要 agentLoop 介入(重试/续写/退出)的返回另外三种 result。
+     * 调用 LLM + 处理三条恢复路径,内部循环直到拿到可用 response 或 fatal。
      *
-     * <p>s22 架构审查(2026-07-13):删掉旧签名的 {@code AnthropicClient client} 参数。
-     * client 已经由 coordinator 自己持有,caller 不需要传。
+     * <p>s22 架构审查(2026-07-13,B2 refactor):call 现在**只暴露成功 / 失败二元结局**
+     * ——caller (agentLoop) 拿到 response 就继续,拿到 FatalRecoveryException 就 append
+     * error 结束 turn。原来的 4-branch {@code RecoveryResult} sealed type 被删除:
+     * EscalateAndRetry 和 AppendContinuation 是 recovery **内部**决定"再试一次"的实现细节,
+     * caller 不该关心。
      *
-     * @param requestBuilder  接 RecoveryState,返回 request。retry 中 state 改动后重建用
-     * @param messages        对话历史。**Path 2 会原地裁剪**
+     * <h3>Recovery 内部循环</h3>
+     *
+     * <p>三种 retry 场景现在都在本方法内部消化:
+     * <ul>
+     *   <li>Path 1 max_tokens 首次:升级 currentMaxTokens 后 continue</li>
+     *   <li>Path 1 max_tokens 后续:append truncated assistant + append user continuation prompt,continue</li>
+     *   <li>Path 2 prompt_too_long:reactiveCompact + continue</li>
+     * </ul>
+     *
+     * <p>Path 3(429/529)在 {@link #withRetry} 里处理(已本身就是内部循环)。
+     *
+     * <h3>Messages mutation 语义</h3>
+     *
+     * <p>Recovery **有权** mutate messages —— Path 2 之前就有 reactiveCompact,B2 把
+     * Path 1 continuation 的 mutation 也搬进来,语义一致。Caller 不需要知道 messages 是不是被改过。
+     *
+     * @param requestBuilder  接 RecoveryState 返回 request。state 每次改动后重建
+     * @param messages        对话历史。**Path 1 continuation / Path 2 compact 会原地修改**
      * @param state           per-agent-loop 状态机(由 {@link #newState()} 创建)
-     * @return 恢复结局,见 {@link RecoveryResult} 4 个变体
+     * @return 成功的 LLM response(保证 stop_reason != max_tokens)
+     * @throws FatalRecoveryException 三条路径都尝试过后仍无法恢复
      */
-    public RecoveryResult call(
+    public CreateMessageResponse call(
             Function<RecoveryState, CreateMessageRequest> requestBuilder,
             List<MessageParam> messages,
-            RecoveryState state) {
+            RecoveryState state) throws FatalRecoveryException {
 
-        // ── 调 LLM,withRetry 处理 Path 3(429/529)─────────────────
-        CreateMessageResponse response;
-        try {
-            response = withRetry(requestBuilder, state);
-        } catch (AnthropicException e) {
-            // ── Path 2: prompt_too_long → reactive compact + 重试一次 ──
-            if (e.isPromptTooLong()
-                    && !state.hasAttemptedReactiveCompact
-                    && compactPipeline.hasReactiveSupport()) {
-                log.warn("[Recovery] prompt_too_long detected → reactive compact");
-                boolean ok = compactPipeline.reactiveCompact(messages);
-                if (!ok) {
-                    log.error("[Recovery] reactive compact failed");
-                    return new RecoveryResult.Fatal(
-                            "Context too large and reactive compact failed: " + e.getMessage());
+        while (true) {
+            // ── 调 LLM,withRetry 处理 Path 3(429/529)─────────────────
+            CreateMessageResponse response;
+            try {
+                response = withRetry(requestBuilder, state);
+            } catch (AnthropicException e) {
+                // ── Path 2: prompt_too_long → reactive compact + 重试一次 ──
+                if (e.isPromptTooLong()
+                        && !state.hasAttemptedReactiveCompact
+                        && compactPipeline.hasReactiveSupport()) {
+                    log.warn("[Recovery] prompt_too_long detected → reactive compact");
+                    boolean ok = compactPipeline.reactiveCompact(messages);
+                    if (!ok) {
+                        log.error("[Recovery] reactive compact failed");
+                        throw new FatalRecoveryException(
+                                "Context too large and reactive compact failed: " + e.getMessage());
+                    }
+                    state.hasAttemptedReactiveCompact = true;
+                    // messages 已被 reactiveCompact 原地修改 → 本 while 循环重新调用
+                    continue;
                 }
-                state.hasAttemptedReactiveCompact = true;
-                // messages 已被 reactiveCompact 原地修改 → 让 agentLoop 重新调用即可
-                return new RecoveryResult.EscalateAndRetry();
+                // 已尝试过 reactive compact 仍然 prompt_too_long,或不可重试错误
+                String reason = e.isPromptTooLong()
+                        ? "Context still too large after reactive compact"
+                        : type(e) + ": " + truncate(e.getMessage(), 200);
+                log.error("[Recovery] unrecoverable: {}", reason);
+                throw new FatalRecoveryException(reason);
             }
-            // 已尝试过 reactive compact 仍然 prompt_too_long,或不可重试错误
-            String reason = e.isPromptTooLong()
-                    ? "Context still too large after reactive compact"
-                    : type(e) + ": " + truncate(e.getMessage(), 200);
-            log.error("[Recovery] unrecoverable: {}", reason);
-            return new RecoveryResult.Fatal(reason);
-        }
 
-        // ── Path 1: stop_reason == max_tokens ───────────────────────
-        if ("max_tokens".equals(response.getStopReason())) {
-            // 第一次升级:不 append 截断输出,让 agentLoop 重建 request 重试
-            if (!state.hasEscalated) {
-                state.hasEscalated = true;
-                state.currentMaxTokens = cfg.getEscalatedMaxTokens();
-                log.info("[Recovery] max_tokens escalated {} → {}",
-                        cfg.getDefaultMaxTokens(), cfg.getEscalatedMaxTokens());
-                return new RecoveryResult.EscalateAndRetry();
+            // ── Path 1: stop_reason == max_tokens ───────────────────────
+            if ("max_tokens".equals(response.getStopReason())) {
+                // 第一次升级:不 append 截断输出,让 while 循环重试
+                if (!state.hasEscalated) {
+                    state.hasEscalated = true;
+                    state.currentMaxTokens = cfg.getEscalatedMaxTokens();
+                    log.info("[Recovery] max_tokens escalated {} → {}",
+                            cfg.getDefaultMaxTokens(), cfg.getEscalatedMaxTokens());
+                    continue;
+                }
+                // 已升级仍截断 → append 截断输出 + continuation prompt,while 循环续写
+                if (state.recoveryCount < cfg.getMaxRecoveryRetries()) {
+                    state.recoveryCount++;
+                    log.info("[Recovery] continuation {}/{}",
+                            state.recoveryCount, cfg.getMaxRecoveryRetries());
+                    // s22 B2:messages mutation 从 caller (agentLoop) 搬来 recovery 内部,
+                    // 保证 recovery 的 4 种旧结局对 caller 收敛成"成功 / fatal" 二元
+                    messages.add(MessageParam.assistant(response.getContent()));
+                    messages.add(MessageParam.user(cfg.getContinuationPrompt()));
+                    continue;
+                }
+                log.error("[Recovery] max_tokens recovery limit reached");
+                throw new FatalRecoveryException(
+                        "Output truncated, max recovery retries reached");
             }
-            // 已升级仍截断 → continuation prompt(最多 maxRecoveryRetries 次)
-            if (state.recoveryCount < cfg.getMaxRecoveryRetries()) {
-                state.recoveryCount++;
-                log.info("[Recovery] continuation {}/{}",
-                        state.recoveryCount, cfg.getMaxRecoveryRetries());
-                return new RecoveryResult.AppendContinuation(response, cfg.getContinuationPrompt());
-            }
-            log.error("[Recovery] max_tokens recovery limit reached");
-            return new RecoveryResult.Fatal("Output truncated, max recovery retries reached");
-        }
 
-        return new RecoveryResult.Done(response);
+            // 成功拿到非 max_tokens 截断的 response
+            return response;
+        }
     }
 
     /**

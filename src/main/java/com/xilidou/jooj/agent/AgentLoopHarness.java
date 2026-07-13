@@ -322,33 +322,27 @@ public class AgentLoopHarness {
             // memory catalog 全局共享(Demo 13 撤销 per-session 化 —— 见 MemoryService 类注释)
             var system = promptAssembler.assembleBlocks(promptAssembler.currentContext());
 
-            RecoveryResult recoveryResult = recoveryCoordinator.call(
-                    state -> CreateMessageRequest.builder()
-                            .model(state.getCurrentModel())
-                            .system(system)
-                            .messages(messages)
-                            .tools(tools)
-                            .maxTokens(state.getCurrentMaxTokens())
-                            .build(),
-                    messages,
-                    recoveryState
-            );
-
+            // s22 架构审查(B2):recovery 内部消化 escalate / continuation,只暴露成功 / fatal 二元。
+            // 消失的 4-branch dispatch 现在都在 RecoveryCoordinator.call 内部循环里,agent loop
+            // 只需要处理"我有 response 继续走" vs "彻底失败 append [Error] 结束 turn"。
             CreateMessageResponse response;
-            if (recoveryResult instanceof RecoveryResult.Done d) {
-                response = d.response();
-            } else if (recoveryResult instanceof RecoveryResult.EscalateAndRetry) {
-                continue;
-            } else if (recoveryResult instanceof RecoveryResult.AppendContinuation ac) {
-                messages.add(MessageParam.assistant(ac.response().getContent()));
-                messages.add(MessageParam.user(ac.continuation()));
-                continue;
-            } else if (recoveryResult instanceof RecoveryResult.Fatal f) {
+            try {
+                response = recoveryCoordinator.call(
+                        state -> CreateMessageRequest.builder()
+                                .model(state.getCurrentModel())
+                                .system(system)
+                                .messages(messages)
+                                .tools(tools)
+                                .maxTokens(state.getCurrentMaxTokens())
+                                .build(),
+                        messages,
+                        recoveryState
+                );
+            } catch (FatalRecoveryException e) {
+                // ChatHistoryMapper 认 "[Error] " 前缀翻成 SYSTEM_NOTICE(ERROR),前端渲染错误气泡
                 messages.add(MessageParam.assistant(List.of(
-                        new TextBlock("[Error] " + f.reason()))));
+                        new TextBlock("[Error] " + e.getReason()))));
                 return;
-            } else {
-                throw new IllegalStateException("Unhandled RecoveryResult: " + recoveryResult);
             }
 
             messages.add(MessageParam.assistant(response.getContent()));
