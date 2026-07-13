@@ -124,6 +124,9 @@ public class Subagent {
      */
     private final AgentControl agentControl;
 
+    /** s22 D-11:tool 执行前 push 摘要给前端 loading 气泡看。 */
+    private final com.xilidou.jooj.agent.TurnEventStream turnEventStream;
+
     /**
      * 唯一构造器 —— Spring 容器装配。
      *
@@ -136,7 +139,8 @@ public class Subagent {
                     @Qualifier("joojObjectMapper") ObjectMapper json,
                     HookManager hooks,
                     JoojProperties props,
-                    AgentControl agentControl) {
+                    AgentControl agentControl,
+                    com.xilidou.jooj.agent.TurnEventStream turnEventStream) {
         this.client = client;
         this.model = props.getAnthropic().getModel();
         this.registry = registry;
@@ -144,6 +148,7 @@ public class Subagent {
         this.hooks = hooks;
         this.includedTools = DEFAULT_INCLUDED_TOOLS;
         this.agentControl = agentControl;
+        this.turnEventStream = turnEventStream;
     }
 
     /**
@@ -205,6 +210,9 @@ public class Subagent {
 
                 Map<String, Object> args = parseToolInput(toolUse);
 
+                // s22 D-11:push 摘要给前端 loading 气泡。sid 从 SessionContext 拿(lead push 过)
+                pushToolEvent(toolUse, args);
+
                 Optional<String> blocked = hooks.triggerPreToolUse(toolUse);
                 if (blocked.isPresent()) {
                     System.out.println(GRAY + "  [sub] ⛔ " + blocked.get() + RESET);
@@ -251,6 +259,27 @@ public class Subagent {
         if (agentControl.isInterruptRequested(sid)) {
             log.info("[Subagent] interrupted by user request for sid={}", sid);
             throw new AgentInterruptedException(sid);
+        }
+    }
+
+    /**
+     * s22 D-11:tool 执行前 push 摘要事件。sid 从 {@link com.xilidou.jooj.agent.SessionContext#current()}
+     * 读(lead 进入 turn 时已 push,subagent 同线程可见)。
+     */
+    private void pushToolEvent(ToolUseBlock toolUse, Map<String, Object> args) {
+        if (turnEventStream == null) return;
+        String sid = com.xilidou.jooj.agent.SessionContext.current();
+        if (sid == null || sid.isBlank()) return;
+        try {
+            com.xilidou.jooj.tool.Tool tool = registry.getTool(toolUse.getName());
+            String summary = tool != null
+                    ? tool.summary(new ToolCall(toolUse.getName(), args))
+                    : "[sub] " + toolUse.getName();
+            // subagent 摘要加 [sub] 前缀,前端能区分是主 loop 还是子任务
+            turnEventStream.push(sid, com.xilidou.jooj.agent.TurnEvent.toolStart(
+                    summary.startsWith("[sub]") ? summary : "[sub] " + summary));
+        } catch (Throwable t) {
+            log.debug("[Subagent TurnEvent] push failed for {}: {}", toolUse.getName(), t.toString());
         }
     }
 

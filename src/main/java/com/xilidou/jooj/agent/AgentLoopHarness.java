@@ -217,6 +217,13 @@ public class AgentLoopHarness {
     private final AgentControl agentControl;
 
     /**
+     * s22 D-11:tool 执行前 push 摘要事件的观察平面 —— 用户 turn 期间 poll {@code /events}
+     * 拿实时进度("正在: $ mvn test")。跟 AgentControl 分离:AgentControl 是控制平面
+     * (interrupt / approval,阻塞语义),TurnEventStream 是观察平面(纯 push 非阻塞)。
+     */
+    private final TurnEventStream turnEventStream;
+
+    /**
      * 唯一构造器 —— Spring 容器装配。
      *
      * <p>s21 Demo 27 review:删 {@code permissions} 入参。
@@ -239,7 +246,8 @@ public class AgentLoopHarness {
                             SessionService sessionService,
                             AgentLockProvider lockProvider,
                             ApplicationEventPublisher eventPublisher,
-                            AgentControl agentControl) {
+                            AgentControl agentControl,
+                            TurnEventStream turnEventStream) {
         this.registry = registry;
         this.json = json;
         this.hooks = hooks;
@@ -256,6 +264,7 @@ public class AgentLoopHarness {
         this.lockProvider = lockProvider;
         this.eventPublisher = eventPublisher;
         this.agentControl = agentControl;
+        this.turnEventStream = turnEventStream;
     }
 
     // ── 核心 Agent Loop ─────────────────────────────────────────
@@ -402,6 +411,10 @@ public class AgentLoopHarness {
                 Map<String, Object> args = parseToolInput(toolUse);
 
                 printToolHeader(toolUse, args);
+
+                // s22 D-11:push tool 摘要到 event stream,前端 poll /events 拿实时进度。
+                // 放在 hook 之前 —— 就算 permission blocked,用户也知道 LLM 打算做什么。
+                pushToolEvent(sessionId, toolUse, args);
 
                 Optional<String> blocked = hooks.triggerPreToolUse(toolUse);
                 if (blocked.isPresent()) {
@@ -627,6 +640,9 @@ public class AgentLoopHarness {
             eventPublisher.publishEvent(new AssistantResponseCompleted(
                     UUID.randomUUID(), sessionId, reply, Instant.now()));
         }
+
+        // s22 D-11:turn 结束清 event stream,防止跨 turn 累积(前端 poll 到就渲染就够)
+        turnEventStream.clear(sessionId);
     }
 
     /** 供 CronTurnOrchestrator 拿 reply —— 用于 delivery 后续处理。 */
@@ -689,6 +705,28 @@ public class AgentLoopHarness {
         Object cmd = args.get("command");
         String display = cmd != null ? cmd.toString() : args.toString();
         System.out.println("\033[33m$ " + display + "\033[0m");
+    }
+
+    /**
+     * s22 D-11:tool 执行前把摘要 push 到 {@link TurnEventStream},前端 poll /events
+     * 拿到并实时更新 loading 气泡("正在: $ mvn test")。
+     *
+     * <p>用 {@link ToolRegistry#getTool} 找具体 Tool 实例调 {@link com.xilidou.jooj.tool.Tool#summary}
+     * ——每个 tool 自己决定摘要格式(BashTool → "$ cmd";FileSystemTool → "📖 path" 等)。
+     * 找不到工具时 fallback 到 toolUse.getName();不抛异常。
+     */
+    private void pushToolEvent(String sessionId, ToolUseBlock toolUse, Map<String, Object> args) {
+        if (sessionId == null) return;
+        try {
+            com.xilidou.jooj.tool.Tool tool = registry.getTool(toolUse.getName());
+            String summary = tool != null
+                    ? tool.summary(new ToolCall(toolUse.getName(), args))
+                    : toolUse.getName();
+            turnEventStream.push(sessionId, TurnEvent.toolStart(summary));
+        } catch (Throwable t) {
+            // 摘要不该挡 tool 执行 —— 出错 log 一下继续
+            log.debug("[TurnEvent] push failed for {}: {}", toolUse.getName(), t.toString());
+        }
     }
 
     private ToolResultBlock executeOneTool(ToolUseBlock toolUse, Map<String, Object> args, ExecutionContext ctx) {

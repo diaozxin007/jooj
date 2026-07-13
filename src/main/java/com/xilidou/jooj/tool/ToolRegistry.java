@@ -109,6 +109,16 @@ public class ToolRegistry {
     }
 
     /**
+     * s22 D-11:按 tool 名找到具体 Tool 实例 —— 给 agent loop 调 {@link Tool#summary}
+     * 用(push 到 TurnEventStream 前需要摘要)。
+     *
+     * @return Tool 实例;找不到返 null(调用方决定是回退到 tool name 还是跳过)
+     */
+    public Tool getTool(String toolName) {
+        return allTools.get(toolName);
+    }
+
+    /**
      * 按需加载:只加载包含目标工具的 Tool
      * 实际场景中,LLM 返回工具调用后,可以动态加载对应 Tool
      */

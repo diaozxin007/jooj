@@ -185,6 +185,9 @@ public class Teammate {
      */
     private final AgentControl agentControl;
 
+    /** s22 D-11:tool 执行前 push 摘要给前端 loading 气泡看。 */
+    private final com.xilidou.jooj.agent.TurnEventStream turnEventStream;
+
     public Teammate(AnthropicClient client,
                     ToolRegistry registry,
                     @Qualifier("joojObjectMapper") ObjectMapper json,
@@ -196,7 +199,8 @@ public class Teammate {
                     WorktreeService worktreeService,
                     com.xilidou.jooj.tasks.TaskService taskService,
                     JoojProperties props,
-                    AgentControl agentControl) {
+                    AgentControl agentControl,
+                    com.xilidou.jooj.agent.TurnEventStream turnEventStream) {
         this.client = client;
         this.model = props.getAnthropic().getModel();
         this.registry = registry;
@@ -211,6 +215,7 @@ public class Teammate {
         this.idlePollMs = props.getTeam().getIdlePollMs();
         this.idleTimeoutMs = props.getTeam().getIdleTimeoutMs();
         this.agentControl = agentControl;
+        this.turnEventStream = turnEventStream;
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -446,6 +451,9 @@ public class Teammate {
         for (ToolUseBlock tu : response.toolUses()) {
             Map<String, Object> args = parseToolInput(tu);
             System.out.println(CYAN + "  [" + name + " · " + tu.getName() + "] " + args + RESET);
+
+            // s22 D-11:push 摘要给前端 loading 气泡("[teammate:alice] $ mvn test")
+            pushToolEvent(name, tu, args);
 
             Optional<String> blocked = hooks.triggerPreToolUse(tu);
             if (blocked.isPresent()) {
@@ -831,6 +839,28 @@ public class Teammate {
             }
         }
         return sb.toString();
+    }
+
+    /**
+     * s22 D-11:tool 执行前 push 摘要事件。sid 从 {@link com.xilidou.jooj.agent.SessionContext#current()}
+     * 读(spawn Runnable 顶部已经 push 过 lead sid,teammate 线程栈自身可见)。
+     *
+     * <p>摘要前缀 {@code [teammate:<name>]} 让前端能区分 lead / subagent / teammate 三层。
+     */
+    private void pushToolEvent(String teammateName, ToolUseBlock toolUse, Map<String, Object> args) {
+        if (turnEventStream == null) return;
+        String sid = com.xilidou.jooj.agent.SessionContext.current();
+        if (sid == null || sid.isBlank()) return;
+        try {
+            com.xilidou.jooj.tool.Tool tool = registry.getTool(toolUse.getName());
+            String base = tool != null
+                    ? tool.summary(new ToolCall(toolUse.getName(), args))
+                    : toolUse.getName();
+            turnEventStream.push(sid,
+                    com.xilidou.jooj.agent.TurnEvent.toolStart("[teammate:" + teammateName + "] " + base));
+        } catch (Throwable t) {
+            log.debug("[Teammate {} TurnEvent] push failed for {}: {}", teammateName, toolUse.getName(), t.toString());
+        }
     }
 
     private Map<String, Object> parseToolInput(ToolUseBlock toolUse) {
