@@ -163,8 +163,6 @@
     setTimeout(tick, 200);
     return () => { stopped = true; };
   }
-    return bubble;
-  }
 
   function escapeHtml(s) {
     const div = document.createElement('div');
