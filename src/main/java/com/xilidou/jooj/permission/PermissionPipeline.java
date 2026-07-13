@@ -58,6 +58,17 @@ public class PermissionPipeline {
     }
 
     /**
+     * s22 D-10-C：web 配置 —— ASK 走 {@link WebUserApprover}(冒泡到 REST /pending)。
+     * caller 传 AgentControl,internal 装配 WebUserApprover。
+     */
+    public static PermissionPipeline forWeb(com.xilidou.jooj.agent.AgentControl agentControl) {
+        return new PermissionPipeline(
+                List.of(new DenyListGate(), new RuleBasedGate()),
+                new UserApprovalGate(new WebUserApprover(agentControl))
+        );
+    }
+
+    /**
      * 测试场景：所有 ASK 都自动通过。
      */
     public static PermissionPipeline alwaysAllow() {

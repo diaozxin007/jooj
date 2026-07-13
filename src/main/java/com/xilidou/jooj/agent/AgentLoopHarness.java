@@ -587,15 +587,22 @@ public class AgentLoopHarness {
                 : ExecutionContext.leadInSession(sessionId);
 
         boolean interrupted = false;
+        // s22 D-10-C:把 sid push 到 ThreadLocal,让深层 Hook / UserApprover 能拿到,
+        // 不用改所有 Hook 契约。try/finally 严格恢复,防止 ThreadLocal 泄漏到下一次 processOneQuery。
+        String prevSid = SessionContext.push(sessionId);
         try {
-            agentLoop(history, ctx);
-        } catch (AgentInterruptedException aie) {
-            // s22 D-8:用户主动打断 —— 把 partial state 落盘,发中断事件,不进入
-            // 正常的 memoryService.onTurnEnd / drainLeadInbox / AssistantResponseCompleted 流程。
-            // messages 保留 partial(可能包含最后一次 assistant response),LLM 下一轮能看到"上轮被打断"上下文。
-            interrupted = true;
-            history.add(MessageParam.user("[Interrupted by user]"));
-            log.info("[Interrupt] turn interrupted sid={} history_size={}", sessionId, history.size());
+            try {
+                agentLoop(history, ctx);
+            } catch (AgentInterruptedException aie) {
+                // s22 D-8:用户主动打断 —— 把 partial state 落盘,发中断事件,不进入
+                // 正常的 memoryService.onTurnEnd / drainLeadInbox / AssistantResponseCompleted 流程。
+                // messages 保留 partial(可能包含最后一次 assistant response),LLM 下一轮能看到"上轮被打断"上下文。
+                interrupted = true;
+                history.add(MessageParam.user("[Interrupted by user]"));
+                log.info("[Interrupt] turn interrupted sid={} history_size={}", sessionId, history.size());
+            }
+        } finally {
+            SessionContext.pop(prevSid);
         }
 
         memoryService.onTurnEnd(history);
