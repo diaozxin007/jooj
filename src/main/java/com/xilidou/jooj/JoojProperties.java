@@ -45,11 +45,9 @@ public class JoojProperties {
 
     /** Permission(s03)配置已拆到 {@link com.xilidou.jooj.permission.PermissionProperties}(2026-07-14)。 */
 
-    /** Skill(s07)路径配置。 */
-    private Skills skills = new Skills();
+    /** Skill(s07)配置已拆到 {@link com.xilidou.jooj.skill.SkillProperties}(2026-07-14)。 */
 
-    /** SYSTEM prompt(s10)模板配置 —— 运行期由 SystemPromptAssembler 按 context 选段。 */
-    private Prompt prompt = new Prompt();
+    /** Prompt(s10)配置已拆到 {@link com.xilidou.jooj.prompt.PromptProperties}(2026-07-14)。 */
 
     /** Recovery(s11)配置已拆到 {@link com.xilidou.jooj.agent.RecoveryProperties}(2026-07-14)。 */
 
@@ -93,63 +91,6 @@ public class JoojProperties {
 
         /** 模型 ID,如 {@code deepseek-chat}。 */
         private String model = "";
-    }
-
-    @Data
-    public static class Skills {
-        /** skills/ 目录(相对 cwd 或绝对路径)。 */
-        private String dir = "skills";
-    }
-
-    /**
-     * SYSTEM prompt 片段模板(s10)。
-     *
-     * <p>对应 Python {@code PROMPT_SECTIONS} 字典。每个字段是一段命名 prompt,
-     * 由 {@link com.xilidou.jooj.prompt.SystemPromptAssembler} 在运行期
-     * 按 context 选取拼接。
-     *
-     * <p><b>哪些字段允许用户 override</b>:
-     * <ul>
-     *   <li>{@code identity} / {@code tools} — 用户在 yml 里可以覆盖,
-     *       让 agent persona 可定制(例如改成"你是一个评测专家")</li>
-     *   <li>{@code workspace} — 不暴露,自动从 {@code System.getProperty("user.dir")} 读,
-     *       避免用户配错路径</li>
-     *   <li>{@code memoryHeader} — 仅控制 memory section 的标题前缀,
-     *       memory 正文由 {@link com.xilidou.jooj.memory.MemoryService} 提供</li>
-     * </ul>
-     */
-    @Data
-    public static class Prompt {
-        /** identity section:agent 自我定位,通常一两句话。 */
-        private String identity =
-                "You are a coding agent. " +
-                "Before starting any multi-step task, use todo_write to plan your steps. " +
-                "Update task status as you go. Act, don't explain.";
-
-        /**
-         * tools section 的使用提示(追加在动态工具列表之后)。
-         * 工具名列表由 {@link com.xilidou.jooj.tool.ToolRegistry} 动态生成,
-         * 此字段只放"怎么用"的 hint。
-         */
-        private String toolsHint =
-                "For slow ops (build/test/deploy/install), set bash.run_in_background=true " +
-                "to keep working while it runs in the background.";
-
-        /**
-         * memory section 的标题前缀。memory 正文由 MemoryService.catalog() 提供,
-         * 此前缀放在正文之前形成完整的 memory section。
-         */
-        private String memoryHeader = "Memory index (long-term knowledge from past sessions):";
-
-        /**
-         * skill section 的标题前缀。skill 正文由 SkillRegistry.catalog() 提供,
-         * 此前缀放在正文之前形成完整的 skill section。
-         *
-         * <p>提示 LLM 怎么用:catalog 只列出 name + description,需要完整内容时
-         * 调 {@code load_skill(name=...)} 工具。空 catalog 时整段 skill section 跳过。
-         */
-        private String skillsHeader =
-                "Available skills (call load_skill(name=...) to load full content):";
     }
 
     /**

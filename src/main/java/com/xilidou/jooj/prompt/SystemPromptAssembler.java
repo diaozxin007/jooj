@@ -2,7 +2,6 @@ package com.xilidou.jooj.prompt;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xilidou.jooj.JoojProperties;
 import com.xilidou.jooj.skill.SkillRegistry;
 import com.xilidou.jooj.tool.ToolRegistry;
 import com.xilidou.jooj.tool.ToolDefinition;
@@ -65,7 +64,7 @@ public class SystemPromptAssembler {
     /** section 之间的分隔符,与 Python 版一致。 */
     private static final String SECTION_DELIMITER = "\n\n";
 
-    private final JoojProperties.Prompt template;
+    private final PromptProperties template;
     private final ObjectMapper json;
     private final ToolRegistry registry;
     private final MemoryService memoryService;
@@ -76,12 +75,12 @@ public class SystemPromptAssembler {
     private volatile String cachedKey;
     private volatile String cachedPrompt;
 
-    public SystemPromptAssembler(JoojProperties props,
+    public SystemPromptAssembler(PromptProperties template,
                                  @Qualifier("joojObjectMapper") ObjectMapper json,
                                  ToolRegistry registry,
                                  MemoryService memoryService,
                                  SkillRegistry skillRegistry) {
-        this.template = props.getPrompt();
+        this.template = template;
         this.json = json;
         this.registry = registry;
         this.memoryService = memoryService;
@@ -212,7 +211,7 @@ public class SystemPromptAssembler {
      * 取一个 section 的拼好内容(含可能的 header)。
      *
      * <ul>
-     *   <li>identity / tools — 直接用 {@link JoojProperties.Prompt} 的模板</li>
+     *   <li>identity / tools — 直接用 {@link PromptProperties} 的模板</li>
      *   <li>workspace — {@code "Working directory: <cwd>"}</li>
      *   <li>skills — header + skillCatalog 正文(catalog 为空则整段跳过)</li>
      *   <li>memory — header + memoryCatalog 正文(catalog 为空则整段跳过)</li>

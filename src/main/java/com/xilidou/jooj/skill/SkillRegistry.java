@@ -3,7 +3,6 @@ package com.xilidou.jooj.skill;
 import com.xilidou.jooj.bootstrap.JoojHome;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.yaml.snakeyaml.Yaml;
 import org.yaml.snakeyaml.error.YAMLException;
@@ -75,16 +74,19 @@ public class SkillRegistry {
     private static final long RESCAN_THROTTLE_MS = 1000;
 
     /**
-     * Spring 注入构造器：从 application.properties 读 skills 目录路径，默认 "skills"。
+     * Spring 注入构造器:从 {@link SkillProperties} 读 skills 目录路径,默认 "skills"。
      *
-     * <p>{@code @Autowired} 显式标注是必要的——本类有多个构造器，
-     * Spring 多构造器陷阱（已踩过 3 次：ToolRegistry / TodoTool / SkillRegistry）。
+     * <p>{@code @Autowired} 显式标注是必要的——本类有多个构造器,
+     * Spring 多构造器陷阱(已踩过 3 次:ToolRegistry / TodoTool / SkillRegistry)。
      *
      * <p>生产场景默认扫所有 3 层(项目 + ~/.jooj/skills + ~/.claude/skills)。
+     *
+     * <p><b>2026-07-14</b>:从 {@code @Value("${jooj.skills.dir:skills}")} 迁移到
+     * {@link SkillProperties} 注入,统一配置读取路径。
      */
     @Autowired
-    public SkillRegistry(@Value("${jooj.skills.dir:skills}") String skillsDirPath) {
-        this(Paths.get(skillsDirPath), true);
+    public SkillRegistry(SkillProperties props) {
+        this(Paths.get(props.getDir()), true);
     }
 
     /**

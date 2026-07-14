@@ -28,7 +28,7 @@ import java.util.Map;
  *   <li>{@code SkillManageTool}(skill_manage)— **可写**,LLM 完成复杂任务后**主动**保存经验为 skill</li>
  * </ul>
  *
- * <h3>触发场景(SYSTEM prompt 引导,见 {@link com.xilidou.jooj.JoojProperties.Prompt})</h3>
+ * <h3>触发场景(SYSTEM prompt 引导,见 {@link com.xilidou.jooj.prompt.PromptProperties})</h3>
  *
  * <p>跟 Hermes 同款判断条件:
  * <ol>
