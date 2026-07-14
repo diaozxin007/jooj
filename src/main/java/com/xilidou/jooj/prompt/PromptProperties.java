@@ -41,7 +41,11 @@ public class PromptProperties {
      */
     private String toolsHint =
             "For slow ops (build/test/deploy/install), set bash.run_in_background=true " +
-            "to keep working while it runs in the background.";
+            "to keep working while it runs in the background. " +
+            "When the user asks to install/setup an MCP server (e.g. 'add filesystem MCP', " +
+            "'connect git MCP with repo /path'), call mcp_manage(action=add, ...) to register it, " +
+            "then connect_mcp(server=<name>) in the same turn to activate its tools. " +
+            "Use mcp_manage(action=list) to inspect available servers before add.";
 
     /**
      * memory section 的标题前缀。memory 正文由 MemoryService.catalog() 提供,
