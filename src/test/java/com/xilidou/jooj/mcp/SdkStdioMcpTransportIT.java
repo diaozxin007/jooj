@@ -1,11 +1,16 @@
 package com.xilidou.jooj.mcp;
 
+import com.xilidou.jooj.config.JsonMappers;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+import java.nio.file.DirectoryStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 
@@ -38,7 +43,7 @@ class SdkStdioMcpTransportIT {
     private SdkStdioMcpTransport transport;
 
     @BeforeEach
-    void setUp() {
+    void setUp() throws IOException {
         McpProperties props = new McpProperties();
         McpProperties.Server everything = new McpProperties.Server();
         everything.setCommand("npx");
@@ -46,8 +51,20 @@ class SdkStdioMcpTransportIT {
         props.getServers().put("everything", everything);
         props.setStartupTimeoutMs(60_000);
 
+        // M1 (2026-07-14):走 McpServerRegistry 而非 McpProperties.servers
+        McpServersJsonStore store = new McpServersJsonStore(JsonMappers.newMapper());
+        cleanDir(store.getDir());
+        McpServerRegistry serverRegistry = new McpServerRegistry(props, store);
+
         // mock fallback 设 null —— 这次只测真 SDK,不要 mock 介入
-        transport = new SdkStdioMcpTransport(props, new EmptyObjectProvider<>());
+        transport = new SdkStdioMcpTransport(serverRegistry, new EmptyObjectProvider<>());
+    }
+
+    private static void cleanDir(Path dir) throws IOException {
+        if (!Files.isDirectory(dir)) return;
+        try (DirectoryStream<Path> stream = Files.newDirectoryStream(dir)) {
+            for (Path p : stream) Files.deleteIfExists(p);
+        }
     }
 
     @AfterEach

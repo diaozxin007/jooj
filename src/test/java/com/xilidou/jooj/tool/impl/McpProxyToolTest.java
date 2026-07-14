@@ -1,6 +1,10 @@
 package com.xilidou.jooj.tool.impl;
 
+import com.xilidou.jooj.config.JsonMappers;
+import com.xilidou.jooj.mcp.McpProperties;
 import com.xilidou.jooj.mcp.McpRegistry;
+import com.xilidou.jooj.mcp.McpServerRegistry;
+import com.xilidou.jooj.mcp.McpServersJsonStore;
 import com.xilidou.jooj.mcp.MockMcpTransport;
 import com.xilidou.jooj.tool.ToolCall;
 import com.xilidou.jooj.tool.ToolDefinition;
@@ -9,6 +13,10 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+import java.nio.file.DirectoryStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 
@@ -18,6 +26,8 @@ import static org.junit.jupiter.api.Assertions.*;
  * 锁定 {@link McpProxyTool} 的工具暴露 + dispatch 行为。
  *
  * <p>用真 {@link MockMcpTransport} + 真 {@link McpRegistry},不需要 mock。
+ *
+ * <p>M1 (2026-07-14):McpRegistry 构造器加了 {@link McpServerRegistry} 参数。
  */
 class McpProxyToolTest {
 
@@ -25,9 +35,20 @@ class McpProxyToolTest {
     private McpRegistry registry;
 
     @BeforeEach
-    void setUp() {
-        registry = new McpRegistry(new MockMcpTransport());
+    void setUp() throws IOException {
+        McpServersJsonStore store = new McpServersJsonStore(JsonMappers.newMapper());
+        cleanDir(store.getDir());
+        McpServerRegistry serverRegistry =
+                new McpServerRegistry(new McpProperties(), store);
+        registry = new McpRegistry(new MockMcpTransport(), serverRegistry);
         tool = new McpProxyTool(registry);
+    }
+
+    private static void cleanDir(Path dir) throws IOException {
+        if (!Files.isDirectory(dir)) return;
+        try (DirectoryStream<Path> stream = Files.newDirectoryStream(dir)) {
+            for (Path p : stream) Files.deleteIfExists(p);
+        }
     }
 
     private ToolResult call(String name, Map<String, Object> args) {

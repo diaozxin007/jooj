@@ -43,10 +43,12 @@ public class McpRegistry {
     public static final String PREFIX = "mcp__";
 
     private final McpTransport transport;
+    private final McpServerRegistry serverRegistry;
     private final Map<String, McpClient> connectedClients = new LinkedHashMap<>();
 
-    public McpRegistry(McpTransport transport) {
+    public McpRegistry(McpTransport transport, McpServerRegistry serverRegistry) {
         this.transport = transport;
+        this.serverRegistry = serverRegistry;
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -63,6 +65,17 @@ public class McpRegistry {
      *   <li>调 transport.listTools 发现工具,生成 McpClient,缓存</li>
      * </ol>
      *
+     * <h3>M1 (2026-07-14) 行为变更</h3>
+     *
+     * <p>listTools 抛出的异常现在被 catch,同步做两件事:
+     * <ul>
+     *   <li>调 {@link McpServerRegistry#markFailed} 更新 status = FAILED + lastError 落盘</li>
+     *   <li>返回 "Failed to connect ..." 错误字符串给 LLM(而不是抛给 caller)</li>
+     * </ul>
+     *
+     * <p>之前的行为是让异常传给 caller —— LLM 看到的是 SDK 栈迹而不是友好错误。M1 后统一化。
+     * mock server 走这条路径也一样 catch(mock 不太会抛,但兜底更安全)。
+     *
      * @return 成功 / 失败的人类可读字符串
      */
     public synchronized String connect(String serverName) {
@@ -76,14 +89,27 @@ public class McpRegistry {
             return "Unknown server '" + serverName + "'. Available: " +
                     String.join(", ", transport.availableServers());
         }
-        List<McpToolDef> tools = transport.listTools(serverName);
-        McpClient client = new McpClient(serverName, transport, tools);
-        connectedClients.put(serverName, client);
+        try {
+            List<McpToolDef> tools = transport.listTools(serverName);
+            McpClient client = new McpClient(serverName, transport, tools);
+            connectedClients.put(serverName, client);
+            // 只有 registry 里有的 server 才 markConnected(mock server 不在 registry)
+            if (serverRegistry.contains(serverName)) {
+                serverRegistry.markConnected(serverName);
+            }
 
-        List<String> toolNames = tools.stream().map(McpToolDef::getName).collect(Collectors.toList());
-        log.info("[MCP] connected {} → {}", serverName, toolNames);
-        return "Connected to MCP server '" + serverName + "'. Discovered " + tools.size() +
-                " tools: " + String.join(", ", toolNames);
+            List<String> toolNames = tools.stream().map(McpToolDef::getName).collect(Collectors.toList());
+            log.info("[MCP] connected {} → {}", serverName, toolNames);
+            return "Connected to MCP server '" + serverName + "'. Discovered " + tools.size() +
+                    " tools: " + String.join(", ", toolNames);
+        } catch (Exception e) {
+            String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+            if (serverRegistry.contains(serverName)) {
+                serverRegistry.markFailed(serverName, msg);
+            }
+            log.warn("[MCP] connect '{}' failed: {}", serverName, msg);
+            return "Failed to connect MCP server '" + serverName + "': " + msg;
+        }
     }
 
     /** 已连接的所有 client(只读拷贝,迭代用)。 */

@@ -65,15 +65,18 @@ import java.util.concurrent.ConcurrentHashMap;
 @Slf4j
 public class SdkStdioMcpTransport implements McpTransport {
 
-    private final McpProperties config;
+    private final McpServerRegistry serverRegistry;
     private final MockMcpTransport mockFallback;
 
     /** server name → 已初始化的 SDK client。lazy init,首次访问时启动。 */
     private final Map<String, McpSyncClient> clients = new ConcurrentHashMap<>();
 
-    public SdkStdioMcpTransport(McpProperties config,
+    /**
+     * @param serverRegistry MCP server 目录(source-of-truth,M1 后取代 {@code McpProperties.servers})
+     */
+    public SdkStdioMcpTransport(McpServerRegistry serverRegistry,
                                 ObjectProvider<MockMcpTransport> mockProvider) {
-        this.config = config;
+        this.serverRegistry = serverRegistry;
         // mock 是可选 fallback —— 没装 mock Bean 也能跑(比如生产 profile 关掉 mock)
         this.mockFallback = mockProvider.getIfAvailable();
     }
@@ -84,7 +87,7 @@ public class SdkStdioMcpTransport implements McpTransport {
 
     @Override
     public List<McpToolDef> listTools(String serverName) {
-        if (!config.getServers().containsKey(serverName)) {
+        if (!serverRegistry.contains(serverName)) {
             return mockFallback != null
                     ? mockFallback.listTools(serverName)
                     : List.of();
@@ -106,7 +109,7 @@ public class SdkStdioMcpTransport implements McpTransport {
 
     @Override
     public String callTool(String serverName, String toolName, Map<String, Object> args) {
-        if (!config.getServers().containsKey(serverName)) {
+        if (!serverRegistry.contains(serverName)) {
             return mockFallback != null
                     ? mockFallback.callTool(serverName, toolName, args)
                     : "MCP error: server '" + serverName + "' not configured";
@@ -131,13 +134,13 @@ public class SdkStdioMcpTransport implements McpTransport {
 
     @Override
     public boolean serverExists(String serverName) {
-        if (config.getServers().containsKey(serverName)) return true;
+        if (serverRegistry.contains(serverName)) return true;
         return mockFallback != null && mockFallback.serverExists(serverName);
     }
 
     @Override
     public List<String> availableServers() {
-        List<String> out = new ArrayList<>(config.getServers().keySet());
+        List<String> out = new ArrayList<>(serverRegistry.listNames());
         if (mockFallback != null) {
             for (String name : mockFallback.availableServers()) {
                 if (!out.contains(name)) out.add(name);
@@ -172,28 +175,26 @@ public class SdkStdioMcpTransport implements McpTransport {
     /** 获取(或 lazy init)指定 server 的 SDK client。 */
     private McpSyncClient clientFor(String serverName) {
         return clients.computeIfAbsent(serverName, name -> {
-            McpProperties.Server server = config.getServers().get(name);
-            if (server == null) {
-                throw new IllegalArgumentException(
-                        "No MCP server configured for name: " + name);
-            }
-            if (server.getCommand() == null || server.getCommand().isBlank()) {
+            McpServerRecord record = serverRegistry.get(name).orElseThrow(() ->
+                    new IllegalArgumentException(
+                            "No MCP server configured for name: " + name));
+            if (record.command() == null || record.command().isBlank()) {
                 throw new IllegalStateException(
                         "MCP server '" + name + "' has no 'command' configured");
             }
 
-            ServerParameters.Builder paramsBuilder = ServerParameters.builder(server.getCommand());
-            if (server.getArgs() != null && !server.getArgs().isEmpty()) {
-                paramsBuilder.args(server.getArgs().toArray(new String[0]));
+            ServerParameters.Builder paramsBuilder = ServerParameters.builder(record.command());
+            if (record.args() != null && !record.args().isEmpty()) {
+                paramsBuilder.args(record.args().toArray(new String[0]));
             }
-            if (server.getEnv() != null && !server.getEnv().isEmpty()) {
-                paramsBuilder.env(server.getEnv());
+            if (record.env() != null && !record.env().isEmpty()) {
+                paramsBuilder.env(record.env());
             }
             ServerParameters params = paramsBuilder.build();
 
             log.info("[MCP-sdk] starting server '{}' with command: {} {}",
-                    name, server.getCommand(),
-                    server.getArgs() != null ? String.join(" ", server.getArgs()) : "");
+                    name, record.command(),
+                    record.args() != null ? String.join(" ", record.args()) : "");
 
             StdioClientTransport sdkTransport = new StdioClientTransport(
                     params, McpJsonDefaults.getMapper());
