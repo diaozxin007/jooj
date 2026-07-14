@@ -103,6 +103,21 @@ public class RuleBasedGate implements PermissionGate {
             }
         }
 
+        // 规则 3(M3, 2026-07-14):mcp_manage 的 add / remove → ASK。
+        // 理由:
+        //   - add:    LLM 授权启动外部 stdio 子进程,可能执行任意命令 → 让用户 confirm
+        //   - remove: LLM 授权删除用户配置 → 让用户 confirm
+        //   - list / view: 纯读,不 ASK,LLM 自主执行
+        if ("mcp_manage".equals(name) && input != null && input.has("action")) {
+            String action = input.get("action").asText();
+            if ("add".equals(action) || "remove".equals(action)) {
+                String targetName = input.has("name") ? input.get("name").asText() : "?";
+                return PermissionResult.ask(
+                        "MCP server management: " + action + " '" + targetName + "'"
+                );
+            }
+        }
+
         return PermissionResult.allow();
     }
 }

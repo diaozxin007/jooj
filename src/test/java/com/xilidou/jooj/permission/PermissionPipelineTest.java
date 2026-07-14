@@ -174,6 +174,58 @@ class PermissionPipelineTest {
             PermissionResult result = gate.check(toolUse("read_file", Map.of("path", "any.txt")));
             assertTrue(result.isAllow());
         }
+
+        // ── M3 (2026-07-14):mcp_manage 规则 ──
+
+        @Test
+        @DisplayName("mcp_manage add → ASK(启动子进程需用户 confirm)")
+        void asks_for_mcp_manage_add() {
+            PermissionResult result = gate.check(toolUse("mcp_manage", Map.of(
+                    "action", "add",
+                    "name", "filesystem",
+                    "command", "npx",
+                    "args", List.of("-y", "@modelcontextprotocol/server-filesystem", "/tmp")
+            )));
+            assertTrue(result.isAsk());
+            assertTrue(result.getReason().contains("add"));
+            assertTrue(result.getReason().contains("filesystem"));
+        }
+
+        @Test
+        @DisplayName("mcp_manage remove → ASK(删除配置需用户 confirm)")
+        void asks_for_mcp_manage_remove() {
+            PermissionResult result = gate.check(toolUse("mcp_manage", Map.of(
+                    "action", "remove",
+                    "name", "filesystem"
+            )));
+            assertTrue(result.isAsk());
+            assertTrue(result.getReason().contains("remove"));
+        }
+
+        @Test
+        @DisplayName("mcp_manage list → ALLOW(纯读)")
+        void allows_mcp_manage_list() {
+            PermissionResult result = gate.check(toolUse("mcp_manage", Map.of("action", "list")));
+            assertTrue(result.isAllow());
+        }
+
+        @Test
+        @DisplayName("mcp_manage view → ALLOW(纯读)")
+        void allows_mcp_manage_view() {
+            PermissionResult result = gate.check(toolUse("mcp_manage", Map.of(
+                    "action", "view",
+                    "name", "filesystem"
+            )));
+            assertTrue(result.isAllow());
+        }
+
+        @Test
+        @DisplayName("mcp_manage add 缺 name → ASK,reason 里 target 显示 '?'")
+        void asks_mcp_manage_add_without_name() {
+            PermissionResult result = gate.check(toolUse("mcp_manage", Map.of("action", "add")));
+            assertTrue(result.isAsk());
+            assertTrue(result.getReason().contains("?"));
+        }
     }
 
     // ────────────────────────────────────────────────────────────
