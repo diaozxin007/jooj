@@ -158,6 +158,79 @@ public class McpServerRegistry {
         persistQuiet(updated);
     }
 
+    // ── 修改 API(给 M3 McpManageTool + M4 Web UI 用)─────────
+
+    /**
+     * 新增一个 server —— 先落盘,后加入 in-memory registry。
+     *
+     * <h3>失败语义</h3>
+     *
+     * <ul>
+     *   <li>{@code name} 已存在 → 抛 {@link IllegalArgumentException},in-memory / 磁盘不变</li>
+     *   <li>{@code name} 非法字符 → 抛 {@link IllegalArgumentException}(由 {@link McpServersJsonStore#save} 抛)</li>
+     *   <li>落盘失败 → 抛 {@link IOException},in-memory 不变(caller 决定重试还是提示)</li>
+     * </ul>
+     *
+     * <p>"先落盘后 in-memory" 顺序保证:如果磁盘失败,in-memory 也不会有幽灵记录。
+     *
+     * @throws IllegalArgumentException 记录为 null / name 已存在 / name 非法
+     * @throws IOException              落盘失败
+     */
+    public synchronized void add(McpServerRecord record) throws IOException {
+        if (record == null) throw new IllegalArgumentException("record must not be null");
+        if (records.containsKey(record.name())) {
+            throw new IllegalArgumentException(
+                    "server '" + record.name() + "' already exists");
+        }
+        store.save(record);
+        records.put(record.name(), record);
+        log.info("Added MCP server '{}' -> {}/{}.json",
+                record.name(), store.getDir(), record.name());
+    }
+
+    /**
+     * 删除一个 server —— 先删磁盘,后从 in-memory 移除。幂等:name 不存在时静默返回。
+     *
+     * <p>"先删磁盘后 in-memory" 顺序:如果磁盘删失败,in-memory 保留,caller 可以看到
+     * 错误并重试。反之如果先删 in-memory,磁盘残留会在下次 rescan 时"复活",违反直觉。
+     *
+     * @throws IOException 磁盘删除失败(name 不存在时 store.delete 不抛,直接返回)
+     */
+    public synchronized void remove(String name) throws IOException {
+        if (name == null || !records.containsKey(name)) return;
+        store.delete(name);
+        records.remove(name);
+        log.info("Removed MCP server '{}'", name);
+    }
+
+    /**
+     * 切换 enabled —— 供 M4 UI toggle 用;M3 阶段暂不暴露给 Tool。
+     *
+     * <p>状态机:
+     * <ul>
+     *   <li>enable(true)  → status = NEVER_CONNECTED(下次 connect_mcp 才尝试连)</li>
+     *   <li>disable(false) → status = DISABLED,清 {@code lastError}</li>
+     * </ul>
+     *
+     * <p>name 不存在时静默返回,便于 caller 不需要预检 contains。
+     */
+    public synchronized void setEnabled(String name, boolean enabled) {
+        McpServerRecord r = records.get(name);
+        if (r == null) {
+            log.warn("setEnabled: server '{}' not in registry", name);
+            return;
+        }
+        McpServerRecord updated = new McpServerRecord(
+                r.name(), r.command(), r.args(), r.env(),
+                enabled,
+                enabled ? McpServerRecord.Status.NEVER_CONNECTED
+                        : McpServerRecord.Status.DISABLED,
+                null,   // 清 lastError:enable 是"重新开始",disable 后 error 无意义
+                r.addedAt(), r.lastConnectedAt());
+        records.put(name, updated);
+        persistQuiet(updated);
+    }
+
     // ── rescan(为 M4 REST /api/mcp/rescan 预留;M1 阶段接口就位不接入)──
 
     /**

@@ -247,6 +247,114 @@ class McpServerRegistryTest {
         assertTrue(names.contains("git"));
     }
 
+    // ── M3 API:add / remove / setEnabled ─────────────
+
+    @Test
+    @DisplayName("add 新 server → in-memory + 磁盘都有")
+    void add_persists_and_registers() throws IOException {
+        McpServerRegistry reg = newRegistry(new McpProperties());
+        McpServerRecord r = new McpServerRecord(
+                "postgres", "npx", List.of("-y", "server-postgres"),
+                java.util.Map.of("DATABASE_URL", "postgres://x"),
+                true, McpServerRecord.Status.NEVER_CONNECTED, null,
+                java.time.Instant.now(), null);
+
+        reg.add(r);
+
+        assertTrue(reg.contains("postgres"));
+        assertEquals(1, reg.size());
+        // 磁盘
+        assertTrue(Files.exists(store.getDir().resolve("postgres.json")));
+    }
+
+    @Test
+    @DisplayName("add 重名 → 抛 IAE,in-memory 和磁盘都不变")
+    void add_duplicate_throws() throws IOException {
+        McpProperties props = propsWith("filesystem", "npx");
+        McpServerRegistry reg = newRegistry(props);
+
+        McpServerRecord dup = new McpServerRecord(
+                "filesystem", "different-cmd", List.of(), java.util.Map.of(),
+                true, McpServerRecord.Status.NEVER_CONNECTED, null,
+                java.time.Instant.now(), null);
+
+        assertThrows(IllegalArgumentException.class, () -> reg.add(dup));
+        // 原纪录仍是 seed 版本
+        assertEquals("npx", reg.get("filesystem").orElseThrow().command());
+    }
+
+    @Test
+    @DisplayName("add name 非法字符 → 抛 IAE(由 store.save 上抛)")
+    void add_illegal_name_throws() throws IOException {
+        McpServerRegistry reg = newRegistry(new McpProperties());
+        McpServerRecord illegal = new McpServerRecord(
+                "a/b", "npx", List.of(), java.util.Map.of(),
+                true, McpServerRecord.Status.NEVER_CONNECTED, null,
+                java.time.Instant.now(), null);
+        assertThrows(IllegalArgumentException.class, () -> reg.add(illegal));
+        // 也不应留在 in-memory
+        assertFalse(reg.contains("a/b"));
+    }
+
+    @Test
+    @DisplayName("remove 存在的 → 磁盘 + in-memory 都删除")
+    void remove_existing() throws IOException {
+        McpProperties props = propsWith("filesystem", "npx");
+        McpServerRegistry reg = newRegistry(props);
+        assertTrue(Files.exists(store.getDir().resolve("filesystem.json")));
+
+        reg.remove("filesystem");
+
+        assertFalse(reg.contains("filesystem"));
+        assertFalse(Files.exists(store.getDir().resolve("filesystem.json")));
+    }
+
+    @Test
+    @DisplayName("remove 不存在的 → 幂等静默")
+    void remove_missing_is_noop() throws IOException {
+        McpServerRegistry reg = newRegistry(new McpProperties());
+        assertDoesNotThrow(() -> reg.remove("does-not-exist"));
+        assertDoesNotThrow(() -> reg.remove(null));
+    }
+
+    @Test
+    @DisplayName("setEnabled(false) → status=DISABLED,清 lastError")
+    void setEnabled_false_disables() throws IOException {
+        McpProperties props = propsWith("filesystem", "npx");
+        McpServerRegistry reg = newRegistry(props);
+        reg.markFailed("filesystem", "connection refused");
+        assertNotNull(reg.get("filesystem").orElseThrow().lastError());
+
+        reg.setEnabled("filesystem", false);
+        McpServerRecord got = reg.get("filesystem").orElseThrow();
+        assertFalse(got.enabled());
+        assertEquals(McpServerRecord.Status.DISABLED, got.status());
+        assertNull(got.lastError(), "disable 清空 lastError");
+    }
+
+    @Test
+    @DisplayName("setEnabled(true) 复活 disabled server → status=NEVER_CONNECTED")
+    void setEnabled_true_reenables() throws IOException {
+        McpProperties props = propsWith("filesystem", "npx");
+        McpServerRegistry reg = newRegistry(props);
+        reg.setEnabled("filesystem", false);
+        assertEquals(McpServerRecord.Status.DISABLED,
+                reg.get("filesystem").orElseThrow().status());
+
+        reg.setEnabled("filesystem", true);
+        McpServerRecord got = reg.get("filesystem").orElseThrow();
+        assertTrue(got.enabled());
+        assertEquals(McpServerRecord.Status.NEVER_CONNECTED, got.status(),
+                "enable 后应回到 NEVER_CONNECTED,等下次 connect");
+    }
+
+    @Test
+    @DisplayName("setEnabled 不存在的 name → 静默不抛")
+    void setEnabled_missing_is_noop() throws IOException {
+        McpServerRegistry reg = newRegistry(new McpProperties());
+        assertDoesNotThrow(() -> reg.setEnabled("nope", true));
+    }
+
     private static McpProperties.Server mkServer(String command) {
         McpProperties.Server s = new McpProperties.Server();
         s.setCommand(command);
