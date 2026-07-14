@@ -43,7 +43,17 @@ public class McpProperties {
     /** 单次 listTools / callTool 调用超时(毫秒)。默认 60s。 */
     private long callTimeoutMs = 60_000;
 
-    /** server 配置表,key = server name(LLM 在 connect_mcp 工具里用的 name)。 */
+    /**
+     * server 配置表,key = server name(LLM 在 connect_mcp 工具里用的 name)。
+     *
+     * <p><b>M1 (2026-07-14) 后新语义</b>:此字段仅作**首次启动的 seed 源**。
+     * {@link McpServerRegistry} 构造时调 {@code seedFromYml},把 yml 里的每个 server
+     * 落盘为 {@code ~/.jooj/mcp-servers/<name>.json}。之后 source-of-truth 是 JSON 目录,
+     * yml 侧的 servers 段不再被 MCP 运行时读取(seed 幂等:同名 JSON 已存在时跳过)。
+     *
+     * <p>用户想加 / 删 / 改 server 请通过 M3 的 {@code mcp_manage} 工具或 M4 的
+     * Web UI —— 直接编辑 yml 不会生效(除非删掉对应的 JSON 触发下一次启动 seed)。
+     */
     private Map<String, Server> servers = new LinkedHashMap<>();
 
     /** 单个 stdio MCP server 配置。 */
