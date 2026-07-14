@@ -41,8 +41,7 @@ public class JoojProperties {
 
     /** Compact 流水线(s08)配置已拆到 {@link com.xilidou.jooj.compact.CompactProperties}(2026-07-14)。 */
 
-    /** Memory(s09)阈值。 */
-    private Memory memory = new Memory();
+    /** Memory 子系统(s09)配置已拆到 {@link com.xilidou.jooj.memory.MemoryProperties}(2026-07-14)。 */
 
     /** Permission(s03)模式。 */
     private Permission permission = new Permission();
@@ -103,32 +102,6 @@ public class JoojProperties {
 
         /** 模型 ID,如 {@code deepseek-chat}。 */
         private String model = "";
-    }
-
-    @Data
-    public static class Memory {
-        /** memory 文件目录(相对 cwd 或绝对路径)。 */
-        private String memoryDir = ".memory";
-
-        /** 索引文件名,放在 {@link #memoryDir} 下。 */
-        private String indexFilename = "MEMORY.md";
-
-        /** 单条 memory body 最大字符数(超出截断)。 */
-        private int maxBodyBytes = 4096;
-
-        /** memory 文件数 ≥ 此阈值时触发 consolidate。 */
-        private int consolidateThreshold = 10;
-
-        /**
-         * s21 Demo 27 / Hermes Tier 3 P3.2:write_approval staged 写。
-         * <ul>
-         *   <li>{@code false}(默认)— Reviewer 提案直接 store.write 生效(Demo 26 行为)</li>
-         *   <li>{@code true} — Reviewer 提案进 pending pool,等用户 {@code /memory approve}</li>
-         * </ul>
-         *
-         * <p>实战建议:Reviewer 跑稳之前先开 true 看提案质量,稳定后再切 false。
-         */
-        private boolean writeApproval = false;
     }
 
     @Data

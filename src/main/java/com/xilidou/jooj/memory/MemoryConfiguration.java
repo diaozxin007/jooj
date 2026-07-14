@@ -17,7 +17,7 @@ import java.util.concurrent.ExecutorService;
  *
  * <p>提供 3 个 Bean(Demo 26 起):
  * <ul>
- *   <li>{@link MemoryConfig} —— 从 {@link JoojProperties.Memory} 转出</li>
+ *   <li>{@link MemoryConfig} —— 从 {@link MemoryProperties} 转出</li>
  *   <li>{@link BackgroundReviewer} —— Hermes Tier 3 P3.1 self-improvement reviewer
  *       (本身只是 LLM caller,异步执行由 MemoryService 用 BgExecutor 接)</li>
  *   <li>{@link MemoryService} —— 启用 4+1 层 memory
@@ -32,14 +32,13 @@ import java.util.concurrent.ExecutorService;
 public class MemoryConfiguration {
 
     /**
-     * 把 {@link JoojProperties.Memory} 转成 {@link MemoryConfig}。
+     * 把 {@link MemoryProperties} 转成 {@link MemoryConfig}。
      *
      * <p>{@code memoryDir} 走 {@link Path#of(String, String...)}:
      * 相对路径会以启动时的 cwd 为锚点,绝对路径直接生效。
      */
     @Bean
-    public MemoryConfig memoryConfig(JoojProperties props) {
-        var m = props.getMemory();
+    public MemoryConfig memoryConfig(MemoryProperties m) {
         Path memoryDir = Paths.get(m.getMemoryDir()).toAbsolutePath().normalize();
         return new MemoryConfig(
                 memoryDir,
@@ -92,13 +91,14 @@ public class MemoryConfiguration {
     public BackgroundReviewer backgroundReviewer(MemoryStore store,
                                                  AnthropicClient client,
                                                  JoojProperties props,
+                                                 MemoryProperties memProps,
                                                  PendingMemoryStore pendingStore) {
         return new BackgroundReviewer(
                 store,
                 client,
                 props.getAnthropic().getModel(),
                 pendingStore,
-                props.getMemory().isWriteApproval()
+                memProps.isWriteApproval()
         );
     }
 
