@@ -1,6 +1,7 @@
 package com.xilidou.jooj.http.dto;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -50,6 +51,19 @@ public class MessageParam {
 
     private String role;        // "user" / "assistant"
 
+    /**
+     * String 或 List<ContentBlock>。
+     *
+     * <p>{@link MessageContentDeserializer} 保证从 JSON 读回时:
+     * <ul>
+     *   <li>字符串形态 → String</li>
+     *   <li>数组形态 → List<ContentBlock>(通过 ContentBlock 上的 @JsonTypeInfo 正确派发)</li>
+     * </ul>
+     * 不加这个 deserializer 时 Jackson 会把数组降级成 ArrayList&lt;LinkedHashMap&gt;,
+     * 导致 {@code instanceof ToolUseBlock/ToolResultBlock} 全部 miss,
+     * HistoryScrubber 净化不到磁盘上的孤儿 tool_use / tool_result。
+     */
+    @JsonDeserialize(using = MessageContentDeserializer.class)
     private Object content;     // String 或 List<ContentBlock>
 
     /**

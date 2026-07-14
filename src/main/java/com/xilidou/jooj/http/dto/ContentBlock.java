@@ -1,5 +1,6 @@
 package com.xilidou.jooj.http.dto;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonSubTypes;
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
 
@@ -43,6 +44,13 @@ import com.fasterxml.jackson.annotation.JsonTypeInfo;
         @JsonSubTypes.Type(value = ToolResultBlock.class, name = "tool_result"),
         @JsonSubTypes.Type(value = ThinkingBlock.class,   name = "thinking"),
 })
+// visible=true 让每个子类的序列化能带上 type 字段(见类注释),但反序列化到 TextBlock 等
+// 具体类时,Jackson 会把已消费过的 type 字段又当成属性喂进去 —— TextBlock 里没这个 field,
+// 默认会抛 UnrecognizedPropertyException(SessionStore 读盘时就是这样吞掉整个 history)。
+// allowGetters=true 关键:只让反序列化忽略 type(避免 setter 找不到抛异常),
+// 序列化仍走 getType() 输出 "type" 字段。缺 allowGetters 时会同时吞掉序列化,
+// 导致 Anthropic API 收到不带 type 的 block 报 400 "messages.N.content.M.type: Field required"。
+@JsonIgnoreProperties(value = {"type"}, allowGetters = true)
 public interface ContentBlock {
 
     /**
