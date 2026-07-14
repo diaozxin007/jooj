@@ -12,7 +12,7 @@ import org.springframework.context.annotation.Configuration;
  *
  * <p>提供 2 个 Bean:
  * <ul>
- *   <li>{@link CompactConfig} —— 从 {@link JoojProperties.Compact} 拍平成 POJO 配置</li>
+ *   <li>{@link CompactConfig} —— 从 {@link CompactProperties} 拍平成 POJO 配置</li>
  *   <li>{@link CompactPipeline} —— 把 config + client + model 拼起来,启用 L1-L4 四层压缩</li>
  * </ul>
  *
@@ -28,15 +28,14 @@ import org.springframework.context.annotation.Configuration;
 public class CompactConfiguration {
 
     /**
-     * 把 {@link JoojProperties.Compact} 拍平成 {@link CompactConfig}。
+     * 把 {@link CompactProperties} 拍平成 {@link CompactConfig}。
      *
      * <p>{@code taskOutputDir} / {@code transcriptDir} 用 {@code CompactConfig} 的
      * 静态常量(默认指向 cwd 下的 {@code .task_outputs} / {@code .transcripts}),
      * 暂未暴露到 yaml(配置面已经够多)——需要时再加。
      */
     @Bean
-    public CompactConfig compactConfig(JoojProperties props) {
-        var c = props.getCompact();
+    public CompactConfig compactConfig(CompactProperties c) {
         return new CompactConfig(
                 c.getMaxMessages(),
                 c.getSnipHeadKeep(),
@@ -59,16 +58,20 @@ public class CompactConfiguration {
      *   <li>L4 reactive 摘要走真 client</li>
      *   <li>s21 Demo 24:把 MemoryService 注入 pipeline,启用 pre-compression extraction
      *       —— L4 触发前先抢救永久 fact 进 MEMORY.md,再让 L4 摘要(防"被压缩 lossy 丢失")</li>
-     *   <li>s22 D:token-aware 触发 —— 从 JoojProperties 读 contextLength +
+     *   <li>s22 D:token-aware 触发 —— 从 {@link CompactProperties} 读 contextLength +
      *       thresholdPercent,pipeline 内部据此判定 shouldCompress</li>
      * </ul>
+     *
+     * <p><b>为什么这里还依赖 {@link JoojProperties}</b>:仅为读 {@code jooj.anthropic.model}
+     * 传给 L4 摘要 client。Anthropic Properties 拆分在阶段 3-① 处理,届时改直接注入
+     * {@code AnthropicProperties}。
      */
     @Bean
     public CompactPipeline compactPipeline(CompactConfig config,
                                            AnthropicClient client,
+                                           CompactProperties c,
                                            JoojProperties props,
                                            MemoryService memoryService) {
-        var c = props.getCompact();
         return new CompactPipeline(config, client, props.getAnthropic().getModel(), memoryService,
                 c.getContextLength(), c.getThresholdPercent());
     }
