@@ -366,12 +366,12 @@
         }
       });
 
-      source.onerror = () => {
+      source.onerror = (e) => {
+        // EventSource 自带重连(readyState=CONNECTING → OPEN)—— 只 log 不干预
+        // 之前 3 次 error 触发 fallback 的逻辑有 bug:server 主动 complete 会算 error,
+        // 快速触发 fallback 反而搞乱状态。让浏览器 native 重连机制发挥
+        console.debug('[SSE] transient error, EventSource will auto-reconnect', e);
         errorCount++;
-        // EventSource 自带重连(readyState=CONNECTING),给它 3 次机会;3 次仍 fail 回落 poll
-        if (errorCount >= 3 && !stopped) {
-          goFallback();
-        }
       };
     } catch (e) {
       // 浏览器不支持 EventSource → 立即回落

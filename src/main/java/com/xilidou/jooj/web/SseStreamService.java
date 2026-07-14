@@ -1,5 +1,6 @@
 package com.xilidou.jooj.web;
 
+import com.xilidou.jooj.agent.AgentControl;
 import com.xilidou.jooj.agent.PendingQuestionRegistered;
 import com.xilidou.jooj.agent.TurnEventPushed;
 import com.xilidou.jooj.agent.control.ClarifyQuestion;
@@ -59,6 +60,18 @@ public class SseStreamService {
 
     private final ConcurrentHashMap<String, SseEmitter> sessions = new ConcurrentHashMap<>();
 
+    /** s22 SSE:register 时回放已挂起 pending questions。 */
+    private final AgentControl agentControl;
+
+    public SseStreamService(AgentControl agentControl) {
+        this.agentControl = agentControl;
+    }
+
+    /** 测试用无参 ctor —— 不做 replay,单测方便。 */
+    SseStreamService() {
+        this.agentControl = null;
+    }
+
     /**
      * 注册新连接。同 sid 已有 emitter 时,先 complete 老的(前端会重连),再挂新的。
      *
@@ -90,17 +103,39 @@ public class SseStreamService {
             log.debug("[SSE] sid={} error: {}", sessionId, t.toString());
         });
 
-        // 首个事件让前端知道连上了(前端可以 addEventListener("connected", ...) 收 ack)
-        try {
-            emitter.send(SseEmitter.event()
-                    .name("connected")
-                    .data("{\"sessionId\":\"" + sessionId + "\"}"));
-        } catch (IOException e) {
-            log.debug("[SSE] sid={} initial connected send failed: {}", sessionId, e.toString());
-        }
+        log.info("[SSE] sid={} registered (total active={})", sessionId, sessions.size());
 
-        log.info("[SSE] sid={} connected (total active={})", sessionId, sessions.size());
+        // **重要**:此时 emitter 还没有绑定 servlet response —— controller return 后
+        // Spring 才会把 emitter 挂上响应流。所以**不能立即 send**,那会抛
+        // IllegalStateException("ResponseBodyEmitter has not been initialized")。
+        //
+        // 用后台线程延迟发首个 connected 事件 + 回放 pending。轻微延迟(50ms)让
+        // Spring 有时间完成 dispatch。参考:
+        // https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-ann-async.html#mvc-ann-async-sse
+        java.util.concurrent.CompletableFuture.runAsync(() -> {
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            // 首个 connected —— 直接调 push 走同一 try/catch 保护
+            push(sessionId, "connected", null, "{\"sessionId\":\"" + jsonEscape(sessionId) + "\"}");
+
+            // s22 SSE:回放已挂起的 pending questions,防止 SSE 连接前已 ask 挂起的场景
+            if (agentControl != null) {
+                for (PendingQuestion q : agentControl.listPending(sessionId)) {
+                    onPendingQuestion(new PendingQuestionRegistered(sessionId, q));
+                }
+            }
+        });
+
         return emitter;
+    }
+
+    /** 简单 JSON 字符串转义(不引 Jackson 保持轻量)。 */
+    private static String jsonEscape(String s) {
+        return s.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
     /**
@@ -113,13 +148,18 @@ public class SseStreamService {
     public void push(String sessionId, String eventName, String id, String jsonPayload) {
         if (sessionId == null || sessionId.isBlank()) return;
         SseEmitter emitter = sessions.get(sessionId);
-        if (emitter == null) return;
+        if (emitter == null) {
+            log.debug("[SSE] push no emitter sid={} event={} id={}", sessionId, eventName, id);
+            return;
+        }
 
         try {
             SseEmitter.SseEventBuilder builder = SseEmitter.event().name(eventName);
             if (id != null) builder = builder.id(id);
             builder = builder.data(jsonPayload);
             emitter.send(builder);
+            log.debug("[SSE] pushed sid={} event={} id={} bytes={}",
+                    sessionId, eventName, id, jsonPayload.length());
         } catch (IOException e) {
             // 客户端断了或 IO 挂了 —— 清理 emitter,前端 EventSource 会自动重连再注册
             log.debug("[SSE] sid={} push failed, dropping emitter: {}", sessionId, e.toString());
