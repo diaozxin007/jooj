@@ -1,6 +1,5 @@
 package com.xilidou.jooj.config;
 
-import com.xilidou.jooj.JoojProperties;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -69,14 +68,14 @@ public class JoojExecutors {
     /**
      * 长期循环任务的调度池。被 {@code @Scheduled} 自动用作默认 task scheduler。
      *
-     * <p>容量 = {@link JoojProperties.Concurrency#schedulerPoolSize}(默认 4)。
+     * <p>容量 = {@link ConcurrencyProperties#schedulerPoolSize}(默认 4)。
      * 当前 jooj 有 2 个 @Scheduled 任务(cron scheduler + cron processor),
      * 4 槽留余量。
      */
     @Bean(name = SCHEDULER_BEAN)
-    public ThreadPoolTaskScheduler joojTaskScheduler(JoojProperties props) {
+    public ThreadPoolTaskScheduler joojTaskScheduler(ConcurrencyProperties props) {
         ThreadPoolTaskScheduler s = new ThreadPoolTaskScheduler();
-        s.setPoolSize(props.getConcurrency().getSchedulerPoolSize());
+        s.setPoolSize(props.getSchedulerPoolSize());
         s.setThreadNamePrefix("jooj-sched-");
         s.setDaemon(true);
         s.setWaitForTasksToCompleteOnShutdown(false);
@@ -84,7 +83,7 @@ public class JoojExecutors {
         s.setRemoveOnCancelPolicy(true);
         s.initialize();
         log.info("[Executors] task scheduler started (poolSize={})",
-                props.getConcurrency().getSchedulerPoolSize());
+                props.getSchedulerPoolSize());
         return s;
     }
 
@@ -95,11 +94,11 @@ public class JoojExecutors {
      * 池里 8 槽全占用时第 9 个会在 caller(agent_loop)线程 inline 跑 ——
      * 等于本次没派 bg,跟同步工具调用等价。LLM 仍能拿到结果,只是这一轮慢一点。
      *
-     * <p>容量 = {@link JoojProperties.Concurrency#bgPoolSize}(默认 8)。
+     * <p>容量 = {@link ConcurrencyProperties#bgPoolSize}(默认 8)。
      */
     @Bean(name = BG_BEAN, destroyMethod = "shutdown")
-    public ExecutorService joojBgExecutor(JoojProperties props) {
-        int max = props.getConcurrency().getBgPoolSize();
+    public ExecutorService joojBgExecutor(ConcurrencyProperties props) {
+        int max = props.getBgPoolSize();
         ThreadPoolExecutor pool = new ThreadPoolExecutor(
                 0, max,
                 60L, TimeUnit.SECONDS,
@@ -121,12 +120,12 @@ public class JoojExecutors {
      * {@link java.util.concurrent.RejectedExecutionException},
      * Teammate.spawn 接住返"Error: pool full"给 LLM,LLM 自己降并发。
      *
-     * <p>容量 = {@link JoojProperties.Concurrency#teammatePoolSize}(默认 16)。
+     * <p>容量 = {@link ConcurrencyProperties#teammatePoolSize}(默认 16)。
      * 典型 multi-agent 场景同时活跃 teammate ≤10,16 槽留余量。
      */
     @Bean(name = TEAMMATE_BEAN, destroyMethod = "shutdown")
-    public ExecutorService joojTeammateExecutor(JoojProperties props) {
-        int max = props.getConcurrency().getTeammatePoolSize();
+    public ExecutorService joojTeammateExecutor(ConcurrencyProperties props) {
+        int max = props.getTeammatePoolSize();
         ThreadPoolExecutor pool = new ThreadPoolExecutor(
                 0, max,
                 60L, TimeUnit.SECONDS,

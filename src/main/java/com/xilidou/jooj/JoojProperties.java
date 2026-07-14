@@ -57,8 +57,7 @@ public class JoojProperties {
 
     /** Team(s15+)配置已拆到 {@link com.xilidou.jooj.team.TeamProperties}(2026-07-14)。 */
 
-    /** 并发 / 线程池(线程重构)配置 —— 替代裸 {@code new Thread()}。 */
-    private Concurrency concurrency = new Concurrency();
+    /** Concurrency(线程池)配置已拆到 {@link com.xilidou.jooj.config.ConcurrencyProperties}(2026-07-14)。 */
 
     /** Search(s21 Demo 25)配置已拆到 {@link com.xilidou.jooj.search.SearchProperties}(2026-07-14)。 */
 
@@ -92,47 +91,4 @@ public class JoojProperties {
         /** 模型 ID,如 {@code deepseek-chat}。 */
         private String model = "";
     }
-
-    /**
-     * Recovery(s11)配置已拆到 {@link com.xilidou.jooj.agent.RecoveryProperties}(2026-07-14)。
-     */
-
-    /**
-    /**
-     * Team(s15+)配置已拆到 {@link com.xilidou.jooj.team.TeamProperties}(2026-07-14)。
-     */
-
-    /**
-     * 并发 / 线程池配置 —— 配合 {@link com.xilidou.jooj.config.JoojExecutors}。
-     *
-     * <p>jooj 用三类池:
-     * <ul>
-     *   <li>{@code schedulerPoolSize} —— 长期循环任务({@code @Scheduled})的池容量,
-     *       当前 jooj 有 cron scheduler + cron processor 两个长期任务,默认 4 槽</li>
-     *   <li>{@code bgPoolSize} —— BG 慢工具调用池(s13),默认 8。
-     *       池策略 {@code CallerRunsPolicy}:满则降级同步,LLM 仍能拿到结果只是慢一点</li>
-     *   <li>{@code teammatePoolSize} —— Teammate spawn 池(s15+),默认 16。
-     *       池策略 {@code AbortPolicy}:满则抛 {@code RejectedExecutionException},
-     *       Teammate 返"Error: pool full"给 LLM 让它降并发(不能 inline 跑,
-     *       会卡死 agent loop 几分钟)</li>
-     * </ul>
-     */
-    @Data
-    public static class Concurrency {
-        /** 长期循环任务({@code @Scheduled})的调度池容量。默认 4。 */
-        private int schedulerPoolSize = 4;
-        /** BG 慢工具池上限(s13)。CallerRunsPolicy 满则同步降级。默认 8。 */
-        private int bgPoolSize = 8;
-        /** Teammate spawn 池上限(s15+)。AbortPolicy 满则返 Error 给 LLM。默认 16。 */
-        private int teammatePoolSize = 16;
-    }
-
-    /**
-     * MCP plugin(s19)配置已拆到 {@link com.xilidou.jooj.mcp.McpProperties}(2026-07-14)。
-     * 前缀依然是 {@code jooj.mcp}。
-     */
-
-    /**
-     * Search(s21 Demo 25)配置已拆到 {@link com.xilidou.jooj.search.SearchProperties}(2026-07-14)。
-     */
 }
