@@ -66,7 +66,7 @@ public class SseStreamService {
     @org.springframework.beans.factory.annotation.Autowired
     public SseStreamService(AgentControl agentControl) {
         this.agentControl = agentControl;
-        log.info("[SSE] SseStreamService wired with agentControl={}",
+        log.debug("[SSE] SseStreamService wired with agentControl={}",
                 agentControl != null ? agentControl.getClass().getSimpleName() : "NULL");
     }
 
@@ -156,7 +156,7 @@ public class SseStreamService {
             if (id != null) builder = builder.id(id);
             builder = builder.data(jsonPayload);
             emitter.send(builder);
-            log.info("[SSE] pushed sid={} event={} id={} bytes={}",
+            log.debug("[SSE] pushed sid={} event={} id={} bytes={}",
                     sessionId, eventName, id, jsonPayload.length());
         } catch (IOException e) {
             // 客户端断了或 IO 挂了 —— 清理 emitter,前端 EventSource 会自动重连再注册
@@ -217,7 +217,7 @@ public class SseStreamService {
      */
     @EventListener
     void onTurnEvent(TurnEventPushed evt) {
-        log.info("[SSE] onTurnEvent received sid={} seq={} type={}",
+        log.debug("[SSE] onTurnEvent received sid={} seq={} type={}",
                 evt.sessionId(),
                 evt.event() != null ? evt.event().seq() : -1,
                 evt.event() != null ? evt.event().type() : "null");
@@ -235,7 +235,7 @@ public class SseStreamService {
      */
     @EventListener
     void onPendingQuestion(PendingQuestionRegistered evt) {
-        log.info("[SSE] onPendingQuestion received sid={} askId={} type={}",
+        log.debug("[SSE] onPendingQuestion received sid={} askId={} type={}",
                 evt.sessionId(),
                 evt.question() != null ? evt.question().askId() : "null",
                 evt.question() != null ? evt.question().type() : "null");
