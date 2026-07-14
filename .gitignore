@@ -37,6 +37,11 @@ build/
 
 .env
 
+# npm 意外产物 —— jooj 是纯 Java Maven,不应有 npm lock。
+# 某些 AI IDE / 工具会在 cwd 里意外生成空 lock,统一挡掉。
+package-lock.json
+node_modules/
+
 # marvis runtime artifacts(都是运行期生成的,不入库)
 .memory/
 .tasks/
