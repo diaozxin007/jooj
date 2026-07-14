@@ -16,6 +16,7 @@ class SessionContextTest {
     void cleanupAny() {
         // 保险清理,防止测试之间泄漏
         SessionContext.pop(null);
+        SessionContext.popChannel(null);
     }
 
     @Test
@@ -106,5 +107,61 @@ class SessionContextTest {
             SessionContext.pop(prev);
         }
         assertNull(SessionContext.current(), "即使异常也要恢复");
+    }
+
+    // ---- s22 D-12:channel/peerId push/pop ----
+
+    @Test
+    @DisplayName("D-12: pushChannel 绑 channel + peerId,current* 能读到")
+    void channel_push_reads() {
+        assertNull(SessionContext.currentChannel());
+        assertNull(SessionContext.currentPeerId());
+        SessionContext.ChannelPeer prev = SessionContext.pushChannel("weixin", "wxid_abc");
+        try {
+            assertEquals("weixin", SessionContext.currentChannel());
+            assertEquals("wxid_abc", SessionContext.currentPeerId());
+            assertNull(prev.channel(), "第一次 push 前是 null");
+            assertNull(prev.peerId());
+        } finally {
+            SessionContext.popChannel(prev);
+        }
+        assertNull(SessionContext.currentChannel(), "pop 后清空");
+        assertNull(SessionContext.currentPeerId());
+    }
+
+    @Test
+    @DisplayName("D-12: 嵌套 push 精确恢复(外层 web,内层 weixin)")
+    void channel_nested_restore() {
+        SessionContext.ChannelPeer outer = SessionContext.pushChannel("web", "u1");
+        try {
+            assertEquals("web", SessionContext.currentChannel());
+            SessionContext.ChannelPeer inner = SessionContext.pushChannel("weixin", "wx2");
+            try {
+                assertEquals("weixin", SessionContext.currentChannel());
+                assertEquals("wx2", SessionContext.currentPeerId());
+                assertEquals("web", inner.channel(), "inner 保存 outer 快照");
+                assertEquals("u1", inner.peerId());
+            } finally {
+                SessionContext.popChannel(inner);
+            }
+            assertEquals("web", SessionContext.currentChannel(), "pop 内层后回到外层");
+            assertEquals("u1", SessionContext.currentPeerId());
+        } finally {
+            SessionContext.popChannel(outer);
+        }
+        assertNull(SessionContext.currentChannel(), "全部 pop 后清空");
+    }
+
+    @Test
+    @DisplayName("D-12: pushChannel 允许 null(web / CLI 场景 —— 只 push sid 不 push channel)")
+    void channel_null_ok() {
+        SessionContext.ChannelPeer prev = SessionContext.pushChannel(null, null);
+        try {
+            assertNull(SessionContext.currentChannel());
+            assertNull(SessionContext.currentPeerId());
+        } finally {
+            SessionContext.popChannel(prev);
+        }
+        assertNull(SessionContext.currentChannel());
     }
 }

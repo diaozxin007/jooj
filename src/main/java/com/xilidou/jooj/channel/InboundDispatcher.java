@@ -1,6 +1,10 @@
 package com.xilidou.jooj.channel;
 
+import com.xilidou.jooj.agent.AgentControl;
 import com.xilidou.jooj.agent.AgentLoopHarness;
+import com.xilidou.jooj.agent.control.ChoiceAnswer;
+import com.xilidou.jooj.agent.control.ClarifyQuestion;
+import com.xilidou.jooj.agent.control.PendingQuestion;
 import com.xilidou.jooj.hook.HookManager;
 import com.xilidou.jooj.http.dto.MessageParam;
 import com.xilidou.jooj.http.dto.TextBlock;
@@ -63,18 +67,25 @@ public class InboundDispatcher implements ChannelDeliverer {
      * 才能进 LLM(跟 CLI REPL 同步)。null 安全(HookManager 没装时不拦,等价旧行为)。
      */
     private final HookManager hooks;
+    /**
+     * s22 D-12:IM inbound 时先看 pending question,尝试 parse 用户回复作为 answer。
+     * 唤醒 agent 后不再进 chat 流(避免用户回复被当聊天喂给 LLM 造成误解)。
+     */
+    private final AgentControl agentControl;
     private final Map<String, MessageChannel> channels = new HashMap<>();
 
     public InboundDispatcher(AgentLoopHarness harness,
                              SessionService sessionService,
                              AgentLockProvider lockProvider,
                              SlashCommandRegistry slashCommands,
-                             HookManager hooks) {
+                             HookManager hooks,
+                             AgentControl agentControl) {
         this.harness = harness;
         this.sessionService = sessionService;
         this.lockProvider = lockProvider;
         this.slashCommands = slashCommands;
         this.hooks = hooks;
+        this.agentControl = agentControl;
     }
 
     /** Channel 启动时主动注册自己 —— 出站要靠这张表。 */
@@ -227,6 +238,14 @@ public class InboundDispatcher implements ChannelDeliverer {
      */
     public void dispatch(ChannelMessage msg) {
         String sessionId = sessionIdFor(msg);
+
+        // s22 D-12-d:pending question 拦截 —— 如果这个 sid 有挂起的 ClarifyQuestion,
+        // 先尝试把用户回复当 answer parse。成功 → 唤醒 agent(agent 拿到 ChoiceAnswer 继续),
+        // 消息**不再进入 chat 流**;失败 → 走正常聊天(视为"用户换话题",agent 会 3min 后 timeout)
+        if (tryAnswerPending(sessionId, msg)) {
+            return;
+        }
+
         String title = msg.channel() + ":" + (msg.peerName() != null ? msg.peerName() : msg.peerId());
         ExecutionContext.DeliveryHint hint =
                 new ExecutionContext.DeliveryHint(msg.channel(), msg.peerId());
@@ -333,6 +352,65 @@ public class InboundDispatcher implements ChannelDeliverer {
     static String sessionIdFor(ChannelMessage msg) {
         String safePeer = msg.peerId().replaceAll("[^a-zA-Z0-9_-]", "_");
         return "chat_" + msg.channel() + "_" + safePeer;
+    }
+
+    /**
+     * s22 D-12-d:尝试把 IM inbound 文本解析为 pending question 的 answer。
+     *
+     * <ul>
+     *   <li>无 pending → 返 false,caller 走正常 chat 流</li>
+     *   <li>有 pending 且是 ClarifyQuestion → 用 AnswerParser 尝试 parse:
+     *     <ul>
+     *       <li>成功 → agentControl.answer 唤醒挂起的 agent 线程,返 true(chat 流跳过)</li>
+     *       <li>失败 → 返 false,消息当聊天处理(agent 会 timeout;LLM 下轮看到用户的原话)</li>
+     *     </ul></li>
+     *   <li>PermissionQuestion 简单版:回复 A/a → allow, B/b → deny;否则降级</li>
+     * </ul>
+     *
+     * @return true = 已作为 answer 处理; false = caller 应继续 chat 流
+     */
+    private boolean tryAnswerPending(String sessionId, ChannelMessage msg) {
+        if (agentControl == null) return false;
+        var pendingList = agentControl.listPending(sessionId);
+        if (pendingList.isEmpty()) return false;
+
+        // 取最新一个 pending。多个的场景罕见(通常一次 turn 只挂一个 question)
+        PendingQuestion pending = pendingList.get(pendingList.size() - 1);
+        String text = msg.text() == null ? "" : msg.text().trim();
+
+        if (pending instanceof ClarifyQuestion cq) {
+            var parsed = AnswerParser.tryParse(text, cq);
+            if (parsed.isPresent()) {
+                boolean ok = agentControl.answer(sessionId, cq.askId(), parsed.get());
+                log.info("[Inbound] sid={} answer parsed for askId={} ok={}",
+                        sessionId, cq.askId(), ok);
+                return ok;
+            }
+            log.debug("[Inbound] sid={} askId={} parse failed, letting chat handle: '{}'",
+                    sessionId, cq.askId(),
+                    text.length() > 50 ? text.substring(0, 50) + "..." : text);
+            return false;
+        }
+
+        // PermissionQuestion 简单 A/B 处理
+        if (pending instanceof com.xilidou.jooj.agent.control.PermissionQuestion pq) {
+            String lower = text.toLowerCase();
+            if (lower.equals("a") || lower.equals("allow") || lower.equals("允许") || lower.equals("同意")) {
+                agentControl.answer(sessionId, pq.askId(),
+                        com.xilidou.jooj.agent.control.AllowAnswer.INSTANCE);
+                log.info("[Inbound] sid={} permission ALLOW via IM askId={}", sessionId, pq.askId());
+                return true;
+            }
+            if (lower.equals("b") || lower.equals("deny") || lower.equals("拒绝") || lower.equals("不同意")) {
+                agentControl.answer(sessionId, pq.askId(),
+                        new com.xilidou.jooj.agent.control.DenyAnswer("user rejected via IM"));
+                log.info("[Inbound] sid={} permission DENY via IM askId={}", sessionId, pq.askId());
+                return true;
+            }
+            return false;
+        }
+
+        return false;
     }
 
     /** 空白 sessionId → {@link Session#DEFAULT_ID} 兜底。 */

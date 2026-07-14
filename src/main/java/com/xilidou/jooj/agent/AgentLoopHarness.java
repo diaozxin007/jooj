@@ -603,6 +603,13 @@ public class AgentLoopHarness {
         // s22 D-10-C:把 sid push 到 ThreadLocal,让深层 Hook / UserApprover 能拿到,
         // 不用改所有 Hook 契约。try/finally 严格恢复,防止 ThreadLocal 泄漏到下一次 processOneQuery。
         String prevSid = SessionContext.push(sessionId);
+        // s22 D-12-e:同样 push channel + peerId(deliveryHint 非空时),
+        // 让 AskUserQuestionTool / PermissionManager 能拿到 (channel, peerId),
+        // 生成的 PendingQuestion 带 origin 信息 → WeixinAnswerPresenter 能定向送达。
+        // 传 null 也 OK —— ChannelPeer 只是快照,pop 严格恢复上一层。
+        SessionContext.ChannelPeer prevChannel = SessionContext.pushChannel(
+                deliveryHint != null ? deliveryHint.channel() : null,
+                deliveryHint != null ? deliveryHint.peerId() : null);
         try {
             try {
                 agentLoop(history, ctx);
@@ -615,6 +622,7 @@ public class AgentLoopHarness {
                 log.info("[Interrupt] turn interrupted sid={} history_size={}", sessionId, history.size());
             }
         } finally {
+            SessionContext.popChannel(prevChannel);
             SessionContext.pop(prevSid);
         }
 

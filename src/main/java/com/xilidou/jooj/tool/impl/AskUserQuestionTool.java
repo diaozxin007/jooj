@@ -196,7 +196,11 @@ public class AskUserQuestionTool implements Tool {
 
         ClarifyQuestion question;
         try {
-            question = ClarifyQuestion.of(parsed);
+            // s22 D-12:从 SessionContext 拿 channel + peerId,让 PresenterRegistry 分派时
+            // WeixinPresenter 能反查投递地址;web 场景两个都是 null(SSE 按 sid 路由不需要)
+            String channel = SessionContext.currentChannel();
+            String peerId = SessionContext.currentPeerId();
+            question = ClarifyQuestion.of(parsed, channel, peerId);
         } catch (IllegalArgumentException iae) {
             return new ToolResult(false, "Error: " + iae.getMessage());
         }

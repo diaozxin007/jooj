@@ -46,6 +46,12 @@ public final class SessionContext {
 
     private static final ThreadLocal<String> CURRENT = new ThreadLocal<>();
 
+    /** s22 D-12:channel origin(如 "web"/"weixin"),让 AskUserQuestionTool 传给 ClarifyQuestion. */
+    private static final ThreadLocal<String> CURRENT_CHANNEL = new ThreadLocal<>();
+
+    /** s22 D-12:raw peerId(如 "wxid_abc@..."),微信 Presenter 需要它 deliver. */
+    private static final ThreadLocal<String> CURRENT_PEER = new ThreadLocal<>();
+
     private SessionContext() {}
 
     /**
@@ -87,4 +93,39 @@ public final class SessionContext {
         String s = CURRENT.get();
         return s != null && !s.isBlank();
     }
+
+    /**
+     * s22 D-12:channel/peerId 一并 push。AgentLoopHarness/InboundDispatcher 进 turn 时调,
+     * 让 AskUserQuestionTool 能拿到 origin 信息传给 ClarifyQuestion(→ WeixinPresenter deliver 用)。
+     *
+     * @return 之前的 ChannelPeer(可能全 null),caller 必须 finally 里 pop 恢复
+     */
+    public static ChannelPeer pushChannel(String channel, String peerId) {
+        String prevCh = CURRENT_CHANNEL.get();
+        String prevPeer = CURRENT_PEER.get();
+        CURRENT_CHANNEL.set(channel);
+        CURRENT_PEER.set(peerId);
+        return new ChannelPeer(prevCh, prevPeer);
+    }
+
+    /** 恢复 pushChannel 之前的值。 */
+    public static void popChannel(ChannelPeer previous) {
+        if (previous == null || previous.channel == null) CURRENT_CHANNEL.remove();
+        else CURRENT_CHANNEL.set(previous.channel);
+        if (previous == null || previous.peerId == null) CURRENT_PEER.remove();
+        else CURRENT_PEER.set(previous.peerId);
+    }
+
+    /** 只读:当前 channel(可能 null;web / 测试路径 push 只 sid 时为 null). */
+    public static String currentChannel() {
+        return CURRENT_CHANNEL.get();
+    }
+
+    /** 只读:当前 raw peerId(可能 null). */
+    public static String currentPeerId() {
+        return CURRENT_PEER.get();
+    }
+
+    /** channel + peer 打包记录,pushChannel/popChannel 用。 */
+    public record ChannelPeer(String channel, String peerId) {}
 }
