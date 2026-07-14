@@ -4,6 +4,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xilidou.jooj.config.JsonMappers;
 import com.xilidou.jooj.http.dto.CreateMessageRequest;
 import com.xilidou.jooj.http.dto.CreateMessageResponse;
+import com.xilidou.jooj.llm.adapter.AnthropicAdapter;
+import com.xilidou.jooj.llm.domain.LlmException;
+import com.xilidou.jooj.llm.domain.LlmRequest;
+import com.xilidou.jooj.llm.domain.LlmResponse;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import okhttp3.MediaType;
@@ -60,6 +64,8 @@ public class AnthropicHttpClient implements ModelProvider {
     private final String providerName;
     /** 该 provider 支持的 model ID 前缀列表。 */
     private final List<String> prefixes;
+    /** P2: canonical ↔ wire mapping helper. Shared across calls (stateless). */
+    private final AnthropicAdapter adapter;
 
     /**
      * 全参构造器(DI 友好)。所有依赖必须由调用方提供。
@@ -93,6 +99,7 @@ public class AnthropicHttpClient implements ModelProvider {
         this.auth = Objects.requireNonNull(auth, "auth");
         this.providerName = Objects.requireNonNull(providerName, "providerName");
         this.prefixes = List.copyOf(Objects.requireNonNull(prefixes, "prefixes"));
+        this.adapter = new AnthropicAdapter(this.json);
     }
 
     // ── ModelProvider 契约 ──────────────────────────────────────
@@ -152,6 +159,22 @@ public class AnthropicHttpClient implements ModelProvider {
         } catch (IOException e) {
             log.warn("[anthropic-http] IO error: {}", e.toString());
             throw new AnthropicException(0, "IO error: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * P2 canonical entrypoint. Translates via {@link AnthropicAdapter} and delegates
+     * to the wire-level {@link #createMessage(CreateMessageRequest)}, then classifies
+     * any {@link AnthropicException} into a vendor-neutral {@link LlmException}.
+     */
+    @Override
+    public LlmResponse createMessage(LlmRequest req) throws LlmException {
+        CreateMessageRequest wire = adapter.toWire(req);
+        try {
+            CreateMessageResponse wireResp = createMessage(wire);
+            return adapter.toDomain(wireResp);
+        } catch (AnthropicException e) {
+            throw adapter.classify(e);
         }
     }
 

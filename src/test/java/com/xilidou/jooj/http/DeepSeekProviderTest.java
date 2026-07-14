@@ -150,5 +150,17 @@ class DeepSeekProviderTest {
                     List.of(), req.getModel(), "end_turn", null, null
             );
         }
+
+        @Override
+        public com.xilidou.jooj.llm.domain.LlmResponse createMessage(
+                com.xilidou.jooj.llm.domain.LlmRequest req) {
+            callCount++;
+            return com.xilidou.jooj.llm.domain.LlmResponse.builder()
+                    .id("msg_stub")
+                    .model(req.getModel())
+                    .content(List.of())
+                    .stopReason(com.xilidou.jooj.llm.domain.LlmStopReason.END_TURN)
+                    .build();
+        }
     }
 }
