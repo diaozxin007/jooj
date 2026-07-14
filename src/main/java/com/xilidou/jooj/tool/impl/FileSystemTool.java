@@ -11,15 +11,18 @@ import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.nio.file.FileSystems;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.PathMatcher;
 import java.nio.file.Paths;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Stream;
+import java.util.Set;
 
 /**
  * FileSystemTool - 真实文件系统操作（s02-s03 完整实现）。
@@ -291,6 +294,37 @@ public class FileSystemTool implements Tool {
     /**
      * Glob 匹配。从 {@code resolveBase} 开始走,匹配相对其的路径。
      */
+    /**
+     * s22 D-11 后续:glob 遍历时**整个 SKIP_SUBTREE 跳过**的目录名黑名单。
+     *
+     * <p>触发原因:某次 LLM 调 {@code find /path/to/repo -name "*.java"} 起手就爆
+     * —— repo 里有 9 个 worktree 副本(每个都是完整 repo,共 ~9000 java 文件),
+     * 输出撑爆 L3 阈值(50K bytes) → 走 stub 落盘 → LLM 读 stub → 内容仍超阈值
+     * → 再拆 → 死循环。glob(pattern) 同理会撞上。
+     *
+     * <p>规则:**目录名精确匹配**(不做 glob),命中即整棵子树 SKIP_SUBTREE。列表:
+     * <ul>
+     *   <li>{@code .worktrees/} —— N 个完整 repo 副本,N 倍文件数</li>
+     *   <li>{@code .task_outputs/}、{@code .transcripts/} —— jooj 自己的临时输出/追踪落盘</li>
+     *   <li>{@code .git/}、{@code target/}、{@code node_modules/}、{@code build/}、
+     *       {@code dist/}、{@code .idea/} —— 通用 build / vendor / IDE 目录</li>
+     * </ul>
+     *
+     * <p>不读 {@code .gitignore} 是刻意的:.gitignore 层级、否定规则、非目录 pattern
+     * 都很麻烦,教学版够用即可。用户想扫这些目录时可 shell 出去用 {@code bash find}。
+     */
+    private static final Set<String> BLACKLISTED_DIR_NAMES = Set.of(
+            ".worktrees",
+            ".task_outputs",
+            ".transcripts",
+            ".git",
+            "target",
+            "node_modules",
+            "build",
+            "dist",
+            ".idea"
+    );
+
     private ToolResult glob(String pattern, Path resolveBase) throws IOException {
         if (pattern == null || pattern.isBlank()) {
             return new ToolResult(false, "Error: pattern is required");
@@ -306,16 +340,41 @@ public class FileSystemTool implements Tool {
         PathMatcher matcher = FileSystems.getDefault().getPathMatcher("glob:" + pattern);
         List<String> matches = new ArrayList<>();
 
-        try (Stream<Path> stream = Files.walk(searchRoot)) {
-            stream
-                    .filter(p -> !p.equals(searchRoot))
-                    .forEach(p -> {
-                        Path rel = searchRoot.relativize(p);
-                        if (matcher.matches(rel)) {
-                            matches.add(rel.toString());
-                        }
-                    });
-        }
+        // s22 D-11:用 walkFileTree + SKIP_SUBTREE 替代 Files.walk(),
+        // 让黑名单目录整棵子树不进入枚举(见 BLACKLISTED_DIR_NAMES javadoc)。
+        // searchRoot 本身即使是黑名单目录也不 SKIP(用户显式 glob 指定,尊重意图)。
+        Files.walkFileTree(searchRoot, new SimpleFileVisitor<>() {
+            @Override
+            public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
+                // searchRoot 自己不判黑名单(否则用户 glob(".git/**") 直接空返)
+                if (!dir.equals(searchRoot)) {
+                    Path name = dir.getFileName();
+                    if (name != null && BLACKLISTED_DIR_NAMES.contains(name.toString())) {
+                        return FileVisitResult.SKIP_SUBTREE;
+                    }
+                }
+                // 目录本身也参与 matcher 匹配(比如 pattern 是 "src/**" 命中目录节点)
+                if (!dir.equals(searchRoot)) {
+                    Path rel = searchRoot.relativize(dir);
+                    if (matcher.matches(rel)) matches.add(rel.toString());
+                }
+                return FileVisitResult.CONTINUE;
+            }
+
+            @Override
+            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
+                Path rel = searchRoot.relativize(file);
+                if (matcher.matches(rel)) matches.add(rel.toString());
+                return FileVisitResult.CONTINUE;
+            }
+
+            @Override
+            public FileVisitResult visitFileFailed(Path file, IOException exc) {
+                // 权限拒绝 / 符号链接目标缺失等 —— 静默继续,不阻断整个 glob
+                log.debug("glob visit failed for {}: {}", file, exc.toString());
+                return FileVisitResult.CONTINUE;
+            }
+        });
 
         matches.sort(Comparator.naturalOrder());
 

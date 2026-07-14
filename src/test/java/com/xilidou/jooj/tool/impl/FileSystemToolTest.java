@@ -295,6 +295,39 @@ class FileSystemToolTest {
             assertTrue(result.isSuccess());
             assertEquals("(no matches)", result.getOutput());
         }
+
+        /**
+         * 回归防线:{@code find ... -name "*.java"} 起手就爆的根本原因——
+         * glob 会一路走进 .worktrees/(每个 worktree 一个完整 repo 副本 = 上千 java 文件),
+         * 输出撑爆 L3 阈值 → 走 stub 落盘 → LLM 读 stub → 再爆 → 死循环。
+         *
+         * <p>这个测试锁死"glob 遇 .worktrees 立即 SKIP_SUBTREE",不再枚举里面的内容。
+         * 其它黑名单目录(.git / target / node_modules 等)走同一份代码,不重复测。
+         */
+        @Test
+        @DisplayName("skips .worktrees/.task_outputs/target 等黑名单目录")
+        void should_skip_blacklisted_dirs() throws IOException {
+            Files.createDirectories(workdir.resolve("src/main"));
+            Files.writeString(workdir.resolve("src/main/Real.java"), "");
+            Files.createDirectories(workdir.resolve(".worktrees/copy-a"));
+            Files.writeString(workdir.resolve(".worktrees/copy-a/Ghost.java"), "");
+            Files.createDirectories(workdir.resolve(".task_outputs/tool-results"));
+            Files.writeString(workdir.resolve(".task_outputs/tool-results/dump.java"), "");
+            Files.createDirectories(workdir.resolve("target/classes"));
+            Files.writeString(workdir.resolve("target/classes/Compiled.java"), "");
+
+            ToolResult result = skill.execute(call("glob", Map.of("pattern", "**/*.java")));
+
+            assertTrue(result.isSuccess());
+            assertTrue(result.getOutput().contains("Real.java"),
+                    "真实项目文件必须命中,得到: " + result.getOutput());
+            assertFalse(result.getOutput().contains("Ghost.java"),
+                    ".worktrees 里的副本不应命中");
+            assertFalse(result.getOutput().contains("dump.java"),
+                    ".task_outputs 里的落盘不应命中");
+            assertFalse(result.getOutput().contains("Compiled.java"),
+                    "target 里的构建产物不应命中");
+        }
     }
 
     // ── s18:ExecutionContext.cwd 改变相对路径解析基准 ───────────────
