@@ -306,6 +306,87 @@
     });
   }
 
+  /**
+   * s22 SSE:优先用 EventSource 订阅 server → client push,失败时回落 poll。
+   *
+   * server 端点:GET /api/chat/{sid}/stream (Content-Type: text/event-stream)
+   * 事件类型:
+   *   - "connected" 首次 ack
+   *   - "tool_start" 摘要 { seq, at, type, summary }
+   *   - "pending" 挂起 question(permission 或 clarify)
+   *
+   * 返 stop() 函数;stop 后 EventSource 被 close。
+   *
+   * 触发 fallback 的情形:EventSource 抛 error 3 次(总量),说明浏览器/代理不支持
+   * 或 endpoint 不可用,回落到 poll 版本(startEventPolling + startPendingPolling)。
+   */
+  function startEventStream(sessionId, loadingBubble) {
+    const shownAskIds = new Set();
+    let errorCount = 0;
+    let fallbackEventStop = null;
+    let fallbackPendingStop = null;
+    let source = null;
+    let stopped = false;
+
+    const goFallback = () => {
+      if (fallbackEventStop) return;   // 已回落
+      console.warn('[SSE] falling back to poll after', errorCount, 'errors');
+      if (source) { try { source.close(); } catch (e) {} }
+      fallbackEventStop = startEventPolling(sessionId, loadingBubble);
+      fallbackPendingStop = startPendingPolling(sessionId);
+    };
+
+    try {
+      source = new EventSource(`/api/chat/${encodeURIComponent(sessionId)}/stream`);
+
+      source.addEventListener('connected', () => {
+        console.debug('[SSE] connected');
+      });
+
+      source.addEventListener('tool_start', (evt) => {
+        try {
+          const data = JSON.parse(evt.data);
+          if (data.summary) loadingBubble.setStatus(data.summary);
+        } catch (e) {
+          console.debug('[SSE] bad tool_start payload', e);
+        }
+      });
+
+      source.addEventListener('pending', (evt) => {
+        try {
+          const q = JSON.parse(evt.data);
+          if (shownAskIds.has(q.askId)) return;
+          shownAskIds.add(q.askId);
+          if (q.type === 'clarify') {
+            showClarifyDialog(sessionId, q);
+          }
+          // permission 型:留给未来 UI 补
+        } catch (e) {
+          console.debug('[SSE] bad pending payload', e);
+        }
+      });
+
+      source.onerror = () => {
+        errorCount++;
+        // EventSource 自带重连(readyState=CONNECTING),给它 3 次机会;3 次仍 fail 回落 poll
+        if (errorCount >= 3 && !stopped) {
+          goFallback();
+        }
+      };
+    } catch (e) {
+      // 浏览器不支持 EventSource → 立即回落
+      console.warn('[SSE] EventSource unavailable, using poll', e);
+      goFallback();
+    }
+
+    return () => {
+      stopped = true;
+      if (source) { try { source.close(); } catch (e) {} }
+      if (fallbackEventStop) fallbackEventStop();
+      if (fallbackPendingStop) fallbackPendingStop();
+    };
+  }
+
   function escapeHtml(s) {
     const div = document.createElement('div');
     div.textContent = s == null ? '' : String(s);
@@ -434,16 +515,16 @@
     const loading = appendLoadingBubble();
     setBusy(true);
     // s22 D-11:启动 events poll,tool 摘要实时更新到 loading 气泡
-    const stopPolling = startEventPolling(currentSessionId, loading);
-    // s22 AQ:同时 poll /pending,agent 主动提问时弹选择框
-    const stopPendingPoll = startPendingPolling(currentSessionId);
+    // s22 SSE:一个 EventSource 流处理 tool_start(替代 /events poll)+ pending(替代 /pending poll)
+    // 失败自动回落到 poll 版本(fallback 内建),不改上层调用
+    const stopPolling = startEventStream(currentSessionId, loading);
+    // 注:startEventStream 内部同时管两个流,stopPolling 一次全停
     try {
       const data = await postJson('/api/chat', {
         sessionId: currentSessionId,
         query,
       });
       stopPolling();
-      stopPendingPoll();
       loading.remove();
       appendBubble({
         role: 'assistant',
@@ -455,7 +536,6 @@
       loadSessionsList();
     } catch (e) {
       stopPolling();
-      stopPendingPoll();
       loading.remove();
       appendBubble({
         role: 'assistant',

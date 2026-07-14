@@ -1,6 +1,8 @@
 package com.xilidou.jooj.agent;
 
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayDeque;
@@ -53,6 +55,22 @@ public class TurnEventStream {
     /** sid → 事件序列 (ArrayDeque 起 ring buffer)。 */
     private final ConcurrentHashMap<String, SessionEvents> sessions = new ConcurrentHashMap<>();
 
+    /**
+     * s22 SSE:push 时同时发 Spring event,让 web 层 SseStreamService 监听转 SSE。
+     * ObjectProvider 让老的**无参构造器**测试路径保持能用(不装 publisher)。
+     */
+    private final ObjectProvider<ApplicationEventPublisher> publisherProvider;
+
+    /** Spring 容器构造。 */
+    public TurnEventStream(ObjectProvider<ApplicationEventPublisher> publisherProvider) {
+        this.publisherProvider = publisherProvider;
+    }
+
+    /** 测试路径无 event publisher —— 现有 TurnEventStreamTest 全部走这条不改。 */
+    public TurnEventStream() {
+        this.publisherProvider = null;
+    }
+
     /** Per-session 计数器 + deque 打包,避免 outer map 分开维护。 */
     private static class SessionEvents {
         final AtomicLong nextSeq = new AtomicLong(1L);
@@ -87,6 +105,21 @@ public class TurnEventStream {
         }
         log.debug("[TurnEventStream] push sid={} seq={} type={} summary={}",
                 sessionId, seq, event.type(), event.summary());
+
+        // s22 SSE:发 Spring event,SseStreamService 监听转 SSE push。测试路径 publisher=null 时跳过。
+        if (publisherProvider != null) {
+            ApplicationEventPublisher pub = publisherProvider.getIfAvailable();
+            if (pub != null) {
+                TurnEvent stampedCopy;
+                // 从 deque 找回带 seq 的版本(offerLast 已放进去,再取一遍避免用旧引用)
+                synchronized (se.deque) {
+                    stampedCopy = se.deque.peekLast();
+                }
+                if (stampedCopy != null) {
+                    pub.publishEvent(new TurnEventPushed(sessionId, stampedCopy));
+                }
+            }
+        }
     }
 
     /**

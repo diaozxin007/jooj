@@ -5,6 +5,8 @@ import com.xilidou.jooj.agent.control.AskTimeoutException;
 import com.xilidou.jooj.agent.control.DenyAnswer;
 import com.xilidou.jooj.agent.control.PendingQuestion;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
@@ -57,6 +59,22 @@ public class DefaultAgentControl implements AgentControl {
 
     /** 内部记录:question + 完成信号 future. */
     private record PendingAsk(PendingQuestion question, CompletableFuture<Answer> future) {}
+
+    /**
+     * s22 SSE:pending 入队时发 Spring event,让 web 层 SseStreamService 立即 push 到浏览器。
+     * ObjectProvider 让测试路径(直接 new DefaultAgentControl())保持能用。
+     */
+    private final ObjectProvider<ApplicationEventPublisher> publisherProvider;
+
+    /** Spring 容器构造。 */
+    public DefaultAgentControl(ObjectProvider<ApplicationEventPublisher> publisherProvider) {
+        this.publisherProvider = publisherProvider;
+    }
+
+    /** 测试路径 —— 无 event publisher。 */
+    public DefaultAgentControl() {
+        this.publisherProvider = null;
+    }
 
     // ── signal 部分 (D-10-A) ─────────────────────────────────
 
@@ -136,6 +154,14 @@ public class DefaultAgentControl implements AgentControl {
 
         log.info("[AgentControl] ask queued sid={} askId={} type={} timeout={}s",
                 sessionId, question.askId(), question.type(), timeout.toSeconds());
+
+        // s22 SSE:发 Spring event,SseStreamService 监听转 SSE push
+        if (publisherProvider != null) {
+            ApplicationEventPublisher pub = publisherProvider.getIfAvailable();
+            if (pub != null) {
+                pub.publishEvent(new PendingQuestionRegistered(sessionId, question));
+            }
+        }
 
         try {
             // 阻塞等 answer / timeout / cancel(cancel 走 future.completeExceptionally)

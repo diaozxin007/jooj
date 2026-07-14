@@ -86,18 +86,22 @@ public class ChatController {
     private final AgentControl agentControl;
     /** s22 D-11:agent turn 期间 tool 摘要事件流,前端 poll 拿实时进度。 */
     private final TurnEventStream turnEventStream;
+    /** s22 SSE:server → client 单向 push,替代 poll /events + /pending。 */
+    private final SseStreamService sseStreamService;
     private final ObjectMapper json = JacksonConfig.newMapper();
 
     public ChatController(InboundDispatcher dispatcher,
                           CompactConfig compactConfig,
                           TranscriptService transcriptService,
                           AgentControl agentControl,
-                          TurnEventStream turnEventStream) {
+                          TurnEventStream turnEventStream,
+                          SseStreamService sseStreamService) {
         this.dispatcher = dispatcher;
         this.compactConfig = compactConfig;
         this.transcriptService = transcriptService;
         this.agentControl = agentControl;
         this.turnEventStream = turnEventStream;
+        this.sseStreamService = sseStreamService;
     }
 
     /**
@@ -342,6 +346,27 @@ public class ChatController {
      *
      * <p>{@code events} 为空数组时 {@code latestSeq} 仍返当前值,前端下次可继续 since 从此。
      */
+    /**
+     * s22 SSE:server → client 单向事件流,替代前端 poll {@code /events} / {@code /pending}。
+     *
+     * <p>前端 {@code new EventSource("/api/chat/{sid}/stream")},监听:
+     * <ul>
+     *   <li>{@code event: connected} — 初次连接 ack</li>
+     *   <li>{@code event: tool_start} — tool 执行前摘要(替代 poll /events)</li>
+     *   <li>{@code event: pending} — permission / clarify 问题挂起(替代 poll /pending)</li>
+     * </ul>
+     *
+     * <p>连接可长活,server 每 30s 发注释行 keep-alive。断连时前端 EventSource 自动重连。
+     *
+     * <p><b>fallback</b>:REST {@code /events} 和 {@code /pending} 保留 —— SSE 不可用时
+     * 前端可回退到 poll(网络问题、代理不支持 SSE 等)。
+     */
+    @GetMapping(value = "/chat/{sessionId}/stream", produces = "text/event-stream")
+    public org.springframework.web.servlet.mvc.method.annotation.SseEmitter stream(
+            @PathVariable String sessionId) {
+        return sseStreamService.register(sessionId);
+    }
+
     @GetMapping("/chat/{sessionId}/events")
     public ResponseEntity<?> events(@PathVariable String sessionId,
                                     @RequestParam(defaultValue = "0") long since) {
