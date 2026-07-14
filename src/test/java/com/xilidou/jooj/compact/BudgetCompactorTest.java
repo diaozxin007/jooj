@@ -1,7 +1,9 @@
 package com.xilidou.jooj.compact;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xilidou.jooj.http.dto.MessageParam;
 import com.xilidou.jooj.http.dto.ToolResultBlock;
+import com.xilidou.jooj.http.dto.ToolUseBlock;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -231,32 +233,88 @@ class BudgetCompactorTest {
     //  测试 7:写盘失败时优雅降级(不抛异常)
     // ─────────────────────────────────────────────────────────────
 
+    /**
+     * 回归防线:曾经的死循环。BudgetCompactor 每轮 apply 都对超阈值 tool_result 落盘换 stub,
+     * 但如果那个 tool_result 恰好是 read_file 读**上一轮 stub 文件**返回的原文,又会被拆一次
+     * (新 tool_use_id → 新文件),形成 read_file → 拆 → read_file → 拆 的 ping-pong,
+     * 至少在实测里跑掉几十次 API 调用直到某次输出恰好 ≤ 阈值。
+     *
+     * <p>修复思路:apply 时把 tool_use 的调用参数带上——若 tool_use 是 {@code read_file} 或
+     * {@code bash cat/head/tail} 读位于 taskOutputDir 之下的路径,即使内容超阈值也不再拆,
+     * 直接把原文送给 LLM 让它自己决定截断。
+     */
     @Test
-    @DisplayName("budget should gracefully skip when disk write fails (non-existent parent path)")
-    void budget_should_skip_on_disk_failure() {
-        // 用一个不能创建的路径(已存在的 file 当 dir 用)
-        // 但 Files.createDirectories 在大多数路径上会成功,所以选个特殊场景:
-        // 让 taskOutputDir 指向一个普通文件而非目录
-        try {
-            Path tmpFile = Files.createTempFile("budget-test-blocker", ".txt");
-            tmpFile.toFile().deleteOnExit();
-            // 用这个文件当 dir,createDirectories 会失败
-            BudgetCompactor budget = new BudgetCompactor(
-                    new CompactConfig(50, 3, 3, 120, 100, tmpFile));
-            List<MessageParam> messages = new ArrayList<>();
-            messages.add(MessageParam.user("q"));
-            String original = hugeContent(500);
-            messages.add(userToolResult("tu_1", original));
+    @DisplayName("regression: 不能对 read_file 读回自身 stub 的结果再次拆分")
+    void budget_should_not_repersist_self_readback(@TempDir Path tempDir) throws Exception {
+        BudgetCompactor budget = new BudgetCompactor(configWithDir(tempDir, 100));
+        ObjectMapper mapper = new ObjectMapper();
 
-            boolean changed = budget.apply(messages);
+        // 模拟:assistant 上一轮调 read_file 读了 tempDir 下的一个 stub 文件
+        String stubPath = tempDir.resolve("previous_dump.txt").toAbsolutePath().toString();
+        ToolUseBlock readCall = new ToolUseBlock(
+                "tu_readback",
+                "read_file",
+                mapper.readTree("{\"path\":\"" + stubPath.replace("\\", "\\\\") + "\"}")
+        );
+        MessageParam asst = new MessageParam("assistant", new ArrayList<>(List.of(readCall)));
 
-            assertFalse(changed, "落盘失败应返回 false");
-            // 原内容保留(未被替换)
-            ToolResultBlock r = (ToolResultBlock) ((List<?>) messages.get(1).getContent()).get(0);
-            assertEquals(original, r.getContent(),
-                    "写盘失败时不能替换 content,以免数据丢失");
-        } catch (IOException e) {
-            fail(e);
+        // read_file 返回的 tool_result 是原文的完整内容(> 阈值)
+        String origContent = hugeContent(500);
+        MessageParam usr = userToolResult("tu_readback", origContent);
+
+        List<MessageParam> messages = new ArrayList<>(List.of(asst, usr));
+        boolean changed = budget.apply(messages);
+
+        assertFalse(changed, "读回 stub 文件的 tool_result 必须跳过,不再拆");
+        // content 保持原文,没被替换成新 stub
+        ToolResultBlock r = (ToolResultBlock) ((List<?>) messages.get(1).getContent()).get(0);
+        assertEquals(origContent, r.getContent(),
+                "原文应完整送到 LLM,不该换成 stub 让它再读一次");
+        // 临时目录没有新落盘文件
+        try (var stream = Files.newDirectoryStream(tempDir)) {
+            assertFalse(stream.iterator().hasNext(),
+                    "self-readback 场景不应产生落盘文件");
         }
+    }
+
+    @Test
+    @DisplayName("regression: bash cat 读回 stub 文件也走同一防御")
+    void budget_should_not_repersist_bash_cat_readback(@TempDir Path tempDir) throws Exception {
+        BudgetCompactor budget = new BudgetCompactor(configWithDir(tempDir, 100));
+        ObjectMapper mapper = new ObjectMapper();
+
+        String stubPath = tempDir.resolve("dump.txt").toAbsolutePath().toString();
+        ToolUseBlock bashCall = new ToolUseBlock(
+                "tu_bash_cat",
+                "bash",
+                mapper.readTree("{\"command\":\"cat " + stubPath.replace("\\", "\\\\") + "\"}")
+        );
+        MessageParam asst = new MessageParam("assistant", new ArrayList<>(List.of(bashCall)));
+        MessageParam usr = userToolResult("tu_bash_cat", hugeContent(500));
+
+        boolean changed = budget.apply(new ArrayList<>(List.of(asst, usr)));
+
+        assertFalse(changed, "bash cat 读 stub 也算 self-readback");
+    }
+
+    @Test
+    @DisplayName("normal read_file(非 taskOutputDir 路径)仍会被拆")
+    void budget_should_still_persist_normal_read_file(@TempDir Path tempDir) throws Exception {
+        BudgetCompactor budget = new BudgetCompactor(configWithDir(tempDir, 100));
+        ObjectMapper mapper = new ObjectMapper();
+
+        // 用户真的读了一个 workdir 下的普通大文件——应该拆
+        ToolUseBlock readCall = new ToolUseBlock(
+                "tu_normal_read",
+                "read_file",
+                mapper.readTree("{\"path\":\"/tmp/some/user/file.log\"}")
+        );
+        MessageParam asst = new MessageParam("assistant", new ArrayList<>(List.of(readCall)));
+        MessageParam usr = userToolResult("tu_normal_read", hugeContent(500));
+
+        boolean changed = budget.apply(new ArrayList<>(List.of(asst, usr)));
+
+        assertTrue(changed, "读普通文件的大输出仍应被拆,只有读 taskOutputDir 才豁免");
+        assertTrue(Files.exists(tempDir.resolve("tu_normal_read.txt")));
     }
 }

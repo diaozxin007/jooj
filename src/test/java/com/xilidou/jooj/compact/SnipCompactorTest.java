@@ -8,7 +8,10 @@ import com.xilidou.jooj.http.dto.ToolResultBlock;
 import com.xilidou.jooj.http.dto.ToolUseBlock;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -51,6 +54,19 @@ class SnipCompactorTest {
         return new MessageParam("user", List.of(ToolResultBlock.ofText(id, content)));
     }
 
+    /**
+     * 断言 placeholder 消息是 {@code [snipped N messages...]} 格式。
+     * 归档成功会带 {@code , archived to /path}, 失败降级为不带 path 的旧格式;
+     * 两种都合法,只锁定 "[snipped N messages" 前缀 + 结尾 "]"。
+     */
+    private static void assertSnippedPlaceholder(int expected, Object content) {
+        assertTrue(content instanceof String, "占位 content 应为 String");
+        String s = (String) content;
+        assertTrue(s.startsWith("[snipped " + expected + " messages"),
+                "占位应以 [snipped N messages 开头,实际:" + s);
+        assertTrue(s.endsWith("]"), "占位应以 ] 结尾,实际:" + s);
+    }
+
     // ─────────────────────────────────────────────────────────────
     //  测试 1：消息条数 ≤ maxMessages 不动
     // ─────────────────────────────────────────────────────────────
@@ -90,7 +106,7 @@ class SnipCompactorTest {
         assertEquals("msg-0", messages.get(0).getContent());
         assertEquals("msg-1", messages.get(1).getContent());
         assertEquals("msg-2", messages.get(2).getContent());
-        assertEquals("[snipped 1 messages]", messages.get(3).getContent());
+        assertSnippedPlaceholder(1, messages.get(3).getContent());
         assertEquals("msg-4", messages.get(4).getContent());
         assertEquals("msg-50", messages.get(50).getContent());
     }
@@ -123,7 +139,7 @@ class SnipCompactorTest {
         // idx 1 是 tool_use,idx 2 是 tool_result(配对已被完整保留在头部)
         assertTrue(messages.get(1).getContent() instanceof List<?>);
         assertTrue(messages.get(2).getContent() instanceof List<?>);
-        assertEquals("[snipped 1 messages]", messages.get(3).getContent());
+        assertSnippedPlaceholder(1, messages.get(3).getContent());
     }
 
     @Test
@@ -217,7 +233,7 @@ class SnipCompactorTest {
         // 结果 = head 3 + 占位 + 尾(11-5)=6 → 总 10 条
         assertEquals(10, messages.size());
         // 第 4 条是占位
-        assertEquals("[snipped 2 messages]", messages.get(3).getContent());
+        assertSnippedPlaceholder(2, messages.get(3).getContent());
         // 第 5 条应该是 assistant(tool_use)(被边界保护带进来)
         MessageParam fifth = messages.get(4);
         assertEquals("assistant", fifth.getRole());
@@ -241,7 +257,7 @@ class SnipCompactorTest {
         MessageParam placeholder = messages.get(3);
         assertEquals("user", placeholder.getRole(),
                 "占位必须是 user role(Anthropic 不接受 system role 在 messages 里)");
-        assertEquals("[snipped 10 messages]", placeholder.getContent());
+        assertSnippedPlaceholder(10, placeholder.getContent());
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -423,5 +439,82 @@ class SnipCompactorTest {
                 }
             }
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    //  测试 6:归档 —— 中段落盘到 transcriptDir + 占位携 archive path
+    // ─────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("snip should archive middle messages to transcriptDir + reference path in placeholder")
+    void snip_should_archive_middle_and_embed_path_in_placeholder(@TempDir Path tmp) throws Exception {
+        // maxMessages=2, snipHeadKeep=1 → 5 条会保留 head 1 + tail 1,中段 3 条被归档
+        CompactConfig cfg = new CompactConfig(2, 1, 3, 120,
+                10000, CompactConfig.defaultTaskOutputDir(),
+          1, 1, tmp, 500);
+        SnipCompactor snip = new SnipCompactor(cfg);
+
+        List<MessageParam> messages = new ArrayList<>();
+        messages.add(userText("head"));
+        messages.add(userText("mid-A"));
+        messages.add(userText("mid-B"));
+        messages.add(userText("mid-C"));
+        messages.add(userText("tail"));
+
+        boolean changed = snip.apply(messages);
+        assertTrue(changed);
+
+        // 占位在 idx=1(head 保留 1 条)
+        String placeholder = (String) messages.get(1).getContent();
+        assertTrue(placeholder.startsWith("[snipped "), "占位应带前缀,实际:" + placeholder);
+        assertTrue(placeholder.contains(", archived to "),
+                "归档成功时占位应带 archive path,实际:" + placeholder);
+        assertTrue(placeholder.endsWith(".jsonl]"),
+                "归档路径应指向 .jsonl,实际:" + placeholder);
+
+        // 磁盘上归档文件确实存在,且内容是中段消息的 jsonl
+        Path archived = extractArchivePath(placeholder);
+        assertTrue(Files.isRegularFile(archived), "归档文件应存在于磁盘:" + archived);
+        List<String> lines = Files.readAllLines(archived);
+        assertEquals(3, lines.size(), "应归档 3 条中段消息");
+        assertTrue(lines.get(0).contains("mid-A"));
+        assertTrue(lines.get(1).contains("mid-B"));
+        assertTrue(lines.get(2).contains("mid-C"));
+    }
+
+    @Test
+    @DisplayName("snip should fall back to plain placeholder when archive dir is unwritable")
+    void snip_should_fallback_to_plain_placeholder_on_archive_failure(@TempDir Path tmp) throws Exception {
+        // 把 transcriptDir 指向一个已存在的**文件**(而非目录),让 Files.createDirectories 失败
+        Path notADir = tmp.resolve("blocker");
+        Files.writeString(notADir, "x");
+
+        CompactConfig cfg = new CompactConfig(2, 1, 3, 120,
+                10000, CompactConfig.defaultTaskOutputDir(),
+                1, 1, notADir, 500);
+        SnipCompactor snip = new SnipCompactor(cfg);
+
+        List<MessageParam> messages = new ArrayList<>();
+        messages.add(userText("head"));
+        messages.add(userText("mid"));
+        messages.add(userText("mid2"));
+        messages.add(userText("tail"));
+
+        boolean changed = snip.apply(messages);
+        assertTrue(changed, "即使归档失败也应完成裁剪 —— 归档失败不阻断压缩");
+
+        String placeholder = (String) messages.get(1).getContent();
+        // 降级为不带 path 的旧格式
+        assertFalse(placeholder.contains("archived to"),
+                "归档失败时占位不应含 archive path,实际:" + placeholder);
+        assertTrue(placeholder.matches("\\[snipped \\d+ messages\\]"),
+                "降级格式应为 [snipped N messages],实际:" + placeholder);
+    }
+
+    /** 从占位文本 {@code [snipped N messages, archived to /abs/path]} 里抽出 path。 */
+    private static Path extractArchivePath(String placeholder) {
+        int start = placeholder.indexOf(", archived to ") + ", archived to ".length();
+        int end = placeholder.length() - 1; // 去掉末尾 ']'
+        return Path.of(placeholder.substring(start, end));
     }
 }

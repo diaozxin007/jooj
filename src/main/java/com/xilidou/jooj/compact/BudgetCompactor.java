@@ -1,7 +1,10 @@
 package com.xilidou.jooj.compact;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.xilidou.jooj.http.dto.ContentBlock;
 import com.xilidou.jooj.http.dto.MessageParam;
 import com.xilidou.jooj.http.dto.ToolResultBlock;
+import com.xilidou.jooj.http.dto.ToolUseBlock;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
@@ -9,8 +12,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 /**
  * L3 tool_result_budget:大 tool_result 落盘 + 替换为 stub。
@@ -68,19 +73,33 @@ public class BudgetCompactor {
      * 在 {@code messages} 上原地修改 ToolResultBlock.content。返回 true 表示
      * 至少落盘了一个。
      *
+     * <p><b>Ping-pong 防御</b>:当一个 tool_result 是 {@code read_file}
+     * (或 bash {@code cat}/{@code head}/{@code tail}) 读{@link CompactConfig#taskOutputDir()}
+     * 下的 stub 文件返回的内容时——即便超过阈值也**跳过**再次落盘。
+     * 不跳过的话会形成:LLM 读 stub → 内容仍 > 阈值 → L3 换新 tool_use_id 落新
+     * stub → LLM 又读新 stub → 无限循环(第一次实测消耗百 KB 磁盘 + 数十 API 调用)。
+     * 跳过后 stub 原文会完整送给 LLM,自然中止循环。
+     *
      * @param messages 对话历史(可能 mutate 内部 ToolResultBlock.content)
      * @return 是否实际落盘过
      */
     public boolean apply(List<MessageParam> messages) {
+        Map<String, ToolUseBlock> uses = collectToolUses(messages);
         List<ToolResultBlock> all = collectToolResults(messages);
         if (all.isEmpty()) return false;
 
         int persisted = 0;
+        int skipped = 0;
         for (ToolResultBlock b : all) {
             String s = String.valueOf(b.getContent());
             // 长度门槛 + 幂等性检查
             if (s.length() <= config.maxToolResultBytes()) continue;
             if (s.startsWith(STUB_PREFIX)) continue;
+            // 读回自身:跳过,不再拆
+            if (isSelfReadback(uses.get(b.getToolUseId()))) {
+                skipped++;
+                continue;
+            }
 
             String stub = persistAndStub(b.getToolUseId(), s);
             if (stub != null) {
@@ -88,12 +107,65 @@ public class BudgetCompactor {
                 persisted++;
             }
         }
+        if (skipped > 0) {
+            log.warn("[Compact L3] skipped {} self-readback tool_results (read_file/cat/head/tail on {}); " +
+                            "sending raw content to break the ping-pong loop",
+                    skipped, config.taskOutputDir());
+        }
         if (persisted > 0) {
             log.info("[Compact L3] budget persisted {} large tool results to {}",
                     persisted, config.taskOutputDir());
             return true;
         }
         return false;
+    }
+
+    /**
+     * 判断这个 tool_use 是否是"读回 L3 stub 落盘的文件"。
+     *
+     * <p>覆盖两种调用形态:
+     * <ul>
+     *   <li>{@code read_file(path=".task_outputs/tool-results/xxx.txt")} —— 大部分 LLM 走这条</li>
+     *   <li>{@code bash(command="cat .task_outputs/tool-results/xxx.txt")} —— 有些模型偏爱 shell</li>
+     * </ul>
+     */
+    private boolean isSelfReadback(ToolUseBlock use) {
+        if (use == null || use.getName() == null) return false;
+        JsonNode input = use.getInput();
+        if (input == null || !input.isObject()) return false;
+
+        String taskOutputAbs = config.taskOutputDir().toAbsolutePath().normalize().toString();
+        String name = use.getName();
+        if ("read_file".equals(name)) {
+            JsonNode p = input.get("path");
+            if (p == null || !p.isTextual()) return false;
+            return pathInsideTaskOutputDir(p.asText(), taskOutputAbs);
+        }
+        if ("bash".equals(name)) {
+            JsonNode cmd = input.get("command");
+            if (cmd == null || !cmd.isTextual()) return false;
+            String c = cmd.asText();
+            // cat/head/tail/less 之类读文件 —— 命令里出现 taskOutputDir 的绝对路径或相对片段
+            return c.contains(taskOutputAbs) || c.contains(".task_outputs/tool-results/");
+        }
+        return false;
+    }
+
+    /**
+     * 判断用户传的 path(相对或绝对)是否落在 taskOutputDir 内。
+     * 走字符串前缀而不是 Path.startsWith,是因为路径参数可能是相对形式,
+     * 而我们无法确定 cwd(agent 可能在 worktree 里跑)。字符串包含比对足够精确
+     * ——taskOutputDir 是相对独特的路径片段。
+     */
+    private boolean pathInsideTaskOutputDir(String userPath, String taskOutputAbs) {
+        if (userPath == null) return false;
+        try {
+            Path p = Path.of(userPath).toAbsolutePath().normalize();
+            if (p.toString().startsWith(taskOutputAbs)) return true;
+        } catch (Exception ignored) {
+            // 落到字符串匹配
+        }
+        return userPath.contains(taskOutputAbs) || userPath.contains(".task_outputs/tool-results/");
     }
 
     /**
@@ -137,6 +209,21 @@ public class BudgetCompactor {
             for (Object b : blocks) {
                 if (b instanceof ToolResultBlock trb) {
                     out.add(trb);
+                }
+            }
+        }
+        return out;
+    }
+
+    /** 建 id → ToolUseBlock 映射,供 apply 判断 tool_result 是否是某个 read_file 的返回。 */
+    private static Map<String, ToolUseBlock> collectToolUses(List<MessageParam> msgs) {
+        Map<String, ToolUseBlock> out = new HashMap<>();
+        for (MessageParam m : msgs) {
+            if (!"assistant".equals(m.getRole())) continue;
+            if (!(m.getContent() instanceof List<?> blocks)) continue;
+            for (Object b : blocks) {
+                if (b instanceof ToolUseBlock tu && tu.getId() != null) {
+                    out.put(tu.getId(), tu);
                 }
             }
         }

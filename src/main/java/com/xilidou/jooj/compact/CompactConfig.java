@@ -32,9 +32,16 @@ import java.nio.file.Paths;
  *
  * <p>L3 常量含义:
  * <ul>
- *   <li>{@code maxToolResultBytes=10000}:单条 tool_result content 字符数 > 这个值
- *       才落盘(教学版用字符数估算 token)。10000 字符 ≈ 2500 token,
- *       一两条就能挤掉一半 context</li>
+ *   <li>{@code maxToolResultBytes=60000}:单条 tool_result content 字符数 > 这个值
+ *       才落盘(教学版用字符数估算 token)。
+ *       <p><b>为什么选 60000</b>:
+ *       {@link com.xilidou.jooj.tool.impl.BashTool#MAX_OUTPUT} 和
+ *       {@link com.xilidou.jooj.tool.impl.FileSystemTool#MAX_OUTPUT} 都是 50000 —— 每个工具
+ *       自己已经把输出硬截断到 50000。L3 阈值必须 > 50000,否则 read_file 读回
+ *       L3 stub 文件本身时又会被 L3 拆一次(生成新 tool_use_id → 新文件),
+ *       LLM 循环 read_file → 拆 → read_file → 拆,永不收敛。
+ *       60000 留出 20% buffer:工具自己截断到 50000 就不再触发 L3,
+ *       但如果未来加了不做硬截断的工具(返回 100K 甚至更多)L3 依然能兜底</li>
  *   <li>{@code taskOutputDir=".task_outputs/tool-results"}:相对 cwd 的落盘目录,
  *       与 RTK 的 {@code .task_outputs/} 风格保持一致</li>
  * </ul>
@@ -66,7 +73,7 @@ public class CompactConfig {
     /** 默认值构造器(生产用)。*/
     public CompactConfig() {
         this(50, 3, 3, 120,
-                10000, defaultTaskOutputDir(),
+                60000, defaultTaskOutputDir(),
                 3, 10, defaultTranscriptDir(), 500);
     }
 
@@ -76,7 +83,7 @@ public class CompactConfig {
      */
     public CompactConfig(int maxMessages, int snipHeadKeep, int keepRecent, int minPlaceholderLen) {
         this(maxMessages, snipHeadKeep, keepRecent, minPlaceholderLen,
-                10000, defaultTaskOutputDir(),
+                60000, defaultTaskOutputDir(),
                 3, 10, defaultTranscriptDir(), 500);
     }
 
