@@ -2,14 +2,15 @@ package com.xilidou.jooj.compact;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xilidou.jooj.config.JsonMappers;
-import com.xilidou.jooj.http.AnthropicClient;
 import com.xilidou.jooj.http.dto.ContentBlock;
-import com.xilidou.jooj.http.dto.CreateMessageRequest;
-import com.xilidou.jooj.http.dto.CreateMessageResponse;
 import com.xilidou.jooj.http.dto.MessageParam;
 import com.xilidou.jooj.http.dto.TextBlock;
 import com.xilidou.jooj.http.dto.ToolResultBlock;
 import com.xilidou.jooj.http.dto.ToolUseBlock;
+import com.xilidou.jooj.llm.LlmClient;
+import com.xilidou.jooj.llm.domain.LlmMessage;
+import com.xilidou.jooj.llm.domain.LlmRequest;
+import com.xilidou.jooj.llm.domain.LlmResponse;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
@@ -78,16 +79,16 @@ public class HistoryCompactor {
             DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS");
 
     private final CompactConfig config;
-    private final AnthropicClient client;
+    private final LlmClient client;
     private final String model;
     private final ObjectMapper json;
 
     /**
      * @param config 配置(L4 字段:summaryHeadKeep, summaryTailKeep, transcriptDir, summaryMaxChars)
-     * @param client LLM 客户端(摘要调用走它)
+     * @param client canonical vendor-neutral LLM 客户端(摘要调用走它)
      * @param model  摘要用模型 ID(通常跟主 agent 同一个)
      */
-    public HistoryCompactor(CompactConfig config, AnthropicClient client, String model) {
+    public HistoryCompactor(CompactConfig config, LlmClient client, String model) {
         this.config = config;
         this.client = client;
         this.model = model;
@@ -249,14 +250,16 @@ public class HistoryCompactor {
                 ? buildUpdatePrompt(prevSummary, conversation, config.summaryMaxChars())
                 : buildSummaryPrompt(conversation, config.summaryMaxChars());
 
-        CreateMessageRequest req = CreateMessageRequest.builder()
+        // P2 Step D:走 canonical LlmRequest / LlmResponse。system 走 single-text
+        // 形态,messages 单条 USER LlmMessage.userText。Adapter 层负责翻译到
+        // Anthropic wire / OpenAI wire。
+        LlmRequest req = LlmRequest.builderWithSystemText(SUMMARY_SYSTEM)
                 .model(model)
                 .maxTokens(SUMMARY_MAX_TOKENS)
-                .system(SUMMARY_SYSTEM)
-                .messages(List.of(MessageParam.user(prompt)))
+                .messages(List.of(LlmMessage.userText(prompt)))
                 .build();
 
-        CreateMessageResponse resp = client.createMessage(req);
+        LlmResponse resp = client.createMessage(req);
         String text = resp.firstText();
         if (text == null) return null;
 

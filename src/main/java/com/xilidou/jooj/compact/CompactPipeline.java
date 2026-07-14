@@ -1,8 +1,8 @@
 package com.xilidou.jooj.compact;
 
-import com.xilidou.jooj.http.AnthropicClient;
 import com.xilidou.jooj.http.dto.MessageParam;
 import com.xilidou.jooj.http.dto.Usage;
+import com.xilidou.jooj.llm.LlmClient;
 import com.xilidou.jooj.memory.MemoryService;
 import lombok.extern.slf4j.Slf4j;
 
@@ -21,7 +21,7 @@ import java.util.Objects;
  *   <li>{@link #apply(List)} —— proactive,L3+L1+L2,每轮 LLM 调用前主动跑,
  *       不消耗 API token</li>
  *   <li>{@link #reactiveCompact(List)} —— reactive,L4,只在
- *       {@link com.xilidou.jooj.http.AnthropicException#isPromptTooLong()}
+ *       {@link com.xilidou.jooj.llm.domain.LlmErrorKind#PROMPT_TOO_LONG}
  *       时调用,消耗 API token(LLM 摘要)</li>
  * </ul>
  *
@@ -98,7 +98,7 @@ public class CompactPipeline {
     /**
      * L1+L2+L3+L4 配置,**无 pre-compression extraction**(向后兼容,Demo 24 之前的 ctor 签名)。
      */
-    public CompactPipeline(CompactConfig config, AnthropicClient client, String model) {
+    public CompactPipeline(CompactConfig config, LlmClient client, String model) {
         this(config, client, model, null, 0, 0.70);
     }
 
@@ -106,7 +106,7 @@ public class CompactPipeline {
      * L1+L2+L3+L4 + 可选 pre-compression extraction —— **禁用 token-aware 触发**。
      * 向后兼容 Demo 24 起的 4 参 ctor。测试路径走这条,不需要 token 门禁。
      */
-    public CompactPipeline(CompactConfig config, AnthropicClient client, String model,
+    public CompactPipeline(CompactConfig config, LlmClient client, String model,
                            MemoryService memoryService) {
         this(config, client, model, memoryService, 0, 0.70);
     }
@@ -115,7 +115,7 @@ public class CompactPipeline {
      * 完整构造器:L1+L2+L3+L4 + 可选 pre-compression extraction + s22 D token-aware 触发。
      *
      * @param config           配置
-     * @param client           LLM 客户端(L4 摘要用),null = 禁用 L4
+     * @param client           canonical vendor-neutral LLM 客户端(L4 摘要用),null = 禁用 L4
      * @param model            L4 摘要用模型(client 非 null 时必填)
      * @param memoryService    可选,L4 触发前抢救永久 fact 用 —— null 时跳过抢救阶段
      * @param contextLength    模型 context 窗口(tokens);0 = 禁用 token-aware 触发
@@ -123,7 +123,7 @@ public class CompactPipeline {
      *                         ≥ {@code contextLength * thresholdPercent} 时 {@link #shouldCompress()}
      *                         返回 true
      */
-    public CompactPipeline(CompactConfig config, AnthropicClient client, String model,
+    public CompactPipeline(CompactConfig config, LlmClient client, String model,
                            MemoryService memoryService,
                            int contextLength, double thresholdPercent) {
         Objects.requireNonNull(config, "config");
@@ -205,7 +205,8 @@ public class CompactPipeline {
      * L4 reactive 摘要(消耗 API token)。
      *
      * <p>调用方:{@link com.xilidou.jooj.agent.AgentLoopHarness} 在收到
-     * {@link com.xilidou.jooj.http.AnthropicException#isPromptTooLong()}
+     * {@link com.xilidou.jooj.llm.domain.LlmException} 且 kind =
+     * {@link com.xilidou.jooj.llm.domain.LlmErrorKind#PROMPT_TOO_LONG}
      * 时调用此方法,然后重试 LLM 请求。
      *
      * <p>L4 不可用(client=null)或失败时返回 false——调用方应该把原 400 错误

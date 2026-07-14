@@ -2,12 +2,12 @@ package com.xilidou.jooj.compact;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
-import com.xilidou.jooj.http.AnthropicClient;
 import com.xilidou.jooj.http.MockAnthropicClient;
 import com.xilidou.jooj.http.ResponseFixtures;
 import com.xilidou.jooj.http.dto.CreateMessageRequest;
 import com.xilidou.jooj.http.dto.CreateMessageResponse;
 import com.xilidou.jooj.http.dto.MessageParam;
+import com.xilidou.jooj.llm.LlmClient;
 import com.xilidou.jooj.http.dto.TextBlock;
 import com.xilidou.jooj.http.dto.ToolResultBlock;
 import com.xilidou.jooj.http.dto.ToolUseBlock;
@@ -75,7 +75,7 @@ class HistoryCompactorTest {
     @DisplayName("L4 should not summarize when head + 1 + tail >= total")
     void should_skip_when_too_short(@TempDir Path tempDir) {
         // head=3 + tail=10 = 13;消息只有 13 条 → 没空间(headEnd + 1 >= tailStart)
-        AnthropicClient client = MockAnthropicClient.ofResponses(
+        LlmClient client = MockAnthropicClient.ofResponses(
                 ResponseFixtures.endTurn("(should not be called)"));
         HistoryCompactor h = new HistoryCompactor(
                 configWithDir(tempDir, 3, 10, 500), client, "test-model");
@@ -96,7 +96,7 @@ class HistoryCompactorTest {
     @Test
     @DisplayName("L4 should summarize middle and replace with summary message")
     void should_summarize_and_replace_middle(@TempDir Path tempDir) {
-        AnthropicClient client = MockAnthropicClient.ofResponses(
+        LlmClient client = MockAnthropicClient.ofResponses(
                 ResponseFixtures.endTurn("Agent read 10 files and built a summary."));
         HistoryCompactor h = new HistoryCompactor(
                 configWithDir(tempDir, 2, 3, 500), client, "test-model");
@@ -145,7 +145,7 @@ class HistoryCompactorTest {
     @Test
     @DisplayName("L4 should archive middle messages as jsonl before summarizing")
     void should_archive_middle_to_transcript_jsonl(@TempDir Path tempDir) throws IOException {
-        AnthropicClient client = MockAnthropicClient.ofResponses(
+        LlmClient client = MockAnthropicClient.ofResponses(
                 ResponseFixtures.endTurn("summary text"));
         HistoryCompactor h = new HistoryCompactor(
                 configWithDir(tempDir, 2, 3, 500), client, "test-model");
@@ -182,7 +182,7 @@ class HistoryCompactorTest {
     @Test
     @DisplayName("L4 should not modify messages when LLM call throws")
     void should_skip_on_llm_failure(@TempDir Path tempDir) {
-        AnthropicClient throwing = req -> {
+        LlmClient throwing = req -> {
             throw new RuntimeException("simulated LLM failure");
         };
         HistoryCompactor h = new HistoryCompactor(
@@ -215,7 +215,7 @@ class HistoryCompactorTest {
         // LLM 返回 800 字符,但 summaryMaxChars=100
         StringBuilder longText = new StringBuilder();
         while (longText.length() < 800) longText.append("very long summary text. ");
-        AnthropicClient client = MockAnthropicClient.ofResponses(
+        LlmClient client = MockAnthropicClient.ofResponses(
                 ResponseFixtures.endTurn(longText.toString()));
         HistoryCompactor h = new HistoryCompactor(
                 configWithDir(tempDir, 2, 3, 100), client, "test-model");
@@ -244,7 +244,7 @@ class HistoryCompactorTest {
     @Test
     @DisplayName("L4 should respect tool_use ↔ tool_result pairing at cut points")
     void should_protect_tool_use_pair_at_cut_points(@TempDir Path tempDir) {
-        AnthropicClient client = MockAnthropicClient.ofResponses(
+        LlmClient client = MockAnthropicClient.ofResponses(
                 ResponseFixtures.endTurn("summary"));
         HistoryCompactor h = new HistoryCompactor(
                 configWithDir(tempDir, 2, 3, 500), client, "test-model");
@@ -286,7 +286,7 @@ class HistoryCompactorTest {
     @DisplayName("L4 should not modify messages when LLM returns empty summary")
     void should_skip_on_empty_summary(@TempDir Path tempDir) {
         // LLM 返回空 text
-        AnthropicClient client = MockAnthropicClient.ofResponses(
+        LlmClient client = MockAnthropicClient.ofResponses(
                 ResponseFixtures.endTurn(""));
         HistoryCompactor h = new HistoryCompactor(
                 configWithDir(tempDir, 2, 3, 500), client, "test-model");
@@ -317,7 +317,7 @@ class HistoryCompactorTest {
 
         CompactPipeline withClient = new CompactPipeline(
                 new CompactConfig(),
-                req -> ResponseFixtures.endTurn("ok"),
+                MockAnthropicClient.ofResponses(ResponseFixtures.endTurn("ok")),
                 "test-model");
         assertTrue(withClient.hasReactiveSupport(), "注入 client 后应启用 L4");
     }

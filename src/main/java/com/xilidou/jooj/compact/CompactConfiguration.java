@@ -1,7 +1,7 @@
 package com.xilidou.jooj.compact;
 
-import com.xilidou.jooj.http.AnthropicClient;
 import com.xilidou.jooj.http.AnthropicProperties;
+import com.xilidou.jooj.llm.LlmClient;
 import com.xilidou.jooj.memory.MemoryService;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -51,11 +51,11 @@ public class CompactConfiguration {
     }
 
     /**
-     * {@link CompactPipeline} Bean:把 {@link CompactConfig} / {@link AnthropicClient} /
+     * {@link CompactPipeline} Bean:把 {@link CompactConfig} / {@link LlmClient} /
      * model / {@link MemoryService} 拼起来。
      *
      * <ul>
-     *   <li>L4 reactive 摘要走真 client</li>
+     *   <li>L4 reactive 摘要走 canonical vendor-neutral client</li>
      *   <li>s21 Demo 24:把 MemoryService 注入 pipeline,启用 pre-compression extraction
      *       —— L4 触发前先抢救永久 fact 进 MEMORY.md,再让 L4 摘要(防"被压缩 lossy 丢失")</li>
      *   <li>s22 D:token-aware 触发 —— 从 {@link CompactProperties} 读 contextLength +
@@ -64,7 +64,7 @@ public class CompactConfiguration {
      */
     @Bean
     public CompactPipeline compactPipeline(CompactConfig config,
-                                           AnthropicClient client,
+                                           LlmClient client,
                                            CompactProperties c,
                                            AnthropicProperties anthropic,
                                            MemoryService memoryService) {
