@@ -1,6 +1,5 @@
 package com.xilidou.jooj.mcp;
 
-import com.xilidou.jooj.JoojProperties;
 import io.modelcontextprotocol.client.McpClient;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.client.transport.ServerParameters;
@@ -66,15 +65,15 @@ import java.util.concurrent.ConcurrentHashMap;
 @Slf4j
 public class SdkStdioMcpTransport implements McpTransport {
 
-    private final JoojProperties.Mcp config;
+    private final McpProperties config;
     private final MockMcpTransport mockFallback;
 
     /** server name → 已初始化的 SDK client。lazy init,首次访问时启动。 */
     private final Map<String, McpSyncClient> clients = new ConcurrentHashMap<>();
 
-    public SdkStdioMcpTransport(JoojProperties props,
+    public SdkStdioMcpTransport(McpProperties config,
                                 ObjectProvider<MockMcpTransport> mockProvider) {
-        this.config = props.getMcp();
+        this.config = config;
         // mock 是可选 fallback —— 没装 mock Bean 也能跑(比如生产 profile 关掉 mock)
         this.mockFallback = mockProvider.getIfAvailable();
     }
@@ -173,7 +172,7 @@ public class SdkStdioMcpTransport implements McpTransport {
     /** 获取(或 lazy init)指定 server 的 SDK client。 */
     private McpSyncClient clientFor(String serverName) {
         return clients.computeIfAbsent(serverName, name -> {
-            JoojProperties.Mcp.Server server = config.getServers().get(name);
+            McpProperties.Server server = config.getServers().get(name);
             if (server == null) {
                 throw new IllegalArgumentException(
                         "No MCP server configured for name: " + name);

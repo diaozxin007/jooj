@@ -3,11 +3,6 @@ package com.xilidou.jooj;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-
 /**
  * jooj 顶层配置 —— 切片 C(Spring Boot 化)的入口。
  *
@@ -73,9 +68,6 @@ public class JoojProperties {
 
     /** 并发 / 线程池(线程重构)配置 —— 替代裸 {@code new Thread()}。 */
     private Concurrency concurrency = new Concurrency();
-
-    /** s19 MCP plugin —— 真实 SDK 配置(stdio 子进程)。 */
-    private Mcp mcp = new Mcp();
 
     /**
      * s21 Demo 25: Session 全文搜索(SQLite + FTS5)配置。
@@ -391,48 +383,9 @@ public class JoojProperties {
     }
 
     /**
-     * MCP plugin(s19)真实 SDK 配置 —— 只描述 stdio 子进程类型的 server。
-     *
-     * <p>每个 server 一个 {@link Server} 子配置:
-     * <pre>
-     *   jooj:
-     *     mcp:
-     *       servers:
-     *         filesystem:
-     *           command: npx
-     *           args: ["-y", "@modelcontextprotocol/server-filesystem", "/Users/me/notes"]
-     *           env: { LOG_LEVEL: "info" }
-     *         git:
-     *           command: npx
-     *           args: ["-y", "@modelcontextprotocol/server-git", "--repo", "."]
-     * </pre>
-     *
-     * <p>路由规则(由 {@link com.xilidou.jooj.mcp.McpRegistry} 实施):
-     * <ul>
-     *   <li>{@code connect("filesystem")} 时,先看 yml 是否有 {@code servers.filesystem} —— 有就走真实 SDK</li>
-     *   <li>没配置则退化到 mock(原 docs / deploy 还能用)</li>
-     * </ul>
+     * MCP plugin(s19)配置已拆到 {@link com.xilidou.jooj.mcp.McpProperties}(2026-07-14)。
+     * 前缀依然是 {@code jooj.mcp}。
      */
-    @Data
-    public static class Mcp {
-        /** 启动 stdio 子进程时,等待 server 进入 ready 的超时(毫秒)。默认 30s 给冷启动 npm 拉包余地。 */
-        private long startupTimeoutMs = 30_000;
-        /** 单次 listTools / callTool 调用超时(毫秒)。默认 60s。 */
-        private long callTimeoutMs = 60_000;
-        /** server 配置表,key = server name(LLM 在 connect_mcp 工具里用的 name)。 */
-        private Map<String, Server> servers = new LinkedHashMap<>();
-
-        /** 单个 stdio MCP server 配置。 */
-        @Data
-        public static class Server {
-            /** 启动命令(如 {@code npx} / {@code node} / 绝对可执行路径)。 */
-            private String command;
-            /** 命令参数列表。 */
-            private List<String> args = new ArrayList<>();
-            /** 子进程环境变量(覆盖父进程同名)。 */
-            private Map<String, String> env = new LinkedHashMap<>();
-        }
-    }
 
     /**
      * Session 全文搜索(s21 Demo 25):SQLite + FTS5 索引子系统配置。

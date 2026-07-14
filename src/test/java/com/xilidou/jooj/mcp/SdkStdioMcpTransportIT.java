@@ -1,6 +1,5 @@
 package com.xilidou.jooj.mcp;
 
-import com.xilidou.jooj.JoojProperties;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -40,12 +39,12 @@ class SdkStdioMcpTransportIT {
 
     @BeforeEach
     void setUp() {
-        JoojProperties props = new JoojProperties();
-        JoojProperties.Mcp.Server everything = new JoojProperties.Mcp.Server();
+        McpProperties props = new McpProperties();
+        McpProperties.Server everything = new McpProperties.Server();
         everything.setCommand("npx");
         everything.setArgs(List.of("-y", "@modelcontextprotocol/server-everything"));
-        props.getMcp().getServers().put("everything", everything);
-        props.getMcp().setStartupTimeoutMs(60_000);
+        props.getServers().put("everything", everything);
+        props.setStartupTimeoutMs(60_000);
 
         // mock fallback 设 null —— 这次只测真 SDK,不要 mock 介入
         transport = new SdkStdioMcpTransport(props, new EmptyObjectProvider<>());
