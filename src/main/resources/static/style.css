@@ -680,3 +680,150 @@ textarea::placeholder { color: var(--text-faint); }
   font-family: monospace;
   margin-top: 4px;
 }
+
+/* ── s22 AQ:clarify 对话框 ────────────────────────────── */
+
+.clarify-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  animation: fadeIn 0.15s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.clarify-dialog {
+  background: var(--bg-elevated, #181c24);
+  border: 1px solid var(--border, #2a313e);
+  border-radius: var(--radius-lg, 12px);
+  padding: 24px;
+  max-width: 560px;
+  width: 90%;
+  max-height: 80vh;
+  overflow-y: auto;
+  color: var(--text, #e4e6ea);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+.clarify-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 16px;
+  color: var(--accent, #d97706);
+}
+
+.clarify-group {
+  margin-bottom: 20px;
+  padding-bottom: 16px;
+  border-bottom: 1px dashed var(--border, #2a313e);
+}
+
+.clarify-group:last-of-type {
+  border-bottom: none;
+  margin-bottom: 8px;
+  padding-bottom: 0;
+}
+
+.clarify-header {
+  display: inline-block;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(217, 119, 6, 0.15);
+  color: var(--accent, #d97706);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  margin-bottom: 8px;
+}
+
+.clarify-question {
+  font-size: 14px;
+  margin-bottom: 10px;
+  color: var(--text, #e4e6ea);
+  line-height: 1.5;
+}
+
+.clarify-option {
+  display: flex;
+  align-items: flex-start;
+  padding: 8px 10px;
+  margin-bottom: 6px;
+  border-radius: var(--radius, 8px);
+  cursor: pointer;
+  background: var(--bg, #0f1115);
+  border: 1px solid var(--border, #2a313e);
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.clarify-option:hover {
+  background: rgba(217, 119, 6, 0.06);
+  border-color: rgba(217, 119, 6, 0.3);
+}
+
+.clarify-option input {
+  margin-top: 3px;
+  margin-right: 10px;
+  accent-color: var(--accent, #d97706);
+}
+
+.clarify-label {
+  font-weight: 500;
+  color: var(--text, #e4e6ea);
+  font-size: 13.5px;
+}
+
+.clarify-desc {
+  display: block;
+  color: var(--text-dim, #8a93a3);
+  font-size: 12px;
+  margin-top: 3px;
+  line-height: 1.4;
+}
+
+.clarify-option input:checked ~ .clarify-label {
+  color: var(--accent, #d97706);
+  font-weight: 600;
+}
+
+.clarify-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border, #2a313e);
+}
+
+.clarify-cancel {
+  background: transparent;
+  color: var(--text-dim, #8a93a3);
+  border: 1px solid var(--border, #2a313e);
+  padding: 8px 18px;
+  border-radius: var(--radius, 8px);
+  cursor: pointer;
+}
+
+.clarify-cancel:hover {
+  color: var(--text, #e4e6ea);
+  background: var(--bg-input, #1f242e);
+}
+
+.clarify-submit {
+  background: var(--accent, #d97706);
+  color: #fff;
+  border: none;
+  padding: 8px 22px;
+  border-radius: var(--radius, 8px);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.clarify-submit:hover {
+  background: var(--accent-hover, #f59842);
+}

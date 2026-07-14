@@ -507,4 +507,132 @@ class ChatControllerTest {
         mvc.perform(get("/api/chat//events"))
                 .andExpect(status().is4xxClientError());
     }
+
+    // ── s22 AQ:ClarifyQuestion 场景 ─────────────────────────
+
+    @Test
+    @DisplayName("GET /pending:ClarifyQuestion 挂起 → 返 type=clarify + questions[] 完整字段")
+    void pending_returns_clarify_question_fields() throws Exception {
+        turnEventStream.clear(SID);
+        agentControl.clearInterrupt(SID);
+
+        var q = com.xilidou.jooj.agent.control.ClarifyQuestion.of(java.util.List.of(
+                new com.xilidou.jooj.agent.control.ClarifyQuestion.SubQuestion(
+                        "用哪个 UI 库?", "UI lib",
+                        java.util.List.of(
+                                new com.xilidou.jooj.agent.control.ClarifyQuestion.Option("React", "生态最大"),
+                                new com.xilidou.jooj.agent.control.ClarifyQuestion.Option("Vue", null)),
+                        false)));
+
+        var agentThread = java.util.concurrent.CompletableFuture.runAsync(() -> {
+            try {
+                agentControl.ask(SID, q, java.time.Duration.ofSeconds(5));
+            } catch (Exception ignore) {
+            }
+        });
+
+        long deadline = System.currentTimeMillis() + 1000;
+        while (System.currentTimeMillis() < deadline
+                && agentControl.findPending(SID, q.askId()).isEmpty()) {
+            Thread.sleep(10);
+        }
+
+        try {
+            mvc.perform(get("/api/chat/" + SID + "/pending"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.pending.length()").value(1))
+                    .andExpect(jsonPath("$.pending[0].type").value("clarify"))
+                    .andExpect(jsonPath("$.pending[0].questions.length()").value(1))
+                    .andExpect(jsonPath("$.pending[0].questions[0].question").value("用哪个 UI 库?"))
+                    .andExpect(jsonPath("$.pending[0].questions[0].header").value("UI lib"))
+                    .andExpect(jsonPath("$.pending[0].questions[0].multiSelect").value(false))
+                    .andExpect(jsonPath("$.pending[0].questions[0].options.length()").value(2))
+                    .andExpect(jsonPath("$.pending[0].questions[0].options[0].label").value("React"))
+                    .andExpect(jsonPath("$.pending[0].questions[0].options[0].description").value("生态最大"))
+                    .andExpect(jsonPath("$.pending[0].questions[0].options[1].label").value("Vue"))
+                    // Vue 的 description 是 null,应 absent(NON_NULL 序列化)
+                    .andExpect(jsonPath("$.pending[0].questions[0].options[1].description").doesNotExist());
+        } finally {
+            agentControl.cancelPending(SID);
+            agentThread.get(2, java.util.concurrent.TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    @DisplayName("POST /answer:decision=choice + selections → agent 收到 ChoiceAnswer")
+    void answer_choice_wakes_agent() throws Exception {
+        turnEventStream.clear(SID);
+        agentControl.clearInterrupt(SID);
+
+        var q = com.xilidou.jooj.agent.control.ClarifyQuestion.of(java.util.List.of(
+                new com.xilidou.jooj.agent.control.ClarifyQuestion.SubQuestion(
+                        "UI?", "ui",
+                        java.util.List.of(
+                                new com.xilidou.jooj.agent.control.ClarifyQuestion.Option("React", null),
+                                new com.xilidou.jooj.agent.control.ClarifyQuestion.Option("Vue", null)),
+                        false)));
+
+        var received = new java.util.concurrent.atomic.AtomicReference<
+                com.xilidou.jooj.agent.control.Answer>();
+        var agentThread = java.util.concurrent.CompletableFuture.runAsync(() -> {
+            try {
+                received.set(agentControl.ask(SID, q, java.time.Duration.ofSeconds(5)));
+            } catch (Exception ignore) {
+            }
+        });
+        long deadline = System.currentTimeMillis() + 1000;
+        while (System.currentTimeMillis() < deadline
+                && agentControl.findPending(SID, q.askId()).isEmpty()) {
+            Thread.sleep(10);
+        }
+
+        String body = "{\"askId\":\"" + q.askId() + "\",\"decision\":\"choice\","
+                + "\"selections\":{\"0\":[\"React\"]}}";
+        mvc.perform(post("/api/chat/" + SID + "/answer")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.answered").value(true));
+
+        agentThread.get(2, java.util.concurrent.TimeUnit.SECONDS);
+        org.junit.jupiter.api.Assertions.assertTrue(
+                received.get() instanceof com.xilidou.jooj.agent.control.ChoiceAnswer,
+                "应收到 ChoiceAnswer,实际:" + received.get());
+        var ca = (com.xilidou.jooj.agent.control.ChoiceAnswer) received.get();
+        org.junit.jupiter.api.Assertions.assertEquals("React", ca.firstSingle());
+    }
+
+    @Test
+    @DisplayName("POST /answer:decision=choice 缺 selections 返 400")
+    void answer_choice_missing_selections() throws Exception {
+        turnEventStream.clear(SID);
+        agentControl.clearInterrupt(SID);
+
+        var q = com.xilidou.jooj.agent.control.ClarifyQuestion.of(java.util.List.of(
+                new com.xilidou.jooj.agent.control.ClarifyQuestion.SubQuestion(
+                        "?", "h",
+                        java.util.List.of(
+                                new com.xilidou.jooj.agent.control.ClarifyQuestion.Option("A", null),
+                                new com.xilidou.jooj.agent.control.ClarifyQuestion.Option("B", null)),
+                        false)));
+
+        var agentThread = java.util.concurrent.CompletableFuture.runAsync(() -> {
+            try { agentControl.ask(SID, q, java.time.Duration.ofSeconds(5)); } catch (Exception ignore) {}
+        });
+        long deadline = System.currentTimeMillis() + 1000;
+        while (System.currentTimeMillis() < deadline
+                && agentControl.findPending(SID, q.askId()).isEmpty()) {
+            Thread.sleep(10);
+        }
+
+        try {
+            mvc.perform(post("/api/chat/" + SID + "/answer")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"askId\":\"" + q.askId() + "\",\"decision\":\"choice\"}"))
+                    .andExpect(status().isBadRequest());
+        } finally {
+            agentControl.cancelPending(SID);
+            agentThread.get(2, java.util.concurrent.TimeUnit.SECONDS);
+        }
+    }
 }

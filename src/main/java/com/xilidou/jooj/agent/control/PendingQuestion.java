@@ -29,7 +29,7 @@ import java.util.UUID;
  * (CompletableFuture 未完成 = pending,已完成 = 已 answer/timeout/cancel)。
  */
 public sealed interface PendingQuestion
-        permits PermissionQuestion {
+        permits PermissionQuestion, ClarifyQuestion {
 
     /** 唯一 ID,前端 /pending /answer 匹配用。 */
     String askId();

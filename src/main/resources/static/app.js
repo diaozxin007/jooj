@@ -164,6 +164,148 @@
     return () => { stopped = true; };
   }
 
+  /**
+   * s22 AQ:pending question polling —— turn 期间每 1s poll /pending,
+   * 检测到 clarify 型 question 时弹选择弹框。permission 型暂不处理(等 D-10-C UI)。
+   *
+   * 已弹框的 askId 记 shownAskIds 避免重复弹。
+   */
+  function startPendingPolling(sessionId) {
+    let stopped = false;
+    const shownAskIds = new Set();
+    const tick = async () => {
+      if (stopped) return;
+      try {
+        const url = `/api/chat/${encodeURIComponent(sessionId)}/pending`;
+        const data = await getJson(url);
+        if (stopped) return;
+        for (const q of (data.pending || [])) {
+          if (shownAskIds.has(q.askId)) continue;
+          shownAskIds.add(q.askId);
+          if (q.type === 'clarify') {
+            showClarifyDialog(sessionId, q);
+          }
+          // permission 型:留给未来 UI 补
+        }
+      } catch (e) {
+        console.debug('[pending poll]', e.message || e);
+      }
+      if (!stopped) setTimeout(tick, 1000);
+    };
+    setTimeout(tick, 300);
+    return () => { stopped = true; };
+  }
+
+  /**
+   * s22 AQ:渲染 clarify 弹框 —— agent 主动向用户提问(1-4 个),用户选择后 POST /answer 唤醒。
+   *
+   * 支持:
+   * - 多 sub-question(顺序渲染,每个一组)
+   * - 每 sub-question 显示 header(chip 标签) + question + options(radio 单选 / checkbox 多选)
+   * - 每 option 展示 label + description(如有)
+   * - "取消"按钮 → 发 decision=deny 让 agent 退回
+   */
+  function showClarifyDialog(sessionId, questionPayload) {
+    const overlay = document.createElement('div');
+    overlay.className = 'clarify-overlay';
+    overlay.innerHTML = `
+      <div class="clarify-dialog">
+        <div class="clarify-title">🤖 需要您做选择</div>
+        <form class="clarify-form"></form>
+        <div class="clarify-actions">
+          <button type="button" class="clarify-cancel">取消</button>
+          <button type="button" class="clarify-submit">提交</button>
+        </div>
+      </div>`;
+    const form = overlay.querySelector('.clarify-form');
+
+    (questionPayload.questions || []).forEach((sq, idx) => {
+      const group = document.createElement('div');
+      group.className = 'clarify-group';
+      group.setAttribute('data-question-idx', idx);
+      group.setAttribute('data-multi', sq.multiSelect ? '1' : '0');
+
+      const header = document.createElement('span');
+      header.className = 'clarify-header';
+      header.textContent = sq.header || '';
+      group.appendChild(header);
+
+      const qEl = document.createElement('div');
+      qEl.className = 'clarify-question';
+      qEl.textContent = sq.question || '';
+      group.appendChild(qEl);
+
+      (sq.options || []).forEach((opt) => {
+        const row = document.createElement('label');
+        row.className = 'clarify-option';
+        const input = document.createElement('input');
+        input.type = sq.multiSelect ? 'checkbox' : 'radio';
+        input.name = 'q' + idx;
+        input.value = opt.label;
+        row.appendChild(input);
+        const labelSpan = document.createElement('span');
+        labelSpan.className = 'clarify-label';
+        labelSpan.textContent = opt.label;
+        row.appendChild(labelSpan);
+        if (opt.description) {
+          const desc = document.createElement('span');
+          desc.className = 'clarify-desc';
+          desc.textContent = opt.description;
+          row.appendChild(desc);
+        }
+        group.appendChild(row);
+      });
+      form.appendChild(group);
+    });
+
+    document.body.appendChild(overlay);
+
+    const cleanup = () => overlay.remove();
+
+    overlay.querySelector('.clarify-cancel').addEventListener('click', async () => {
+      try {
+        await postJson(`/api/chat/${encodeURIComponent(sessionId)}/answer`, {
+          askId: questionPayload.askId,
+          decision: 'deny',
+          reason: 'user cancelled clarify dialog',
+        });
+      } catch (e) {
+        console.warn('[clarify cancel]', e.message || e);
+      }
+      cleanup();
+    });
+
+    overlay.querySelector('.clarify-submit').addEventListener('click', async () => {
+      // 收集每 group 的选择
+      const selections = {};
+      const groups = form.querySelectorAll('.clarify-group');
+      for (const g of groups) {
+        const idx = g.getAttribute('data-question-idx');
+        const inputs = g.querySelectorAll('input:checked');
+        selections[idx] = Array.from(inputs).map(i => i.value);
+      }
+      // 校验:至少每个问题选 1 项
+      for (const g of groups) {
+        const idx = g.getAttribute('data-question-idx');
+        if (!selections[idx] || selections[idx].length === 0) {
+          alert('请为每个问题至少选择一项');
+          return;
+        }
+      }
+      try {
+        await postJson(`/api/chat/${encodeURIComponent(sessionId)}/answer`, {
+          askId: questionPayload.askId,
+          decision: 'choice',
+          selections,
+        });
+      } catch (e) {
+        alert('提交失败:' + (e.message || 'unknown'));
+        return;
+      }
+      cleanup();
+    });
+  }
+
   function escapeHtml(s) {
     const div = document.createElement('div');
     div.textContent = s == null ? '' : String(s);
@@ -293,12 +435,15 @@
     setBusy(true);
     // s22 D-11:启动 events poll,tool 摘要实时更新到 loading 气泡
     const stopPolling = startEventPolling(currentSessionId, loading);
+    // s22 AQ:同时 poll /pending,agent 主动提问时弹选择框
+    const stopPendingPoll = startPendingPolling(currentSessionId);
     try {
       const data = await postJson('/api/chat', {
         sessionId: currentSessionId,
         query,
       });
       stopPolling();
+      stopPendingPoll();
       loading.remove();
       appendBubble({
         role: 'assistant',
@@ -310,6 +455,7 @@
       loadSessionsList();
     } catch (e) {
       stopPolling();
+      stopPendingPoll();
       loading.remove();
       appendBubble({
         role: 'assistant',

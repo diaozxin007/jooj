@@ -5,6 +5,8 @@ import com.xilidou.jooj.agent.TurnEvent;
 import com.xilidou.jooj.agent.TurnEventStream;
 import com.xilidou.jooj.agent.control.AllowAnswer;
 import com.xilidou.jooj.agent.control.Answer;
+import com.xilidou.jooj.agent.control.ChoiceAnswer;
+import com.xilidou.jooj.agent.control.ClarifyQuestion;
 import com.xilidou.jooj.agent.control.DenyAnswer;
 import com.xilidou.jooj.agent.control.PendingQuestion;
 import com.xilidou.jooj.agent.control.PermissionQuestion;
@@ -368,7 +370,7 @@ public class ChatController {
             return ResponseEntity.badRequest().body(error("sessionId required"));
         }
         List<PendingQuestion> list = agentControl.listPending(sessionId);
-        // 每种 question 类型自己 flatten 一遍 —— 目前只有 permission
+        // 按 question type 展开:每种 sealed 子类扁平化自己的字段
         List<Map<String, Object>> serialized = new ArrayList<>(list.size());
         for (PendingQuestion q : list) {
             Map<String, Object> item = new java.util.LinkedHashMap<>();
@@ -379,6 +381,25 @@ public class ChatController {
                 item.put("toolName", pq.toolName());
                 item.put("toolInput", pq.toolInput());
                 item.put("reason", pq.reason());
+            } else if (q instanceof ClarifyQuestion cq) {
+                // s22 AQ:clarify 展平 questions —— 前端渲染选择弹框
+                List<Map<String, Object>> qs = new ArrayList<>();
+                for (ClarifyQuestion.SubQuestion sq : cq.questions()) {
+                    List<Map<String, Object>> opts = new ArrayList<>();
+                    for (ClarifyQuestion.Option op : sq.options()) {
+                        Map<String, Object> optItem = new java.util.LinkedHashMap<>();
+                        optItem.put("label", op.label());
+                        if (op.description() != null) optItem.put("description", op.description());
+                        opts.add(optItem);
+                    }
+                    Map<String, Object> subItem = new java.util.LinkedHashMap<>();
+                    subItem.put("question", sq.question());
+                    subItem.put("header", sq.header());
+                    subItem.put("options", opts);
+                    subItem.put("multiSelect", sq.multiSelect());
+                    qs.add(subItem);
+                }
+                item.put("questions", qs);
             }
             serialized.add(item);
         }
@@ -431,11 +452,19 @@ public class ChatController {
             case "allow" -> AllowAnswer.INSTANCE;
             case "deny" -> new DenyAnswer(req.reason != null && !req.reason.isBlank()
                     ? req.reason : "user rejected");
+            case "choice" -> {
+                // s22 AQ:clarify 型答复。前端 POST body:
+                //   { askId, decision: "choice", selections: { "0": ["React"], "1": ["Yes"] } }
+                if (req.selections == null || req.selections.isEmpty()) {
+                    yield null;  // 参数校验:下面统一返 400
+                }
+                yield new ChoiceAnswer(req.selections);
+            }
             default -> null;
         };
         if (answer == null) {
             return ResponseEntity.badRequest().body(error(
-                    "decision must be 'allow' or 'deny', got: " + req.decision));
+                    "decision must be 'allow' / 'deny' / 'choice' (with selections), got: " + req.decision));
         }
 
         boolean ok = agentControl.answer(sessionId, req.askId, answer);
@@ -457,6 +486,8 @@ public class ChatController {
         public String askId;
         public String decision;
         public String reason;
+        /** s22 AQ:clarify 场景,{@code decision="choice"} 时必填。 key=question index, value=选中 labels。 */
+        public java.util.Map<String, java.util.List<String>> selections;
     }
 
     // ─────────────────────────────────────────────────────────────

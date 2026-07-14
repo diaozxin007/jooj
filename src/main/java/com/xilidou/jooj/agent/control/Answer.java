@@ -17,7 +17,7 @@ package com.xilidou.jooj.agent.control;
  * <p><b>为什么 sealed</b>:强 typed 答复防止 permission ASK 收到 "hello world" 文本这类
  * 类型不匹配的场景;编译期就能约束。
  */
-public sealed interface Answer permits AllowAnswer, DenyAnswer, TextAnswer {
+public sealed interface Answer permits AllowAnswer, DenyAnswer, TextAnswer, ChoiceAnswer {
 
     /** 便利:是不是"允许"型答复。 */
     default boolean isAllow() {
