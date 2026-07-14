@@ -1,8 +1,8 @@
 package com.xilidou.jooj.memory;
 
-import com.xilidou.jooj.http.AnthropicClient;
 import com.xilidou.jooj.http.MockAnthropicClient;
 import com.xilidou.jooj.http.ResponseFixtures;
+import com.xilidou.jooj.llm.LlmClient;
 import com.xilidou.jooj.http.dto.MessageParam;
 import com.xilidou.jooj.http.dto.TextBlock;
 import com.xilidou.jooj.http.dto.ToolResultBlock;
@@ -65,7 +65,7 @@ class MemorySelectorTest {
     void select_no_memories(@TempDir Path tempDir) {
         MemoryStore store = freshStore(tempDir);
         // mock 不应被调用
-        AnthropicClient mock = MockAnthropicClient.ofResponses();
+        LlmClient mock = MockAnthropicClient.ofResponses();
         MemorySelector selector = new MemorySelector(store, mock, "test-model");
 
         List<String> out = selector.select(List.of(userText("hi")));
@@ -148,7 +148,7 @@ class MemorySelectorTest {
         store.write(sample("user-tabs", MemoryFile.Type.USER, "User prefers tabs", "body"));
         store.write(sample("project-auth", MemoryFile.Type.PROJECT, "Auth module rewrite", "body"));
 
-        AnthropicClient throwing = req -> {
+        LlmClient throwing = req -> {
             throw new RuntimeException("simulated LLM failure");
         };
         MemorySelector selector = new MemorySelector(store, throwing, "test-model");
@@ -211,7 +211,7 @@ class MemorySelectorTest {
         store.write(sample("foo", MemoryFile.Type.USER, "foo desc", "body"));
 
         // mock 不应被调用
-        AnthropicClient mock = MockAnthropicClient.ofResponses();
+        LlmClient mock = MockAnthropicClient.ofResponses();
         MemorySelector selector = new MemorySelector(store, mock, "test-model");
 
         // 只有 tool_result 的 user 消息(没有 user 输入文本)

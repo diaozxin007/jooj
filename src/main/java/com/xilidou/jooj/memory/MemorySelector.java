@@ -2,13 +2,14 @@ package com.xilidou.jooj.memory;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xilidou.jooj.config.JsonMappers;
-import com.xilidou.jooj.http.AnthropicClient;
 import com.xilidou.jooj.http.dto.ContentBlock;
-import com.xilidou.jooj.http.dto.CreateMessageRequest;
-import com.xilidou.jooj.http.dto.CreateMessageResponse;
 import com.xilidou.jooj.http.dto.MessageParam;
 import com.xilidou.jooj.http.dto.TextBlock;
 import com.xilidou.jooj.http.dto.ToolResultBlock;
+import com.xilidou.jooj.llm.LlmClient;
+import com.xilidou.jooj.llm.domain.LlmMessage;
+import com.xilidou.jooj.llm.domain.LlmRequest;
+import com.xilidou.jooj.llm.domain.LlmResponse;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.ArrayList;
@@ -76,18 +77,18 @@ public class MemorySelector {
             "You are a memory selector. Output ONLY a JSON array of integers, no preamble.";
 
     private final MemoryStore store;
-    private final AnthropicClient client;
+    private final LlmClient client;
     private final String model;
     private final int maxItems;
     private final ObjectMapper json;
 
     /**
      * @param store    存储层(读 catalog 用)
-     * @param client   LLM 客户端(side-query 用),null = 直接走关键词回退
+     * @param client   canonical vendor-neutral LLM 客户端(side-query 用),null = 直接走关键词回退
      * @param model    模型 ID(client 非 null 时必填)
      * @param maxItems 最多返回多少个 memory,默认 5
      */
-    public MemorySelector(MemoryStore store, AnthropicClient client, String model, int maxItems) {
+    public MemorySelector(MemoryStore store, LlmClient client, String model, int maxItems) {
         if (store == null) throw new IllegalArgumentException("store must not be null");
         if (maxItems <= 0) throw new IllegalArgumentException("maxItems must be > 0");
         if (client != null && (model == null || model.isBlank())) {
@@ -101,7 +102,7 @@ public class MemorySelector {
     }
 
     /** 默认 maxItems=5 的简化构造。*/
-    public MemorySelector(MemoryStore store, AnthropicClient client, String model) {
+    public MemorySelector(MemoryStore store, LlmClient client, String model) {
         this(store, client, model, 5);
     }
 
@@ -267,14 +268,13 @@ public class MemorySelector {
                         "Recent conversation:\n" + recent + "\n\n" +
                         "Memory catalog:\n" + catalog;
 
-        CreateMessageRequest req = CreateMessageRequest.builder()
+        LlmRequest req = LlmRequest.builderWithSystemText(SELECT_SYSTEM)
                 .model(model)
                 .maxTokens(SELECT_MAX_TOKENS)
-                .system(SELECT_SYSTEM)
-                .messages(List.of(MessageParam.user(prompt)))
+                .messages(List.of(LlmMessage.userText(prompt)))
                 .build();
 
-        CreateMessageResponse resp = client.createMessage(req);
+        LlmResponse resp = client.createMessage(req);
         String text = resp.firstText();
         if (text == null || text.isBlank()) return null;
 

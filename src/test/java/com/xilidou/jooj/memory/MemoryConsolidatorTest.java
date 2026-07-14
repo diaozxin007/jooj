@@ -1,8 +1,8 @@
 package com.xilidou.jooj.memory;
 
-import com.xilidou.jooj.http.AnthropicClient;
 import com.xilidou.jooj.http.MockAnthropicClient;
 import com.xilidou.jooj.http.ResponseFixtures;
+import com.xilidou.jooj.llm.LlmClient;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -59,7 +59,7 @@ class MemoryConsolidatorTest {
         seedMemories(store, 5);  // 5 < 10
 
         // mock 不该被调用
-        AnthropicClient mock = MockAnthropicClient.ofResponses();
+        LlmClient mock = MockAnthropicClient.ofResponses();
         MemoryConsolidator consolidator = new MemoryConsolidator(store, cfg, mock, "test-model");
 
         int result = consolidator.consolidate();
@@ -134,7 +134,7 @@ class MemoryConsolidatorTest {
         MemoryStore store = new MemoryStore(cfg);
         seedMemories(store, 5);
 
-        AnthropicClient throwing = req -> {
+        LlmClient throwing = req -> {
             throw new RuntimeException("simulated LLM failure");
         };
         MemoryConsolidator consolidator = new MemoryConsolidator(store, cfg, throwing, "test-model");

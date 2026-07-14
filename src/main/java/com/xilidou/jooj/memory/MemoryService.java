@@ -1,7 +1,7 @@
 package com.xilidou.jooj.memory;
 
-import com.xilidou.jooj.http.AnthropicClient;
 import com.xilidou.jooj.http.dto.MessageParam;
+import com.xilidou.jooj.llm.LlmClient;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.ArrayList;
@@ -59,7 +59,7 @@ public class MemoryService {
     /**
      * 老 3 参 ctor —— 不接 BackgroundReviewer,等价旧行为。测试 / 不需要 review 的场景走这条。
      */
-    public MemoryService(MemoryConfig config, AnthropicClient client, String model) {
+    public MemoryService(MemoryConfig config, LlmClient client, String model) {
         this(config, client, model, null, null);
     }
 
@@ -70,7 +70,7 @@ public class MemoryService {
      * <p>典型生产装配在 {@link MemoryConfiguration} 里:Spring 注入 {@code joojBgExecutor}
      * + new BackgroundReviewer(store, client, model)。
      */
-    public MemoryService(MemoryConfig config, AnthropicClient client, String model,
+    public MemoryService(MemoryConfig config, LlmClient client, String model,
                          BackgroundReviewer reviewer,
                          java.util.concurrent.Executor reviewExecutor) {
         this.config = config;

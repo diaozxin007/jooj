@@ -3,13 +3,14 @@ package com.xilidou.jooj.memory;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xilidou.jooj.config.JsonMappers;
-import com.xilidou.jooj.http.AnthropicClient;
-import com.xilidou.jooj.http.dto.CreateMessageRequest;
-import com.xilidou.jooj.http.dto.CreateMessageResponse;
 import com.xilidou.jooj.http.dto.MessageParam;
 import com.xilidou.jooj.http.dto.TextBlock;
 import com.xilidou.jooj.http.dto.ToolResultBlock;
 import com.xilidou.jooj.http.dto.ToolUseBlock;
+import com.xilidou.jooj.llm.LlmClient;
+import com.xilidou.jooj.llm.domain.LlmMessage;
+import com.xilidou.jooj.llm.domain.LlmRequest;
+import com.xilidou.jooj.llm.domain.LlmResponse;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.List;
@@ -83,7 +84,7 @@ public class BackgroundReviewer {
             "you focus on PATTERNS that span multiple turns.";
 
     private final MemoryStore store;
-    private final AnthropicClient client;
+    private final LlmClient client;
     private final String model;
     private final ObjectMapper json;
 
@@ -97,7 +98,7 @@ public class BackgroundReviewer {
     private final boolean writeApproval;
 
     /** 老 3 参 ctor —— 不接 staged,直接生效(Demo 26 等价行为)。 */
-    public BackgroundReviewer(MemoryStore store, AnthropicClient client, String model) {
+    public BackgroundReviewer(MemoryStore store, LlmClient client, String model) {
         this(store, client, model, null, false);
     }
 
@@ -107,7 +108,7 @@ public class BackgroundReviewer {
      * @param pendingStore   非 null 时启用 staged 路径(配合 writeApproval=true)
      * @param writeApproval  true → 提案进 pending pool;false → 直接 store.write
      */
-    public BackgroundReviewer(MemoryStore store, AnthropicClient client, String model,
+    public BackgroundReviewer(MemoryStore store, LlmClient client, String model,
                               PendingMemoryStore pendingStore,
                               boolean writeApproval) {
         if (store == null) throw new IllegalArgumentException("store must not be null");
@@ -143,13 +144,12 @@ public class BackgroundReviewer {
 
         String text;
         try {
-            CreateMessageRequest req = CreateMessageRequest.builder()
+            LlmRequest req = LlmRequest.builderWithSystemText(REVIEW_SYSTEM)
                     .model(model)
                     .maxTokens(REVIEW_MAX_TOKENS)
-                    .system(REVIEW_SYSTEM)
-                    .messages(List.of(MessageParam.user(prompt)))
+                    .messages(List.of(LlmMessage.userText(prompt)))
                     .build();
-            CreateMessageResponse resp = client.createMessage(req);
+            LlmResponse resp = client.createMessage(req);
             text = resp.firstText();
         } catch (Exception e) {
             log.warn("[Memory:Review] LLM call failed, skipping: {}", e.toString());

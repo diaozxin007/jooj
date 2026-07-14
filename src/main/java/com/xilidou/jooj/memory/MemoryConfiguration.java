@@ -1,8 +1,8 @@
 package com.xilidou.jooj.memory;
 
 import com.xilidou.jooj.config.JoojExecutors;
-import com.xilidou.jooj.http.AnthropicClient;
 import com.xilidou.jooj.http.AnthropicProperties;
+import com.xilidou.jooj.llm.LlmClient;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -89,7 +89,7 @@ public class MemoryConfiguration {
      */
     @Bean
     public BackgroundReviewer backgroundReviewer(MemoryStore store,
-                                                 AnthropicClient client,
+                                                 LlmClient client,
                                                  AnthropicProperties anthropic,
                                                  MemoryProperties memProps,
                                                  PendingMemoryStore pendingStore) {
@@ -103,7 +103,7 @@ public class MemoryConfiguration {
     }
 
     /**
-     * {@link MemoryService} Bean:把 {@link MemoryConfig} / {@link AnthropicClient} /
+     * {@link MemoryService} Bean:把 {@link MemoryConfig} / {@link LlmClient} /
      * model + {@link BackgroundReviewer} + {@code joojBgExecutor} 拼起来,启用 4+1 层 memory。
      *
      * <p>5 参 ctor 接 reviewer + executor;turn 结束时 extract+consolidate 同步跑(主路径)、
@@ -111,7 +111,7 @@ public class MemoryConfiguration {
      */
     @Bean
     public MemoryService memoryService(MemoryConfig config,
-                                       AnthropicClient client,
+                                       LlmClient client,
                                        AnthropicProperties anthropic,
                                        BackgroundReviewer reviewer,
                                        @Qualifier(JoojExecutors.BG_BEAN) ExecutorService bgExecutor) {

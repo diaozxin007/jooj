@@ -3,10 +3,10 @@ package com.xilidou.jooj.memory;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xilidou.jooj.config.JsonMappers;
-import com.xilidou.jooj.http.AnthropicClient;
-import com.xilidou.jooj.http.dto.CreateMessageRequest;
-import com.xilidou.jooj.http.dto.CreateMessageResponse;
-import com.xilidou.jooj.http.dto.MessageParam;
+import com.xilidou.jooj.llm.LlmClient;
+import com.xilidou.jooj.llm.domain.LlmMessage;
+import com.xilidou.jooj.llm.domain.LlmRequest;
+import com.xilidou.jooj.llm.domain.LlmResponse;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.ArrayList;
@@ -77,12 +77,12 @@ public class MemoryConsolidator {
 
     private final MemoryStore store;
     private final MemoryConfig config;
-    private final AnthropicClient client;
+    private final LlmClient client;
     private final String model;
     private final ObjectMapper json;
 
     public MemoryConsolidator(MemoryStore store, MemoryConfig config,
-                              AnthropicClient client, String model) {
+                              LlmClient client, String model) {
         if (store == null) throw new IllegalArgumentException("store must not be null");
         if (config == null) throw new IllegalArgumentException("config must not be null");
         if (client != null && (model == null || model.isBlank())) {
@@ -112,16 +112,15 @@ public class MemoryConsolidator {
         String catalog = renderCatalog(originals);
         String prompt = buildConsolidatePrompt(catalog);
 
-        // 2) 调 LLM
+        // 2) 调 LLM(canonical vendor-neutral 路径)
         String text;
         try {
-            CreateMessageRequest req = CreateMessageRequest.builder()
+            LlmRequest req = LlmRequest.builderWithSystemText(CONSOLIDATE_SYSTEM)
                     .model(model)
                     .maxTokens(CONSOLIDATE_MAX_TOKENS)
-                    .system(CONSOLIDATE_SYSTEM)
-                    .messages(List.of(MessageParam.user(prompt)))
+                    .messages(List.of(LlmMessage.userText(prompt)))
                     .build();
-            CreateMessageResponse resp = client.createMessage(req);
+            LlmResponse resp = client.createMessage(req);
             text = resp.firstText();
         } catch (Exception e) {
             log.warn("[Memory] consolidation LLM call failed: {}", e.toString());

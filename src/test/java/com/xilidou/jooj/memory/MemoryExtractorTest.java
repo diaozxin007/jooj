@@ -1,8 +1,11 @@
 package com.xilidou.jooj.memory;
 
-import com.xilidou.jooj.http.AnthropicClient;
 import com.xilidou.jooj.http.MockAnthropicClient;
 import com.xilidou.jooj.http.ResponseFixtures;
+import com.xilidou.jooj.llm.LlmClient;
+import com.xilidou.jooj.llm.domain.LlmContent;
+import com.xilidou.jooj.llm.domain.LlmMessage;
+import com.xilidou.jooj.llm.domain.LlmText;
 import com.xilidou.jooj.http.dto.MessageParam;
 import com.xilidou.jooj.http.dto.TextBlock;
 import com.xilidou.jooj.http.dto.ToolResultBlock;
@@ -139,7 +142,7 @@ class MemoryExtractorTest {
     @DisplayName("LLM throws → no writes, no exception")
     void extract_llm_failure_graceful(@TempDir Path tempDir) {
         MemoryStore store = freshStore(tempDir);
-        AnthropicClient throwing = req -> {
+        LlmClient throwing = req -> {
             throw new RuntimeException("simulated LLM failure");
         };
         MemoryExtractor extractor = new MemoryExtractor(store, throwing, "test-model");
@@ -231,7 +234,7 @@ class MemoryExtractorTest {
     void extract_skips_tool_result_only_messages(@TempDir Path tempDir) {
         MemoryStore store = freshStore(tempDir);
         // mock 不应被调用(空 responses → 调到就报 "too many calls")
-        AnthropicClient mock = MockAnthropicClient.ofResponses();
+        LlmClient mock = MockAnthropicClient.ofResponses();
         MemoryExtractor extractor = new MemoryExtractor(store, mock, "test-model");
 
         int written = extractor.extract(List.of(
@@ -271,14 +274,20 @@ class MemoryExtractorTest {
 
         // Mock 客户端,验证 prompt 含 existing
         final String[] capturedPrompt = {null};
-        AnthropicClient capturing = req -> {
-            // 抠 prompt 出来检查
-            MessageParam first = req.getMessages().get(0);
-            Object c = first.getContent();
-            if (c instanceof String s) {
-                capturedPrompt[0] = s;
+        LlmClient capturing = req -> {
+            // 抠 prompt 出来检查(canonical LlmMessage.content 是 List<LlmContent>)
+            LlmMessage first = req.getMessages().get(0);
+            for (LlmContent c : first.getContent()) {
+                if (c instanceof LlmText t) {
+                    capturedPrompt[0] = t.getText();
+                    break;
+                }
             }
-            return ResponseFixtures.endTurn("[]");
+            return com.xilidou.jooj.llm.domain.LlmResponse.builder()
+                    .id("mock").model("test-model")
+                    .content(List.of(new LlmText("[]")))
+                    .stopReason(com.xilidou.jooj.llm.domain.LlmStopReason.END_TURN)
+                    .build();
         };
         MemoryExtractor extractor = new MemoryExtractor(store, capturing, "test-model");
 

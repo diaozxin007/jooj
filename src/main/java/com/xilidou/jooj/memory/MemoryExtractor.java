@@ -3,12 +3,13 @@ package com.xilidou.jooj.memory;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xilidou.jooj.config.JsonMappers;
-import com.xilidou.jooj.http.AnthropicClient;
-import com.xilidou.jooj.http.dto.CreateMessageRequest;
-import com.xilidou.jooj.http.dto.CreateMessageResponse;
 import com.xilidou.jooj.http.dto.MessageParam;
 import com.xilidou.jooj.http.dto.TextBlock;
 import com.xilidou.jooj.http.dto.ToolResultBlock;
+import com.xilidou.jooj.llm.LlmClient;
+import com.xilidou.jooj.llm.domain.LlmMessage;
+import com.xilidou.jooj.llm.domain.LlmRequest;
+import com.xilidou.jooj.llm.domain.LlmResponse;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.ArrayList;
@@ -76,16 +77,16 @@ public class MemoryExtractor {
             "You are a memory extractor. Output ONLY a JSON array, no preamble.";
 
     private final MemoryStore store;
-    private final AnthropicClient client;
+    private final LlmClient client;
     private final String model;
     private final ObjectMapper json;
 
     /**
      * @param store  存储层(写文件用)
-     * @param client LLM 客户端(提取用),null = 禁用 Extractor
+     * @param client canonical vendor-neutral LLM 客户端(提取用),null = 禁用 Extractor
      * @param model  模型 ID(client 非 null 时必填)
      */
-    public MemoryExtractor(MemoryStore store, AnthropicClient client, String model) {
+    public MemoryExtractor(MemoryStore store, LlmClient client, String model) {
         if (store == null) throw new IllegalArgumentException("store must not be null");
         if (client != null && (model == null || model.isBlank())) {
             throw new IllegalArgumentException("model required when client provided");
@@ -115,16 +116,15 @@ public class MemoryExtractor {
 
         String prompt = buildExtractionPrompt(dialogue, existing);
 
-        // 调 LLM
+        // 调 LLM(canonical vendor-neutral 路径)
         String text;
         try {
-            CreateMessageRequest req = CreateMessageRequest.builder()
+            LlmRequest req = LlmRequest.builderWithSystemText(EXTRACT_SYSTEM)
                     .model(model)
                     .maxTokens(EXTRACT_MAX_TOKENS)
-                    .system(EXTRACT_SYSTEM)
-                    .messages(List.of(MessageParam.user(prompt)))
+                    .messages(List.of(LlmMessage.userText(prompt)))
                     .build();
-            CreateMessageResponse resp = client.createMessage(req);
+            LlmResponse resp = client.createMessage(req);
             text = resp.firstText();
         } catch (Exception e) {
             log.warn("[Memory] extraction LLM call failed, skipping: {}", e.toString());

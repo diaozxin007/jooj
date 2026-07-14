@@ -1,8 +1,8 @@
 package com.xilidou.jooj.memory;
 
-import com.xilidou.jooj.http.AnthropicClient;
 import com.xilidou.jooj.http.MockAnthropicClient;
 import com.xilidou.jooj.http.ResponseFixtures;
+import com.xilidou.jooj.llm.LlmClient;
 import com.xilidou.jooj.http.dto.MessageParam;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -165,7 +165,7 @@ class MemoryServiceTest {
     @DisplayName("loadRelevant: subcomponent throws → returns empty, no propagation")
     void loadRelevant_graceful_on_failure(@TempDir Path tempDir) {
         // LLM 抛异常 → Selector fallback 到关键词 → 仍返回空(没匹配 keyword)
-        AnthropicClient throwing = req -> {
+        LlmClient throwing = req -> {
             throw new RuntimeException("simulated LLM failure");
         };
         MemoryService service = new MemoryService(
@@ -184,7 +184,7 @@ class MemoryServiceTest {
     @DisplayName("onTurnEnd: subcomponent throws → no propagation")
     void onTurnEnd_graceful_on_failure(@TempDir Path tempDir) {
         // Extractor 抛异常, Consolidator 也抛, facade 不该让它们传给上层
-        AnthropicClient throwing = req -> {
+        LlmClient throwing = req -> {
             throw new RuntimeException("simulated LLM failure");
         };
         MemoryService service = new MemoryService(
