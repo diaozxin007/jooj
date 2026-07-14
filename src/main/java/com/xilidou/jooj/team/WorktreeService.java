@@ -1,7 +1,6 @@
 package com.xilidou.jooj.team;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xilidou.jooj.JoojProperties;
 import com.xilidou.jooj.tasks.TaskRecord;
 import com.xilidou.jooj.tasks.TaskService;
 import lombok.extern.slf4j.Slf4j;
@@ -55,12 +54,12 @@ public class WorktreeService {
     private final GitClient git;
     private final ObjectMapper json;
 
-    public WorktreeService(JoojProperties props,
+    public WorktreeService(TeamProperties props,
                            TaskService taskService,
                            GitClient git,
                            @Qualifier("joojObjectMapper") ObjectMapper json) {
         this.repoRoot = Paths.get(System.getProperty("user.dir")).toAbsolutePath().normalize();
-        this.worktreeDir = resolveWorktreeDir(props.getTeam().getWorktreeDir(), this.repoRoot);
+        this.worktreeDir = resolveWorktreeDir(props.getWorktreeDir(), this.repoRoot);
         this.taskService = taskService;
         this.git = git;
         this.json = json;

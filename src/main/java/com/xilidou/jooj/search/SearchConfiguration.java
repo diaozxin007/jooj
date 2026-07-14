@@ -1,6 +1,5 @@
 package com.xilidou.jooj.search;
 
-import com.xilidou.jooj.JoojProperties;
 import com.xilidou.jooj.bootstrap.JoojHome;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Bean;
@@ -14,7 +13,7 @@ import java.nio.file.Path;
  *
  * <p>提供 3 个 Bean:
  * <ul>
- *   <li>{@link SearchConfig} —— 从 {@link JoojProperties.Search} 转出</li>
+ *   <li>{@link SearchConfig} —— 从 {@link SearchProperties} 转出</li>
  *   <li>{@link SearchStore} —— 单连接 + WAL,容器关时自动 close</li>
  *   <li>{@link SearchService} —— SessionService 钩子 + Tool 入口</li>
  * </ul>
@@ -29,10 +28,9 @@ import java.nio.file.Path;
 @Slf4j
 public class SearchConfiguration {
 
-    /** 把 {@link JoojProperties.Search} 转成 {@link SearchConfig} —— db 路径落 jooj home。 */
+    /** 把 {@link SearchProperties} 转成 {@link SearchConfig} —— db 路径落 jooj home。 */
     @Bean
-    public SearchConfig searchConfig(JoojProperties props) throws IOException {
-        var s = props.getSearch();
+    public SearchConfig searchConfig(SearchProperties s) throws IOException {
         Path home = JoojHome.getHomePath();
         JoojHome.ensureHome(home);
         Path dbPath = home.resolve(s.getDbFilename()).toAbsolutePath().normalize();

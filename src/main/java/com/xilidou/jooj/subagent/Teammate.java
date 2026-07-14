@@ -115,7 +115,7 @@ public class Teammate {
 
     /**
      * idle 状态轮询间隔(ms)的默认值,跟上游 {@code time.sleep(1)} 一致。
-     * 实际值由 {@link JoojProperties.Team#idlePollMs} 注入,这里保留为常量参考。
+     * 实际值由 {@link com.xilidou.jooj.team.TeamProperties#idlePollMs} 注入,这里保留为常量参考。
      *
      * @deprecated s17 后改用配置注入,见 {@link #idlePollMs}
      */
@@ -124,7 +124,7 @@ public class Teammate {
 
     /**
      * idle 等待最长时长(ms)的默认值。
-     * 实际值由 {@link JoojProperties.Team#idleTimeoutMs} 注入。
+     * 实际值由 {@link com.xilidou.jooj.team.TeamProperties#idleTimeoutMs} 注入。
      *
      * @deprecated s17 后改用配置注入,见 {@link #idleTimeoutMs}
      */
@@ -199,6 +199,7 @@ public class Teammate {
                     WorktreeService worktreeService,
                     com.xilidou.jooj.tasks.TaskService taskService,
                     JoojProperties props,
+                    com.xilidou.jooj.team.TeamProperties teamProps,
                     AgentControl agentControl,
                     com.xilidou.jooj.agent.TurnEventStream turnEventStream) {
         this.client = client;
@@ -212,8 +213,8 @@ public class Teammate {
         this.autonomousIdle = autonomousIdle;
         this.worktreeService = worktreeService;
         this.taskService = taskService;
-        this.idlePollMs = props.getTeam().getIdlePollMs();
-        this.idleTimeoutMs = props.getTeam().getIdleTimeoutMs();
+        this.idlePollMs = teamProps.getIdlePollMs();
+        this.idleTimeoutMs = teamProps.getIdleTimeoutMs();
         this.agentControl = agentControl;
         this.turnEventStream = turnEventStream;
     }

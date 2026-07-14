@@ -1,7 +1,6 @@
 package com.xilidou.jooj.team;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xilidou.jooj.JoojProperties;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -21,8 +20,8 @@ import java.nio.file.Paths;
 public class TeamConfiguration {
 
     @Bean
-    public TeamConfig teamConfig(JoojProperties props) {
-        Path mailboxDir = Paths.get(props.getTeam().getMailboxDir())
+    public TeamConfig teamConfig(TeamProperties props) {
+        Path mailboxDir = Paths.get(props.getMailboxDir())
                 .toAbsolutePath().normalize();
         return new TeamConfig(mailboxDir);
     }

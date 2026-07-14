@@ -57,17 +57,12 @@ public class JoojProperties {
 
     /** Cron(s14)配置已拆到 {@link com.xilidou.jooj.cron.CronProperties}(2026-07-14)。 */
 
-    /** Team / MessageBus(s15)邮箱目录配置。 */
-    private Team team = new Team();
+    /** Team(s15+)配置已拆到 {@link com.xilidou.jooj.team.TeamProperties}(2026-07-14)。 */
 
     /** 并发 / 线程池(线程重构)配置 —— 替代裸 {@code new Thread()}。 */
     private Concurrency concurrency = new Concurrency();
 
-    /**
-     * s21 Demo 25: Session 全文搜索(SQLite + FTS5)配置。
-     * SearchStore 在 jooj home 下建一个 search.db,跟 sessions/ 目录平级。
-     */
-    private Search search = new Search();
+    /** Search(s21 Demo 25)配置已拆到 {@link com.xilidou.jooj.search.SearchProperties}(2026-07-14)。 */
 
     @Data
     public static class Anthropic {
@@ -162,34 +157,9 @@ public class JoojProperties {
      */
 
     /**
-     * Team / MessageBus(s15)配置 —— 文件邮箱形态的 agent 间通信。
-     *
-     * <p>跟上游 s15 {@code MAILBOX_DIR = WORKDIR / ".mailboxes"} 一致,
-     * 每个 agent 一个 {@code <name>.jsonl} 文件。
-     *
-     * <p>s17 加 idle 配置:Teammate 进入 IDLE 阶段后每 {@code idlePollMs} 毫秒
-     * 轮询一次(看 inbox + scan TaskBoard),累计超过 {@code idleTimeoutMs} 无活就退出。
+    /**
+     * Team(s15+)配置已拆到 {@link com.xilidou.jooj.team.TeamProperties}(2026-07-14)。
      */
-    @Data
-    public static class Team {
-        /** mailbox 目录(相对 cwd 或绝对路径)。默认 {@code .mailboxes}。 */
-        private String mailboxDir = ".mailboxes";
-        /**
-         * IDLE 阶段轮询间隔(毫秒)。默认 5000(对齐上游 s17 IDLE_POLL_INTERVAL=5)。
-         * 测试 profile 可调小到 50ms 让测试跑得快。
-         */
-        private long idlePollMs = 5000;
-        /**
-         * IDLE 阶段总超时(毫秒)—— 累计这么久没活就退出 teammate。
-         * 默认 60000(对齐上游 s17 IDLE_TIMEOUT=60)。测试可调小到 200ms。
-         */
-        private long idleTimeoutMs = 60_000;
-        /**
-         * s18 worktree 根目录(相对 jooj workdir 或绝对路径)。默认 {@code .worktrees}。
-         * 跟上游 s18 {@code WORKTREES_DIR = WORKDIR / ".worktrees"} 一致。
-         */
-        private String worktreeDir = ".worktrees";
-    }
 
     /**
      * 并发 / 线程池配置 —— 配合 {@link com.xilidou.jooj.config.JoojExecutors}。
@@ -222,50 +192,6 @@ public class JoojProperties {
      */
 
     /**
-     * Session 全文搜索(s21 Demo 25):SQLite + FTS5 索引子系统配置。
-     *
-     * <p>JSON 仍是 history 的 source-of-truth({@code ~/.jooj/sessions/&lt;id&gt;.json}),
-     * SQLite 是衍生 view —— SessionService.saveHistory 主流程同步双写,失败 warn 不挡 JSON 主流程。
-     * SQLite 损坏可重建({@link com.xilidou.jooj.search.SearchService#rebuildAll} 入口扫所有 JSON 重灌 FTS5)。
-     *
-     * <h3>FTS5 schema</h3>
-     *
-     * <p>contentful 单 virtual table:索引列 {@code content},UNINDEXED 元数据列
-     * {@code session_id / msg_index / block_index / role / kind / tool_name / tool_use_id / saved_at}。
-     * tokenize 用 {@code unicode61 remove_diacritics 2}(Hermes 同款,中文按字切英文不词干)。
+     * Search(s21 Demo 25)配置已拆到 {@link com.xilidou.jooj.search.SearchProperties}(2026-07-14)。
      */
-    @Data
-    public static class Search {
-        /**
-         * SQLite 数据库文件名,放在 {@link com.xilidou.jooj.bootstrap.JoojHome} 下。
-         * 默认 {@code search.db}。
-         */
-        private String dbFilename = "search.db";
-
-        /**
-         * Schema 版本 —— SearchStore.ensureSchema 启动期校验
-         * {@code schema_meta.version},不匹配走 startupCheck 策略。
-         * 改 schema 时 +1。
-         */
-        private int schemaVersion = 1;
-
-        /** session_search tool 默认 limit(LLM 不传 limit 时使用)。 */
-        private int defaultLimit = 10;
-
-        /** session_search tool 最大 limit clamp(防 LLM 传超大值压垮 LLM 输出)。 */
-        private int maxLimit = 50;
-
-        /** SQLite busy timeout(毫秒)—— 写并发时其他连接等的最长时间。WAL 模式下基本用不到。 */
-        private int busyTimeoutMs = 5000;
-
-        /**
-         * 启动期一致性检查模式:
-         * <ul>
-         *   <li>{@code none} — 不查,直接用现有 db</li>
-         *   <li>{@code light}(默认)— 查 schema_meta.version,不一致 → drop + recreate(空索引,**不自动重建数据**),log warn 提示用户必要时调 rebuildAll API</li>
-         *   <li>{@code strict} — 遍历所有 session 对 countSession(sid) vs JSON 中可索引 message 数</li>
-         * </ul>
-         */
-        private String startupCheck = "light";
-    }
 }

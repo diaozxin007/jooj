@@ -1,7 +1,6 @@
 package com.xilidou.jooj.team;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xilidou.jooj.JoojProperties;
 import com.xilidou.jooj.config.JsonMappers;
 import com.xilidou.jooj.tasks.TaskConfig;
 import com.xilidou.jooj.tasks.TaskRecord;
@@ -45,11 +44,11 @@ class WorktreeServiceTest {
         TaskStore taskStore = new TaskStore(taskConfig, json);
         taskService = new TaskService(taskStore);
 
-        JoojProperties props = new JoojProperties();
-        props.getTeam().setWorktreeDir(tempDir.resolve(".worktrees").toString());
+        TeamProperties teamProps = new TeamProperties();
+        teamProps.setWorktreeDir(tempDir.resolve(".worktrees").toString());
 
         git = mock(GitClient.class);
-        service = new WorktreeService(props, taskService, git, json);
+        service = new WorktreeService(teamProps, taskService, git, json);
     }
 
     // ─────────────────────────────────────────────────────────────

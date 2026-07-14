@@ -7,7 +7,7 @@ import java.nio.file.Paths;
  * Team / MessageBus 配置 —— 跟 {@link com.xilidou.jooj.cron.CronConfig} 同形态。
  *
  * <p>纯 POJO 无 Spring 依赖,生产用 {@link TeamConfiguration} 从
- * {@link com.xilidou.jooj.JoojProperties.Team} 转出,测试用全参构造器。
+ * {@link com.xilidou.jooj.team.TeamProperties} 转出,测试用全参构造器。
  */
 public class TeamConfig {
 
