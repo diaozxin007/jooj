@@ -632,6 +632,98 @@ textarea::placeholder { color: var(--text-faint); }
 }
 .btn-link:hover { color: #1557b0; }
 
+/* MCP panel (M4, 2026-07-14) —— 复用 .badge-ok / .badge-warn / .btn-link / .btn-primary */
+.mcp-item {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+.mcp-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.mcp-name {
+  font-weight: 600;
+}
+.mcp-meta {
+  color: var(--text-dim);
+  font-size: 12px;
+  margin-bottom: 6px;
+  word-break: break-all;
+}
+.mcp-meta code {
+  background: var(--bg-input);
+  padding: 2px 5px;
+  border-radius: 3px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+.mcp-error {
+  color: var(--error);
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+.mcp-actions {
+  display: flex;
+  gap: 12px;
+}
+
+/* MCP add form */
+.mcp-add-form {
+  border: 1px dashed var(--accent);
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  border-radius: 6px;
+  background: var(--bg-elevated);
+}
+.mcp-input {
+  display: block;
+  width: 100%;
+  margin-bottom: 6px;
+  padding: 6px 8px;
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.mcp-input::placeholder {
+  color: var(--text-faint);
+}
+.mcp-form-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+.mcp-form-error {
+  color: var(--error);
+  font-size: 12px;
+  margin-top: 6px;
+}
+
+/* MCP 需要一个 neutral 徽章(never connected 用),区别于 badge-warn 的告警红 */
+.badge-neutral {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 500;
+  background: var(--bg-input);
+  color: var(--text-dim);
+}
+
+/* btn-danger:remove 按钮用,以红色标注区别于普通 btn-link */
+.btn-danger {
+  color: var(--error) !important;
+}
+.btn-danger:hover {
+  color: #f87171 !important;
+}
+
 /* QR modal */
 .qr-modal-backdrop {
   position: fixed;

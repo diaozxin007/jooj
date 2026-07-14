@@ -798,12 +798,13 @@
 
   const sidebarToggle = $('sidebarToggle');
   const sidebar = $('sidebar');
-  const panelLoaded = { sessions: false, skills: false, memory: false, status: false };
+  const panelLoaded = { sessions: false, skills: false, memory: false, channels: false, status: false, mcp: false };
 
   function openSidebar() {
     document.body.classList.add('sidebar-open');
     if (!panelLoaded.sessions) loadPanel('sessions');
     if (!panelLoaded.skills) loadPanel('skills');
+    if (!panelLoaded.mcp) loadPanel('mcp');
     if (!panelLoaded.memory) loadPanel('memory');
     if (!panelLoaded.channels) loadPanel('channels');
     if (!panelLoaded.status) loadPanel('status');
@@ -817,11 +818,18 @@
 
   sidebarToggle.addEventListener('click', toggleSidebar);
 
+  // M4 (2026-07-14):MCP 新增按钮 —— 显示 add 表单
+  const addMcpBtn = $('addMcpBtn');
+  if (addMcpBtn) {
+    addMcpBtn.addEventListener('click', showAddMcpForm);
+  }
+
   document.querySelectorAll('.refresh-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const which = btn.dataset.panel;
       panelLoaded[which] = false;
-      loadPanel(which, /*forceRescan=*/ which === 'skills');
+      // skills / mcp 走强制 rescan(POST),其他 panel 走 GET
+      loadPanel(which, /*forceRescan=*/ which === 'skills' || which === 'mcp');
     });
   });
 
@@ -848,6 +856,11 @@
         } catch (e) {
           data = { channels: [] };   // 视作"没启用任何 channel"
         }
+      } else if (name === 'mcp') {
+        // M4 (2026-07-14):MCP panel 直接打 /api/mcp/servers,refresh 时 POST /rescan
+        data = forceRescan
+            ? await postJson('/api/mcp/rescan')
+            : await getJson('/api/mcp/servers');
       } else {
         data = (forceRescan && name === 'skills')
             ? await postJson(`/api/skills/rescan`)
@@ -857,6 +870,8 @@
       panelLoaded[name] = true;
       // channels panel 渲染后要绑定扫码按钮事件
       if (name === 'channels') bindChannelActions();
+      // MCP panel 渲染后绑定 add/remove/toggle 事件
+      if (name === 'mcp') bindMcpActions();
     } catch (e) {
       console.error(`load ${name} failed`, e);
       target.innerHTML = `<p class="panel-error">加载失败:${escapeHtml(e.message || 'unknown')}</p>`;
@@ -906,7 +921,143 @@
       }
       return list.map(c => renderChannelItem(c)).join('');
     }
+    if (name === 'mcp') {
+      // M4 (2026-07-14):MCP server list 渲染
+      const list = data.servers || [];
+      if (list.length === 0) {
+        return `<p class="panel-empty">
+          没有 MCP server。<br>
+          <small>点 + 新增,或在 chat 里对 LLM 说 "add filesystem MCP"。</small>
+        </p>`;
+      }
+      return list.map(s => renderMcpItem(s)).join('');
+    }
     return '<p class="panel-error">未知 panel</p>';
+  }
+
+  /** 单个 MCP server 的渲染(name + 状态 + 命令 + 操作按钮)。 */
+  function renderMcpItem(s) {
+    const statusBadge =
+        s.status === 'CONNECTED' ? '<span class="badge-ok">connected</span>'
+        : s.status === 'FAILED' ? '<span class="badge-warn">failed</span>'
+        : s.status === 'DISABLED' ? '<span class="badge-warn">disabled</span>'
+        : '<span class="badge-neutral">never connected</span>';
+    const argStr = (s.args || []).map(a => escapeHtml(a)).join(' ');
+    return `
+      <div class="mcp-item">
+        <div class="mcp-header">
+          <span class="mcp-name">${escapeHtml(s.name)}</span>
+          ${statusBadge}
+        </div>
+        <div class="mcp-meta">
+          <code>${escapeHtml(s.command)} ${argStr}</code>
+        </div>
+        ${s.lastError ? `<div class="mcp-error">error: ${escapeHtml(s.lastError)}</div>` : ''}
+        <div class="mcp-actions">
+          <button class="btn-link" data-action="mcp-toggle" data-name="${escapeHtml(s.name)}" data-enabled="${s.enabled}" type="button">
+            ${s.enabled ? '禁用' : '启用'}
+          </button>
+          <button class="btn-link btn-danger" data-action="mcp-remove" data-name="${escapeHtml(s.name)}" type="button">删除</button>
+        </div>
+      </div>`;
+  }
+
+  /** 弹出 MCP add 表单(插在 panel-mcp 顶部)。 */
+  function showAddMcpForm() {
+    const target = $('panel-mcp');
+    if (!target) return;
+    // 如果已经有一个表单,聚焦即可,不再叠加
+    const existing = target.querySelector('.mcp-add-form');
+    if (existing) {
+      existing.querySelector('[data-field=name]')?.focus();
+      return;
+    }
+    const form = document.createElement('div');
+    form.className = 'mcp-add-form';
+    form.innerHTML = `
+      <input class="mcp-input" data-field="name" placeholder="name (e.g. filesystem)" />
+      <input class="mcp-input" data-field="command" placeholder="command (e.g. npx)" />
+      <input class="mcp-input" data-field="args" placeholder='args JSON array (e.g. ["-y","@modelcontextprotocol/server-filesystem","/tmp"])' />
+      <input class="mcp-input" data-field="env" placeholder='env JSON object (optional, e.g. {"KEY":"val"})' />
+      <div class="mcp-form-actions">
+        <button class="btn-primary" data-action="mcp-submit" type="button">添加</button>
+        <button class="btn-link" data-action="mcp-cancel" type="button">取消</button>
+      </div>
+      <div class="mcp-form-error" hidden></div>
+    `;
+    target.prepend(form);
+    // 绑事件(注意:此时 form 里的按钮不在原 bindMcpActions 覆盖范围内,单独绑一遍)
+    bindMcpActions();
+    form.querySelector('[data-field=name]').focus();
+  }
+
+  /** 给 MCP panel 里的 add-form / toggle / remove 按钮绑事件。每次渲染后调一次。 */
+  function bindMcpActions() {
+    const panel = $('panel-mcp');
+    if (!panel) return;
+    panel.querySelectorAll('[data-action]').forEach(btn => {
+      // 幂等:已绑过就跳过
+      if (btn._mcpBound) return;
+      btn._mcpBound = true;
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const action = btn.dataset.action;
+        try {
+          if (action === 'mcp-submit') {
+            const form = btn.closest('.mcp-add-form');
+            const errBox = form.querySelector('.mcp-form-error');
+            errBox.hidden = true;
+            const name = form.querySelector('[data-field=name]').value.trim();
+            const command = form.querySelector('[data-field=command]').value.trim();
+            const argsRaw = form.querySelector('[data-field=args]').value.trim();
+            const envRaw = form.querySelector('[data-field=env]').value.trim();
+            let args = [];
+            let env = {};
+            try {
+              if (argsRaw) args = JSON.parse(argsRaw);
+              if (envRaw) env = JSON.parse(envRaw);
+            } catch (jsonErr) {
+              errBox.textContent = 'args / env 不是合法 JSON:' + (jsonErr.message || '');
+              errBox.hidden = false;
+              return;
+            }
+            if (!Array.isArray(args)) {
+              errBox.textContent = 'args 必须是 JSON 数组';
+              errBox.hidden = false;
+              return;
+            }
+            await postJson('/api/mcp/servers', { name, command, args, env });
+            panelLoaded.mcp = false;
+            loadPanel('mcp');
+          } else if (action === 'mcp-cancel') {
+            btn.closest('.mcp-add-form').remove();
+          } else if (action === 'mcp-remove') {
+            const name = btn.dataset.name;
+            if (!confirm(`删除 MCP server '${name}'?`)) return;
+            await deleteReq(`/api/mcp/servers/${encodeURIComponent(name)}`);
+            panelLoaded.mcp = false;
+            loadPanel('mcp');
+          } else if (action === 'mcp-toggle') {
+            // dataset.enabled 是字符串 "true"/"false" —— 切换到相反值
+            const enabled = btn.dataset.enabled === 'false';
+            await postJson(
+                `/api/mcp/servers/${encodeURIComponent(btn.dataset.name)}/enable`,
+                { enabled });
+            panelLoaded.mcp = false;
+            loadPanel('mcp');
+          }
+        } catch (err) {
+          const msg = err.message || 'unknown';
+          if (action === 'mcp-submit') {
+            const errBox = btn.closest('.mcp-add-form').querySelector('.mcp-form-error');
+            errBox.textContent = '添加失败:' + msg;
+            errBox.hidden = false;
+          } else {
+            alert('操作失败:' + msg);
+          }
+        }
+      });
+    });
   }
 
   /** 单个渠道的渲染:已登录 vs 未登录两种状态。 */
