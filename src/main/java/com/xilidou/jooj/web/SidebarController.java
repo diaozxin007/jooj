@@ -3,15 +3,25 @@ package com.xilidou.jooj.web;
 import com.xilidou.jooj.http.AnthropicProperties;
 import com.xilidou.jooj.cron.CronJob;
 import com.xilidou.jooj.cron.CronService;
+import com.xilidou.jooj.mcp.McpServerRecord;
+import com.xilidou.jooj.mcp.McpServerRegistry;
 import com.xilidou.jooj.memory.MemoryService;
 import com.xilidou.jooj.skill.SkillRegistry;
 import com.xilidou.jooj.tool.ToolRegistry;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.io.IOException;
+import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -54,17 +64,20 @@ public class SidebarController {
     private final ToolRegistry toolRegistry;
     private final CronService cronService;
     private final AnthropicProperties anthropic;
+    private final McpServerRegistry mcpRegistry;
 
     public SidebarController(SkillRegistry skillRegistry,
                              MemoryService memoryService,
                              ToolRegistry toolRegistry,
                              CronService cronService,
-                             AnthropicProperties anthropic) {
+                             AnthropicProperties anthropic,
+                             McpServerRegistry mcpRegistry) {
         this.skillRegistry = skillRegistry;
         this.memoryService = memoryService;
         this.toolRegistry = toolRegistry;
         this.cronService = cronService;
         this.anthropic = anthropic;
+        this.mcpRegistry = mcpRegistry;
     }
 
     /**
@@ -142,6 +155,103 @@ public class SidebarController {
         );
     }
 
+    // ── MCP endpoints (M4, 2026-07-14) ─────────────────────────
+
+    /**
+     * 列所有 MCP server —— 供 sidebar MCP panel 渲染。
+     *
+     * <p>返回顺序 = registry 插入序(等价 M1 seed 顺序 + 之后 add 顺序)。
+     */
+    @GetMapping("/mcp/servers")
+    public McpServersResponse mcpServers() {
+        List<McpServerSummary> summaries = mcpRegistry.list().stream()
+                .map(McpServerSummary::from).toList();
+        return new McpServersResponse(summaries.size(), summaries);
+    }
+
+    /**
+     * 新增一个 MCP server —— 落盘 {@code ~/.jooj/mcp-servers/<name>.json} + 加入 registry。
+     *
+     * <p>常见 4xx:
+     * <ul>
+     *   <li>name / command 缺失 → 400</li>
+     *   <li>name 已存在 → 400(registry.add 抛 IAE)</li>
+     *   <li>name 含非法字符 → 400(store.save 抛 IAE)</li>
+     * </ul>
+     *
+     * <p>不走 PermissionPipeline —— sidebar 操作是用户直接点击,不是 LLM 请求。
+     */
+    @PostMapping("/mcp/servers")
+    public McpServerSummary mcpAdd(@RequestBody AddMcpServerRequest req) throws IOException {
+        if (req == null || req.name() == null || req.name().isBlank()) {
+            throw new IllegalArgumentException("name is required");
+        }
+        if (req.command() == null || req.command().isBlank()) {
+            throw new IllegalArgumentException("command is required");
+        }
+        McpServerRecord record = new McpServerRecord(
+                req.name(),
+                req.command(),
+                req.args() == null ? List.of() : req.args(),
+                req.env() == null ? Map.of() : req.env(),
+                true,
+                McpServerRecord.Status.NEVER_CONNECTED,
+                null,
+                Instant.now(),
+                null);
+        mcpRegistry.add(record);
+        log.info("[Sidebar] added MCP server '{}' via web UI", req.name());
+        return McpServerSummary.from(record);
+    }
+
+    /**
+     * 删除一个 MCP server —— 幂等:name 不存在也 200,body 里 removed=false。
+     */
+    @DeleteMapping("/mcp/servers/{name}")
+    public Map<String, Object> mcpRemove(@PathVariable String name) throws IOException {
+        if (!mcpRegistry.contains(name)) {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("removed", false);
+            body.put("name", name);
+            body.put("reason", "not found");
+            return body;
+        }
+        mcpRegistry.remove(name);
+        log.info("[Sidebar] removed MCP server '{}' via web UI", name);
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("removed", true);
+        body.put("name", name);
+        return body;
+    }
+
+    /**
+     * 切换 enabled —— true=启用(NEVER_CONNECTED),false=禁用(DISABLED)。
+     *
+     * <p>name 不存在 → 400 IAE。
+     */
+    @PostMapping("/mcp/servers/{name}/enable")
+    public McpServerSummary mcpSetEnabled(@PathVariable String name,
+                                          @RequestBody EnableRequest req) {
+        if (!mcpRegistry.contains(name)) {
+            throw new IllegalArgumentException("server not found: " + name);
+        }
+        mcpRegistry.setEnabled(name, req.enabled());
+        return mcpRegistry.get(name).map(McpServerSummary::from)
+                .orElseThrow(() -> new IllegalStateException("record vanished: " + name));
+    }
+
+    /**
+     * 强制重扫 {@code ~/.jooj/mcp-servers/*.json} —— 用于外部工具直接改 JSON 后
+     * 通知 registry 刷新,或纯粹作为"重新加载"按钮。
+     *
+     * <p>返回值 = 重扫后的完整列表(等价于 rescan 后立刻 GET /mcp/servers)。
+     */
+    @PostMapping("/mcp/rescan")
+    public McpServersResponse mcpRescan() {
+        mcpRegistry.rescan(true);
+        return mcpServers();
+    }
+
     // ── DTOs ────────────────────────────────────────────────────
 
     /** {@link #skills} 响应:总数 + skill 概要列表。 */
@@ -165,5 +275,62 @@ public class SidebarController {
             int cronJobCount,
             int memoryCharCount
     ) {
+    }
+
+    // ── MCP DTOs (M4, 2026-07-14) ─────────────────────────────
+
+    /** {@link #mcpServers} 响应:总数 + summary 列表。 */
+    public record McpServersResponse(int total, List<McpServerSummary> servers) {}
+
+    /**
+     * 单个 MCP server 的展示形 —— 把 {@link McpServerRecord} 里的 {@link Instant} 转 ISO-8601 字符串,
+     * enum 转小写字符串,让前端 JSON parse 不依赖 java.time / enum。
+     */
+    public record McpServerSummary(
+            String name,
+            String command,
+            List<String> args,
+            Map<String, String> env,
+            boolean enabled,
+            String status,
+            String lastError,
+            String addedAt,
+            String lastConnectedAt) {
+
+        public static McpServerSummary from(McpServerRecord r) {
+            return new McpServerSummary(
+                    r.name(), r.command(),
+                    r.args() == null ? List.of() : r.args(),
+                    r.env() == null ? Map.of() : r.env(),
+                    r.enabled(),
+                    r.status() == null ? "NEVER_CONNECTED" : r.status().name(),
+                    r.lastError(),
+                    r.addedAt() == null ? null : r.addedAt().toString(),
+                    r.lastConnectedAt() == null ? null : r.lastConnectedAt().toString());
+        }
+    }
+
+    /** {@link #mcpAdd} 的入参 —— name / command 必须,args / env 可选。 */
+    public record AddMcpServerRequest(
+            String name,
+            String command,
+            List<String> args,
+            Map<String, String> env) {}
+
+    /** {@link #mcpSetEnabled} 的入参 —— 是否启用。 */
+    public record EnableRequest(boolean enabled) {}
+
+    // ── ExceptionHandler (M4, 2026-07-14):IAE → 400 更友好 ──
+
+    /**
+     * 把 {@link IllegalArgumentException}(如 "name is required" / "already exists")
+     * 转成 400 Bad Request + body {@code {"error":"<msg>"}},前端 catch 里读 e.message。
+     *
+     * <p>只作用于本 Controller。其他 controller 的 IAE 保持原行为(500)。
+     */
+    @org.springframework.web.bind.annotation.ExceptionHandler(IllegalArgumentException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public Map<String, String> handleIae(IllegalArgumentException e) {
+        return Map.of("error", e.getMessage() == null ? "bad request" : e.getMessage());
     }
 }
