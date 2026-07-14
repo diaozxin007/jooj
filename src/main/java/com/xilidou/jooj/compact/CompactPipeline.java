@@ -46,8 +46,7 @@ import java.util.Objects;
  * </ul>
  *
  * <p>切片 C 之后:本类**保持 framework-agnostic**(不加 @Component),
- * 由 {@link com.xilidou.jooj.compact.CompactConfiguration#compactPipeline(CompactConfig,
- * com.xilidou.jooj.http.AnthropicClient, com.xilidou.jooj.JoojProperties)}
+ * 由 {@link com.xilidou.jooj.compact.CompactConfiguration#compactPipeline}
  * 通过 {@code @Bean} 装配。
  */
 @Slf4j

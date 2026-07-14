@@ -7,7 +7,7 @@ import java.nio.file.Path;
  *
  * <p>对应 {@link com.xilidou.jooj.search.SearchProperties} 的 yml 字段,但保留独立的纯 POJO
  * 是为了让 {@link SearchStore} / {@link SearchService} 在测试里 {@code new SearchConfig(...)}
- * 不依赖整个 JoojProperties 树 —— 跟 {@code MemoryConfig} / {@code TaskConfig} 同模式。
+ * 不依赖 Spring 容器 —— 跟 {@code MemoryConfig} / {@code TaskConfig} 同模式。
  *
  * @param dbPath        SQLite 数据库文件绝对路径(包含目录),由 SearchConfiguration 拼出
  * @param schemaVersion FTS5 schema 版本,startup check 用来对照 schema_meta.version

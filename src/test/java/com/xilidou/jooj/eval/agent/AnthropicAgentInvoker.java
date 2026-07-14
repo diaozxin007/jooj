@@ -25,8 +25,8 @@ import java.util.Objects;
  *   <li><b>异常兜底</b> —— {@link AnthropicClient} 抛的
  *       {@code AnthropicException}、IO 异常、序列化异常等一律转
  *       {@link AgentInvocation#errorReason},不向上传递</li>
- *   <li><b>模型 / max_tokens 由外部注入</b> —— 复用 {@code JoojProperties.anthropic.model}
- *       和 {@code JoojProperties.recovery.default_max_tokens} 或调用方指定,
+ *   <li><b>模型 / max_tokens 由外部注入</b> —— 复用 {@code jooj.anthropic.model}
+ *       和 {@code jooj.recovery.default-max-tokens} yml 配置或调用方指定,
  *       Invoker 不知道也不需要知道路由到 Anthropic 还是 DeepSeek
  *       (那是 {@link com.xilidou.jooj.http.ModelRouter} 的活)</li>
  * </ul>

@@ -12,7 +12,7 @@ spring:
   config:
     import: optional:file:${user.home}/.jooj/.env[.properties]
 
-# Jooj 自定义配置(对应 JoojProperties)。
+# Jooj 自定义配置(对应各子系统 *Properties,配置架构 2026-07-14 重构完成)。
 # 所有占位符 ${ENV:default} 都先看环境变量,再回落到 default。
 # 用户可在 ./application.local.yml 或 ~/.claude/jooj/application.yml 里 override。
 jooj:

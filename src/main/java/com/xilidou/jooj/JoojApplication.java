@@ -43,7 +43,10 @@ import java.util.Arrays;
  *   <li>web profile 启用时 web-application-type=SERVLET,默认 = NONE</li>
  * </ul>
  *
- * <p>{@link ConfigurationPropertiesScan} 让 Spring 找到 {@link JoojProperties}
+ * <p>{@link ConfigurationPropertiesScan} 让 Spring 自动发现散布在各子包的
+ * 14 个 {@code *Properties} 类(2026-07-14 配置架构重构完成:
+ * {@link com.xilidou.jooj.http.AnthropicProperties} / {@link com.xilidou.jooj.compact.CompactProperties}
+ * / {@link com.xilidou.jooj.memory.MemoryProperties} / ...),
  * 而不需要在每个配置类上重复 {@code @EnableConfigurationProperties}。
  */
 @SpringBootApplication
