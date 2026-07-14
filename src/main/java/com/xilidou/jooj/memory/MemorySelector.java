@@ -1,7 +1,7 @@
 package com.xilidou.jooj.memory;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xilidou.jooj.config.JacksonConfig;
+import com.xilidou.jooj.config.JsonMappers;
 import com.xilidou.jooj.http.AnthropicClient;
 import com.xilidou.jooj.http.dto.ContentBlock;
 import com.xilidou.jooj.http.dto.CreateMessageRequest;
@@ -97,7 +97,7 @@ public class MemorySelector {
         this.client = client;
         this.model = model;
         this.maxItems = maxItems;
-        this.json = JacksonConfig.newMapper();
+        this.json = JsonMappers.newMapper();
     }
 
     /** 默认 maxItems=5 的简化构造。*/

@@ -2,7 +2,7 @@ package com.xilidou.jooj.tool.impl;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xilidou.jooj.config.JacksonConfig;
+import com.xilidou.jooj.config.JsonMappers;
 import com.xilidou.jooj.tool.ToolCall;
 import com.xilidou.jooj.tool.ToolDefinition;
 import com.xilidou.jooj.tool.ToolResult;
@@ -70,7 +70,7 @@ public class TodoTool implements Tool {
      */
     @Autowired
     public TodoTool(TodoStore store) {
-        this(store, JacksonConfig.newMapper());
+        this(store, JsonMappers.newMapper());
     }
 
     /**

@@ -19,7 +19,7 @@ import okhttp3.Request;
  * </ol>
  *
  * <p>切片 C 之后:fromEnv 工厂已移除,实例化逻辑搬到
- * {@link com.xilidou.jooj.http.HttpClientConfig#httpAuth} Bean 里。
+ * {@link com.xilidou.jooj.http.HttpClientConfiguration#httpAuth} Bean 里。
  *
  * <p>典型用法:
  * <pre>

@@ -2,7 +2,7 @@ package com.xilidou.jooj.memory;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xilidou.jooj.config.JacksonConfig;
+import com.xilidou.jooj.config.JsonMappers;
 import com.xilidou.jooj.http.AnthropicClient;
 import com.xilidou.jooj.http.dto.CreateMessageRequest;
 import com.xilidou.jooj.http.dto.CreateMessageResponse;
@@ -92,7 +92,7 @@ public class MemoryConsolidator {
         this.config = config;
         this.client = client;
         this.model = model;
-        this.json = JacksonConfig.newMapper();
+        this.json = JsonMappers.newMapper();
     }
 
     /**

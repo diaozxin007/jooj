@@ -1,7 +1,7 @@
 package com.xilidou.jooj.transcript;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xilidou.jooj.config.JacksonConfig;
+import com.xilidou.jooj.config.JsonMappers;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -41,7 +41,7 @@ class TranscriptStoreTest {
 
     @BeforeEach
     void setUp() {
-        json = JacksonConfig.newMapper();
+        json = JsonMappers.newMapper();
         store = new TranscriptStore(tmp, json);
     }
 

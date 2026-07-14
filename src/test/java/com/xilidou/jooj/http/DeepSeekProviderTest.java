@@ -28,7 +28,7 @@ class DeepSeekProviderTest {
     void customNameAndPrefixes() {
         var client = new AnthropicHttpClient(
                 AnthropicHttpClient.defaultOkHttpClient(),
-                com.xilidou.jooj.config.JacksonConfig.newMapper(),
+                com.xilidou.jooj.config.JsonMappers.newMapper(),
                 "https://api.deepseek.com/anthropic",
                 new ApiKeyAuth("sk-test"),
                 "deepseek",
@@ -45,7 +45,7 @@ class DeepSeekProviderTest {
     void defaultNameAndPrefixes() {
         var client = new AnthropicHttpClient(
                 AnthropicHttpClient.defaultOkHttpClient(),
-                com.xilidou.jooj.config.JacksonConfig.newMapper(),
+                com.xilidou.jooj.config.JsonMappers.newMapper(),
                 "https://api.anthropic.com",
                 new ApiKeyAuth("sk-test")
         );

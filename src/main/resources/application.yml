@@ -18,7 +18,7 @@ spring:
 jooj:
   anthropic:
     base-url: ${ANTHROPIC_BASE_URL:https://api.anthropic.com}
-    # ANTHROPIC_API_KEY 和 ANTHROPIC_AUTH_TOKEN 二选一(HttpClientConfig 的 httpAuth Bean 会校验)
+    # ANTHROPIC_API_KEY 和 ANTHROPIC_AUTH_TOKEN 二选一(HttpClientConfiguration 的 httpAuth Bean 会校验)
     api-key: ${ANTHROPIC_API_KEY:}
     auth-token: ${ANTHROPIC_AUTH_TOKEN:}
     model: ${MODEL_ID:}

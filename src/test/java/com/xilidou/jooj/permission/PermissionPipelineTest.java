@@ -2,7 +2,7 @@ package com.xilidou.jooj.permission;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xilidou.jooj.config.JacksonConfig;
+import com.xilidou.jooj.config.JsonMappers;
 import com.xilidou.jooj.http.dto.ToolUseBlock;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -26,7 +26,7 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 class PermissionPipelineTest {
 
-    private static final ObjectMapper JSON = JacksonConfig.newMapper();
+    private static final ObjectMapper JSON = JsonMappers.newMapper();
 
     /**
      * 构造一个 ToolUseBlock 的便利方法（测试 fixture）。

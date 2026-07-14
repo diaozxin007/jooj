@@ -19,7 +19,7 @@ import com.xilidou.jooj.http.dto.TextBlock;
 import com.xilidou.jooj.transcript.TranscriptLine;
 import com.xilidou.jooj.transcript.TranscriptService;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xilidou.jooj.config.JacksonConfig;
+import com.xilidou.jooj.config.JsonMappers;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -88,7 +88,7 @@ public class ChatController {
     private final TurnEventStream turnEventStream;
     /** s22 SSE:server → client 单向 push,替代 poll /events + /pending。 */
     private final SseStreamService sseStreamService;
-    private final ObjectMapper json = JacksonConfig.newMapper();
+    private final ObjectMapper json = JsonMappers.newMapper();
 
     public ChatController(InboundDispatcher dispatcher,
                           CompactConfig compactConfig,

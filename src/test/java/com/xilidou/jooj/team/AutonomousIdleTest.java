@@ -1,7 +1,7 @@
 package com.xilidou.jooj.team;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xilidou.jooj.config.JacksonConfig;
+import com.xilidou.jooj.config.JsonMappers;
 import com.xilidou.jooj.tasks.TaskConfig;
 import com.xilidou.jooj.tasks.TaskRecord;
 import com.xilidou.jooj.tasks.TaskService;
@@ -40,7 +40,7 @@ class AutonomousIdleTest {
 
     @BeforeEach
     void setUp() {
-        ObjectMapper json = JacksonConfig.newMapper();
+        ObjectMapper json = JsonMappers.newMapper();
         TaskConfig config = new TaskConfig(tempDir);
         TaskStore store = new TaskStore(config, json);
         taskService = new TaskService(store);

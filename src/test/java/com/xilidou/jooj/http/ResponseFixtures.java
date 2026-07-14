@@ -2,7 +2,7 @@ package com.xilidou.jooj.http;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xilidou.jooj.config.JacksonConfig;
+import com.xilidou.jooj.config.JsonMappers;
 import com.xilidou.jooj.http.dto.ContentBlock;
 import com.xilidou.jooj.http.dto.CreateMessageResponse;
 import com.xilidou.jooj.http.dto.TextBlock;
@@ -24,7 +24,7 @@ import java.util.Map;
  */
 public final class ResponseFixtures {
 
-    private static final ObjectMapper JSON = JacksonConfig.newMapper();
+    private static final ObjectMapper JSON = JsonMappers.newMapper();
 
     private ResponseFixtures() {}
 

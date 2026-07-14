@@ -1,7 +1,7 @@
 package com.xilidou.jooj.compact;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xilidou.jooj.config.JacksonConfig;
+import com.xilidou.jooj.config.JsonMappers;
 import com.xilidou.jooj.http.dto.MessageParam;
 import lombok.extern.slf4j.Slf4j;
 
@@ -61,7 +61,7 @@ public class SnipCompactor {
 
     public SnipCompactor(CompactConfig config) {
         this.config = config;
-        this.json = JacksonConfig.newMapper();
+        this.json = JsonMappers.newMapper();
     }
 
     /**

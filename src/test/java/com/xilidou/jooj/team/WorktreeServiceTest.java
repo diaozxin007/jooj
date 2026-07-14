@@ -2,7 +2,7 @@ package com.xilidou.jooj.team;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xilidou.jooj.JoojProperties;
-import com.xilidou.jooj.config.JacksonConfig;
+import com.xilidou.jooj.config.JsonMappers;
 import com.xilidou.jooj.tasks.TaskConfig;
 import com.xilidou.jooj.tasks.TaskRecord;
 import com.xilidou.jooj.tasks.TaskService;
@@ -40,7 +40,7 @@ class WorktreeServiceTest {
     void setUp() {
         // 模拟 jooj 主目录在 tempDir 下,user.dir 已经被 JVM 设了,WorktreeService 用 user.dir
         // 但 worktreeDir 走配置 → tempDir 子目录
-        ObjectMapper json = JacksonConfig.newMapper();
+        ObjectMapper json = JsonMappers.newMapper();
         TaskConfig taskConfig = new TaskConfig(tempDir.resolve(".tasks"));
         TaskStore taskStore = new TaskStore(taskConfig, json);
         taskService = new TaskService(taskStore);

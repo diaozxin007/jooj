@@ -1,7 +1,7 @@
 package com.xilidou.jooj.tool.impl;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xilidou.jooj.config.JacksonConfig;
+import com.xilidou.jooj.config.JsonMappers;
 import com.xilidou.jooj.subagent.Teammate;
 import com.xilidou.jooj.team.MessageBus;
 import com.xilidou.jooj.team.TeamConfig;
@@ -40,7 +40,7 @@ class TeamToolTest {
 
     @BeforeEach
     void setUp() {
-        ObjectMapper json = JacksonConfig.newMapper();
+        ObjectMapper json = JsonMappers.newMapper();
         bus = new MessageBus(new TeamConfig(tempDir.resolve("mailboxes")), json);
         teammate = Mockito.mock(Teammate.class);
         protocols = new com.xilidou.jooj.team.ProtocolRegistry();

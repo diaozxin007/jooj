@@ -31,7 +31,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * <p>这个测试是切片 C 的"地基":如果它通过,说明:
  * <ol>
  *   <li>{@link JoojProperties} 从 application-test.yml 正确绑定</li>
- *   <li>{@link com.xilidou.jooj.http.HttpClientConfig#httpAuth(JoojProperties)}
+ *   <li>{@link com.xilidou.jooj.http.HttpClientConfiguration#httpAuth(JoojProperties)}
  *       的二选一逻辑工作(test 配置走 api-key 分支)</li>
  *   <li>{@link AnthropicClient} 通过 {@link MockitoBean} 替换为 mock,不打 HTTP</li>
  *   <li>{@link com.xilidou.jooj.compact.CompactConfiguration} +

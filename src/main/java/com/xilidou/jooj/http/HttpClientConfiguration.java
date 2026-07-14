@@ -2,7 +2,7 @@ package com.xilidou.jooj.http;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xilidou.jooj.JoojProperties;
-import com.xilidou.jooj.config.JacksonConfig;
+import com.xilidou.jooj.config.JsonMappers;
 import okhttp3.OkHttpClient;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -17,7 +17,7 @@ import java.util.concurrent.TimeUnit;
  * 通过 {@link Bean} 把 4 个对象交给 Spring 管理:
  * <ol>
  *   <li>{@link OkHttpClient} — 全局单例,内部连接池要复用</li>
- *   <li>{@link ObjectMapper} — Jackson 配置统一从 {@link JacksonConfig#newMapper()} 来</li>
+ *   <li>{@link ObjectMapper} — Jackson 配置统一从 {@link JsonMappers#newMapper()} 来</li>
  *   <li>{@link HttpAuth} — 根据 {@code jooj.anthropic.api-key/auth-token} 二选一</li>
  *   <li>{@link AnthropicClient} — 把上面 3 个 + baseUrl 拼成最终 client</li>
  * </ol>
@@ -31,7 +31,7 @@ import java.util.concurrent.TimeUnit;
  * Spring 单例 Bean 天然解决这个问题。
  */
 @Configuration
-public class HttpClientConfig {
+public class HttpClientConfiguration {
 
     /**
      * 二选一构造 {@link HttpAuth}:
@@ -71,7 +71,7 @@ public class HttpClientConfig {
     }
 
     /**
-     * Jackson 单例。配置统一从 {@link JacksonConfig#newMapper()} 来,
+     * Jackson 单例。配置统一从 {@link JsonMappers#newMapper()} 来,
      * 保留它作静态工厂方便测试和非 Spring 场景。
      *
      * <p>Bean 名字明确为 {@code joojObjectMapper},避免和 Spring Boot 4
@@ -80,7 +80,7 @@ public class HttpClientConfig {
     @Bean(name = "joojObjectMapper")
     @org.springframework.context.annotation.Primary
     public ObjectMapper joojObjectMapper() {
-        return JacksonConfig.newMapper();
+        return JsonMappers.newMapper();
     }
 
     /**

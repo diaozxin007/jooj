@@ -2,7 +2,7 @@ package com.xilidou.jooj.hook.impl;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xilidou.jooj.config.JacksonConfig;
+import com.xilidou.jooj.config.JsonMappers;
 import com.xilidou.jooj.http.dto.ToolUseBlock;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -23,7 +23,7 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 class MetricsHookTest {
 
-    private static final ObjectMapper JSON = JacksonConfig.newMapper();
+    private static final ObjectMapper JSON = JsonMappers.newMapper();
 
     private MetricsHook hook;
 

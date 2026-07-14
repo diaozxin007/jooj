@@ -2,7 +2,7 @@ package com.xilidou.jooj.permission;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xilidou.jooj.config.JacksonConfig;
+import com.xilidou.jooj.config.JsonMappers;
 import com.xilidou.jooj.http.dto.ToolUseBlock;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -31,7 +31,7 @@ import static org.junit.jupiter.api.Assertions.*;
 @DisplayName("场景测试：Agent 自动清理项目")
 class AgentCleanupScenarioTest {
 
-    private static final ObjectMapper JSON = JacksonConfig.newMapper();
+    private static final ObjectMapper JSON = JsonMappers.newMapper();
 
     /** 记录所有 ASK 事件 —— 模拟 UserApprover 的决策日志 */
     private final List<String> askLog = new ArrayList<>();

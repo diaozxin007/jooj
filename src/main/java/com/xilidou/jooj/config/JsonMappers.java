@@ -5,7 +5,18 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
-public class JacksonConfig {
+/**
+ * 项目统一的 Jackson {@link ObjectMapper} 工厂。
+ *
+ * <p>被 {@link com.xilidou.jooj.http.HttpClientConfiguration#joojObjectMapper()} Bean 复用,
+ * 同时非 Spring 场景(测试 / 独立工具)直接静态调用 {@link #newMapper()}。
+ *
+ * <p>工具类,不带 {@code @Configuration} —— 只提供静态工厂,不参与 Bean 生命周期。
+ */
+public final class JsonMappers {
+
+    private JsonMappers() {}
+
     public static ObjectMapper newMapper() {
         return new ObjectMapper()
                 // ① 多余字段不报错（Anthropic 加新字段不影响我们）

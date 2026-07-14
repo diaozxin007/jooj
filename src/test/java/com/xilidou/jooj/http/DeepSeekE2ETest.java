@@ -1,6 +1,6 @@
 package com.xilidou.jooj.http;
 
-import com.xilidou.jooj.config.JacksonConfig;
+import com.xilidou.jooj.config.JsonMappers;
 import com.xilidou.jooj.http.dto.CreateMessageRequest;
 import com.xilidou.jooj.http.dto.CreateMessageResponse;
 import com.xilidou.jooj.http.dto.InputSchema;
@@ -36,7 +36,7 @@ class DeepSeekE2ETest {
     @BeforeEach
     void setUp() {
         String apiKey = System.getenv("DEEPSEEK_API_KEY");
-        ObjectMapper json = JacksonConfig.newMapper();
+        ObjectMapper json = JsonMappers.newMapper();
 
         client = new AnthropicHttpClient(
                 AnthropicHttpClient.defaultOkHttpClient(),

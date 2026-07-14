@@ -29,7 +29,7 @@ import java.util.Map;
  * 在 {@link JoojApplication} 上加 {@code @ConfigurationPropertiesScan},
  * Spring 会自动把这个类注册为 Bean,其它 Bean 通过构造器注入即可使用。
  *
- * @see com.xilidou.jooj.http.HttpClientConfig
+ * @see com.xilidou.jooj.http.HttpClientConfiguration
  * @see com.xilidou.jooj.compact.CompactConfiguration
  * @see com.xilidou.jooj.memory.MemoryConfiguration
  * @see com.xilidou.jooj.permission.PermissionConfiguration

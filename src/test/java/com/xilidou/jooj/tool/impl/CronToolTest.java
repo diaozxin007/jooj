@@ -1,7 +1,7 @@
 package com.xilidou.jooj.tool.impl;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xilidou.jooj.config.JacksonConfig;
+import com.xilidou.jooj.config.JsonMappers;
 import com.xilidou.jooj.cron.CronConfig;
 import com.xilidou.jooj.cron.CronService;
 import com.xilidou.jooj.cron.CronStore;
@@ -35,7 +35,7 @@ class CronToolTest {
 
     @BeforeEach
     void setUp() {
-        ObjectMapper json = JacksonConfig.newMapper();
+        ObjectMapper json = JsonMappers.newMapper();
         Path durable = tempDir.resolve(".scheduled_tasks.json");
         CronConfig cfg = new CronConfig(durable, 1000L, 200L);
         CronStore store = new CronStore(cfg, json);

@@ -1,6 +1,6 @@
 package com.xilidou.jooj.transcript;
 
-import com.xilidou.jooj.config.JacksonConfig;
+import com.xilidou.jooj.config.JsonMappers;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -38,7 +38,7 @@ class TranscriptServiceTest {
 
     @BeforeEach
     void setUp() {
-        store = new TranscriptStore(tmp, JacksonConfig.newMapper());
+        store = new TranscriptStore(tmp, JsonMappers.newMapper());
         service = new TranscriptService(store);
     }
 
@@ -172,7 +172,7 @@ class TranscriptServiceTest {
         @DisplayName("写盘失败时 LRU 回退,允许后续同 eventId 重试")
         void failure_releases_lru_for_retry() throws IOException {
             // 用一个抛异常的 store 模拟磁盘满
-            TranscriptStore failingStore = new TranscriptStore(tmp, JacksonConfig.newMapper()) {
+            TranscriptStore failingStore = new TranscriptStore(tmp, JsonMappers.newMapper()) {
                 boolean firstCall = true;
 
                 @Override

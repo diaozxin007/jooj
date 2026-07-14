@@ -37,9 +37,9 @@ import java.util.List;
  */
 @Configuration
 @ConditionalOnExpression("!'${jooj.deepseek.api-key:}'.isEmpty()")
-public class DeepSeekProviderConfig {
+public class DeepSeekProviderConfiguration {
 
-    private static final Logger log = LoggerFactory.getLogger(DeepSeekProviderConfig.class);
+    private static final Logger log = LoggerFactory.getLogger(DeepSeekProviderConfiguration.class);
 
     @Bean
     public ModelProvider deepseekProvider(OkHttpClient http,

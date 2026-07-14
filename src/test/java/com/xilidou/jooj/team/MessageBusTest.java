@@ -1,7 +1,7 @@
 package com.xilidou.jooj.team;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xilidou.jooj.config.JacksonConfig;
+import com.xilidou.jooj.config.JsonMappers;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -41,7 +41,7 @@ class MessageBusTest {
 
     @BeforeEach
     void setUp() {
-        ObjectMapper json = JacksonConfig.newMapper();
+        ObjectMapper json = JsonMappers.newMapper();
         bus = new MessageBus(new TeamConfig(tempDir.resolve("mailboxes")), json);
     }
 
@@ -85,7 +85,7 @@ class MessageBusTest {
         // 手工往邮箱写一行合法 + 一行损坏 + 一行合法
         Path mailbox = bus.mailboxDir().resolve("lead.jsonl");
         Files.createDirectories(mailbox.getParent());
-        ObjectMapper json = JacksonConfig.newMapper();
+        ObjectMapper json = JsonMappers.newMapper();
         String good1 = json.writeValueAsString(new Message("a", "lead", "ok1", "message", 1));
         String good2 = json.writeValueAsString(new Message("b", "lead", "ok2", "message", 2));
         Files.writeString(mailbox,

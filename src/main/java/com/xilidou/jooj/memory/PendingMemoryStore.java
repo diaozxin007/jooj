@@ -4,7 +4,7 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
-import com.xilidou.jooj.config.JacksonConfig;
+import com.xilidou.jooj.config.JsonMappers;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -67,7 +67,7 @@ public class PendingMemoryStore {
     public PendingMemoryStore(Path memoryDir) {
         if (memoryDir == null) throw new IllegalArgumentException("memoryDir must not be null");
         this.pendingPath = memoryDir.resolve(PENDING_FILE);
-        this.json = JacksonConfig.newMapper();
+        this.json = JsonMappers.newMapper();
         this.json.setSerializationInclusion(JsonInclude.Include.NON_NULL);
         this.json.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
         // 初始化 nextId:扫已有最大 id + 1,保证重启后继续单调

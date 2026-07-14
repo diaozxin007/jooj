@@ -1,7 +1,7 @@
 package com.xilidou.jooj.cron;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xilidou.jooj.config.JacksonConfig;
+import com.xilidou.jooj.config.JsonMappers;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -35,7 +35,7 @@ class CronServiceTest {
 
     @BeforeEach
     void setUp() {
-        ObjectMapper json = JacksonConfig.newMapper();
+        ObjectMapper json = JsonMappers.newMapper();
         Path durable = tempDir.resolve(".scheduled_tasks.json");
         CronConfig cfg = new CronConfig(durable, 1000L, 200L);
         store = new CronStore(cfg, json);

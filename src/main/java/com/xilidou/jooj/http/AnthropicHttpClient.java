@@ -1,7 +1,7 @@
 package com.xilidou.jooj.http;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xilidou.jooj.config.JacksonConfig;
+import com.xilidou.jooj.config.JsonMappers;
 import com.xilidou.jooj.http.dto.CreateMessageRequest;
 import com.xilidou.jooj.http.dto.CreateMessageResponse;
 import lombok.Getter;
@@ -26,7 +26,7 @@ import java.util.concurrent.TimeUnit;
  *   <li><b>有状态</b>:持有 {@link OkHttpClient}、{@link ObjectMapper}、{@link HttpAuth},
  *       一次构造多次复用(OkHttpClient 必须复用,否则浪费连接池)</li>
  *   <li><b>纯 DI</b>:构造函数注入所有依赖,不读环境变量、不读配置文件</li>
- *   <li><b>切片 C 之后:由 {@link com.xilidou.jooj.http.HttpClientConfig#anthropicClient}
+ *   <li><b>切片 C 之后:由 {@link com.xilidou.jooj.http.HttpClientConfiguration#anthropicClient}
  *       Bean 装配</b>,fromEnv 工厂方法已移除</li>
  * </ul>
  *
@@ -66,7 +66,7 @@ public class AnthropicHttpClient implements ModelProvider {
      * 默认 providerName="anthropic", prefixes=["claude-"]。
      *
      * @param http    OkHttp 客户端(应复用,内部有连接池)
-     * @param json    Jackson ObjectMapper(应使用 {@link JacksonConfig#newMapper()})
+     * @param json    Jackson ObjectMapper(应使用 {@link JsonMappers#newMapper()})
      * @param baseUrl 不带尾斜杠的 API 根,如 {@code https://api.anthropic.com}
      * @param auth    认证策略
      */
@@ -165,7 +165,7 @@ public class AnthropicHttpClient implements ModelProvider {
 
     /**
      * 默认 OkHttp 客户端(10s 连接 / 120s 读 / 30s 写)。
-     * Spring 场景由 {@link com.xilidou.jooj.http.HttpClientConfig#okHttpClient()}
+     * Spring 场景由 {@link com.xilidou.jooj.http.HttpClientConfiguration#okHttpClient()}
      * 提供等价的 Bean。
      */
     public static OkHttpClient defaultOkHttpClient() {
@@ -225,7 +225,7 @@ public class AnthropicHttpClient implements ModelProvider {
                         "auth is required (use ApiKeyAuth or BearerTokenAuth)");
             }
             if (http == null) http = defaultOkHttpClient();
-            if (json == null) json = JacksonConfig.newMapper();
+            if (json == null) json = JsonMappers.newMapper();
             return new AnthropicHttpClient(http, json, baseUrl, auth);
         }
     }

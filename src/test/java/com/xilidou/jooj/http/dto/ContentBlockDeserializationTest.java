@@ -2,7 +2,7 @@ package com.xilidou.jooj.http.dto;
 
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xilidou.jooj.config.JacksonConfig;
+import com.xilidou.jooj.config.JsonMappers;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Files;
@@ -115,7 +115,7 @@ class ContentBlockDeserializationTest {
     void should_parse_real_anthropic_response() throws Exception {
         String json = Files.readString(Path.of(
                 "src/test/resources/fixtures/sample_response.json"));
-        ObjectMapper mapper = JacksonConfig.newMapper();
+        ObjectMapper mapper = JsonMappers.newMapper();
 
         CreateMessageResponse resp = mapper.readValue(json, CreateMessageResponse.class);
 
@@ -138,7 +138,7 @@ class ContentBlockDeserializationTest {
     }
 
     /**
-     * 回归防线:走 {@link JacksonConfig#newMapper()} 序列化一条包含 thinking + text 的
+     * 回归防线:走 {@link JsonMappers#newMapper()} 序列化一条包含 thinking + text 的
      * assistant MessageParam,断言每个 block 都带 "type" 字段。
      *
      * <p>为什么单独测:{@code ContentBlock} 上有 {@code @JsonIgnoreProperties({"type"})}
@@ -146,11 +146,11 @@ class ContentBlockDeserializationTest {
      * 时,该注解会同时吞掉序列化侧的 type 字段,导致 Anthropic API 报
      * {@code messages.N.content.M.type: Field required} 400。
      * 已有的 {@link #should_serialize_text_block_with_type_field} 用的是原生 ObjectMapper,
-     * 侥幸绕过——这里必须走项目真正用的 {@code JacksonConfig.newMapper()}。
+     * 侥幸绕过——这里必须走项目真正用的 {@code JsonMappers.newMapper()}。
      */
     @Test
     void should_serialize_thinking_and_text_blocks_with_type_via_project_mapper() throws Exception {
-        ObjectMapper mapper = JacksonConfig.newMapper();
+        ObjectMapper mapper = JsonMappers.newMapper();
         MessageParam msg = MessageParam.assistant(List.of(
                 new ThinkingBlock("Let me think", "sig-xxx"),
                 new TextBlock("hello")

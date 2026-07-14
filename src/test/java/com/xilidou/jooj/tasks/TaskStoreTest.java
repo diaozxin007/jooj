@@ -1,7 +1,7 @@
 package com.xilidou.jooj.tasks;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xilidou.jooj.config.JacksonConfig;
+import com.xilidou.jooj.config.JsonMappers;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -34,7 +34,7 @@ class TaskStoreTest {
     Path tempDir;
 
     private TaskStore store;
-    private final ObjectMapper json = JacksonConfig.newMapper();
+    private final ObjectMapper json = JsonMappers.newMapper();
 
     @BeforeEach
     void setUp() {

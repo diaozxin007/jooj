@@ -1,7 +1,7 @@
 package com.xilidou.jooj.tool.impl;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xilidou.jooj.config.JacksonConfig;
+import com.xilidou.jooj.config.JsonMappers;
 import com.xilidou.jooj.tasks.TaskConfig;
 import com.xilidou.jooj.tasks.TaskService;
 import com.xilidou.jooj.tasks.TaskStore;
@@ -41,7 +41,7 @@ class TasksToolTest {
 
     @BeforeEach
     void setUp() {
-        ObjectMapper json = JacksonConfig.newMapper();
+        ObjectMapper json = JsonMappers.newMapper();
         TaskConfig config = new TaskConfig(tempDir);
         TaskStore store = new TaskStore(config, json);
         service = new TaskService(store);

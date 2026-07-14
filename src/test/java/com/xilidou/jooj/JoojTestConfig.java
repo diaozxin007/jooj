@@ -25,7 +25,7 @@ import org.springframework.context.annotation.Primary;
  * </pre>
  *
  * <p><b>关键设计 — bean 名字不同 + @Primary</b>:
- * 这里 bean 名字是 {@code mockAnthropicClient}(与 {@link com.xilidou.jooj.http.HttpClientConfig#anthropicClient}
+ * 这里 bean 名字是 {@code mockAnthropicClient}(与 {@link com.xilidou.jooj.http.HttpClientConfiguration#anthropicClient}
  * 不同),所以不发生 bean override。两个 bean 同时存在 BeanFactory 里,但 {@link Primary}
  * 让所有 by-type 注入(包括 {@link com.xilidou.jooj.agent.AgentLoopHarness}
  * 等的 {@code AnthropicClient} 参数)都解析到 mock 上,真实的 client 被绕过。
