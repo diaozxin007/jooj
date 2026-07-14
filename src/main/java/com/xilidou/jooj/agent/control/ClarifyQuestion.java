@@ -32,7 +32,9 @@ import java.util.Objects;
 public record ClarifyQuestion(
         String askId,
         Instant askedAt,
-        List<SubQuestion> questions
+        List<SubQuestion> questions,
+        String originChannel,
+        String originPeerId
 ) implements PendingQuestion {
 
     public ClarifyQuestion {
@@ -94,9 +96,20 @@ public record ClarifyQuestion(
 
     /** 便利工厂 —— 生成 askId + askedAt,给 tool 使用。 */
     public static ClarifyQuestion of(List<SubQuestion> questions) {
+        return of(questions, null, null);
+    }
+
+    /**
+     * s22 D-12:带渠道元数据的工厂。channel/peerId 允许 null(web / 测试路径),
+     * IM channel 传实际值以便 presenter 反查投递地址。
+     */
+    public static ClarifyQuestion of(List<SubQuestion> questions,
+                                     String originChannel, String originPeerId) {
         return new ClarifyQuestion(
                 PendingQuestion.newAskId(),
                 Instant.now(),
-                questions);
+                questions,
+                originChannel,
+                originPeerId);
     }
 }

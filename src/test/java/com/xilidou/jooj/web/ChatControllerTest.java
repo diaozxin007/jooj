@@ -318,7 +318,8 @@ class ChatControllerTest {
                 java.time.Instant.parse("2026-07-13T12:00:00Z"),
                 "bash",
                 "{cmd: rm -rf}",
-                "matched destructive pattern");
+                "matched destructive pattern",
+                null, null);
 
         // 起个 async 挂起
         var agentThread = java.util.concurrent.CompletableFuture.runAsync(() -> {
@@ -355,7 +356,7 @@ class ChatControllerTest {
     @DisplayName("POST /api/chat/{sid}/answer:decision=allow 唤醒 agent")
     void answer_allow_wakes_agent() throws Exception {
         var q = new PermissionQuestion("askid-allow-1",
-                java.time.Instant.now(), "bash", "{}", "test");
+                java.time.Instant.now(), "bash", "{}", "test", null, null);
 
         var received = new java.util.concurrent.atomic.AtomicReference<
                 com.xilidou.jooj.agent.control.Answer>();
@@ -390,7 +391,7 @@ class ChatControllerTest {
     @DisplayName("POST /api/chat/{sid}/answer:decision=deny + reason 唤醒 agent 走 DENY 路径")
     void answer_deny_with_reason() throws Exception {
         var q = new PermissionQuestion("askid-deny-1",
-                java.time.Instant.now(), "bash", "{}", "test");
+                java.time.Instant.now(), "bash", "{}", "test", null, null);
 
         var received = new java.util.concurrent.atomic.AtomicReference<
                 com.xilidou.jooj.agent.control.Answer>();

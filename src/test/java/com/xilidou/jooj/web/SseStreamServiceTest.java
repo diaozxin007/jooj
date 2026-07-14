@@ -89,7 +89,7 @@ class SseStreamServiceTest {
         var toolUse = new ToolUseBlock("toolu_1", "bash",
                 JsonNodeFactory.instance.objectNode().put("command", "ls"));
         var pq = PermissionQuestion.of(toolUse, "dangerous cmd");
-        svc.onPendingQuestion(new PendingQuestionRegistered("nonexistent", pq));
+        svc.present("nonexistent", pq);
     }
 
     @Test
@@ -102,6 +102,6 @@ class SseStreamServiceTest {
                                 new ClarifyQuestion.Option("A", "with desc"),
                                 new ClarifyQuestion.Option("B", null)),
                         false)));
-        svc.onPendingQuestion(new PendingQuestionRegistered("nonexistent", cq));
+        svc.present("nonexistent", cq);
     }
 }

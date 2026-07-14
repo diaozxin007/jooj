@@ -31,7 +31,9 @@ public record PermissionQuestion(
         Instant askedAt,
         String toolName,
         String toolInput,
-        String reason
+        String reason,
+        String originChannel,
+        String originPeerId
 ) implements PendingQuestion {
 
     @Override
@@ -39,14 +41,24 @@ public record PermissionQuestion(
         return "permission";
     }
 
-    /** 便利工厂:从 ToolUseBlock + reason 构造。 */
+    /** 便利工厂:从 ToolUseBlock + reason 构造(无渠道元数据)。 */
     public static PermissionQuestion of(ToolUseBlock toolUse, String reason) {
+        return of(toolUse, reason, null, null);
+    }
+
+    /**
+     * s22 D-12:带渠道元数据的工厂。IM channel 传 channel + peerId,让 presenter 能反查投递地址。
+     */
+    public static PermissionQuestion of(ToolUseBlock toolUse, String reason,
+                                        String originChannel, String originPeerId) {
         String input = toolUse.getInput() != null ? toolUse.getInput().toString() : "";
         return new PermissionQuestion(
                 PendingQuestion.newAskId(),
                 Instant.now(),
                 toolUse.getName(),
                 input,
-                reason);
+                reason,
+                originChannel,
+                originPeerId);
     }
 }

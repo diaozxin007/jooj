@@ -39,9 +39,23 @@ public sealed interface PendingQuestion
 
     /**
      * 问题类型的短标签,给前端选渲染样式用。
-     * 目前:{@code "permission"}。将来:{@code "clarify"}、{@code "choose"} 等。
+     * 目前:{@code "permission"} / {@code "clarify"}。
      */
     String type();
+
+    /**
+     * s22 D-12:origin channel(如 {@code "weixin"} / {@code "web"})。
+     * 允许 null(旧路径 / 测试),Presenter 用 {@code supports(sessionId)} 判断即可,
+     * channel 字段是加速匹配 + 提供 peerId 上下文。
+     */
+    default String originChannel() { return null; }
+
+    /**
+     * s22 D-12:origin peerId(如 {@code "wxid_abc123"})。
+     * 允许 null。微信等 IM channel 需要它才能 push 消息给用户。
+     * Web 场景 null 也 OK(SSE 按 sid 路由,不需要 peer)。
+     */
+    default String originPeerId() { return null; }
 
     /** 生成新的 askId,内部用 UUID。 */
     static String newAskId() {

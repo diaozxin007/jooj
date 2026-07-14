@@ -6,6 +6,7 @@ import com.xilidou.jooj.agent.TurnEventPushed;
 import com.xilidou.jooj.agent.control.ClarifyQuestion;
 import com.xilidou.jooj.agent.control.PendingQuestion;
 import com.xilidou.jooj.agent.control.PermissionQuestion;
+import com.xilidou.jooj.channel.AnswerPresenter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -56,7 +57,7 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 @Component
 @Slf4j
-public class SseStreamService {
+public class SseStreamService implements AnswerPresenter {
 
     private final ConcurrentHashMap<String, SseEmitter> sessions = new ConcurrentHashMap<>();
 
@@ -121,9 +122,13 @@ public class SseStreamService {
 
         // s22 SSE:回放已挂起的 pending questions —— 防止"SSE 连接前已 ask 挂起,前端
         // 永远收不到 event"的 bug。register 后立即把 agentControl.listPending 都推一遍。
+        // 注意直接调 present(不走 event 分派),因为这是**已挂起**的 pending 补发,
+        // event 早就发过被别的 presenter 认领(或没人认领),这里补一份给新连上的浏览器。
         if (agentControl != null) {
             for (PendingQuestion q : agentControl.listPending(sessionId)) {
-                onPendingQuestion(new PendingQuestionRegistered(sessionId, q));
+                if (supports(sessionId, q)) {
+                    present(sessionId, q);
+                }
             }
         }
 
@@ -230,16 +235,28 @@ public class SseStreamService {
     }
 
     /**
-     * s22 SSE:AgentControl.ask 挂起时,发 {@link PendingQuestionRegistered} 事件,
-     * 此处监听后立即推给浏览器,替代前端 poll /pending。
+     * s22 D-12:{@link AnswerPresenter#supports} —— web 场景 sid 通常无前缀 或
+     * {@code chat_web_}。sid 以 {@code chat_weixin_} 开头意味着微信,归 WeixinPresenter,
+     * 我这里返 false。
+     *
+     * <p>如果 question 上带 originChannel,那就 100% 判 == "web"。
+     * 无 originChannel 时按 sid 前缀 heuristic。
      */
-    @EventListener
-    void onPendingQuestion(PendingQuestionRegistered evt) {
-        log.debug("[SSE] onPendingQuestion received sid={} askId={} type={}",
-                evt.sessionId(),
-                evt.question() != null ? evt.question().askId() : "null",
-                evt.question() != null ? evt.question().type() : "null");
-        PendingQuestion q = evt.question();
+    @Override
+    public boolean supports(String sessionId, PendingQuestion question) {
+        String ch = question.originChannel();
+        if (ch != null) return "web".equals(ch);
+        // heuristic:非 chat_<channel>_ 前缀的都当 web(default / sid-xxx / chat_web_xxx 等)
+        return sessionId == null || !sessionId.startsWith("chat_") || sessionId.startsWith("chat_web_");
+    }
+
+    /**
+     * s22 SSE:{@link AnswerPresenter#present} 实现 —— 把 question 序列化为 JSON,
+     * 通过已经建好的 SSE emitter 推到浏览器。以前挂 @EventListener 直接监听,
+     * 现在改由 {@code PresenterRegistry} 分派(避免 SSE 抢占本该走微信的 event)。
+     */
+    @Override
+    public void present(String sessionId, PendingQuestion q) {
         if (q == null) return;
         StringBuilder sb = new StringBuilder("{");
         sb.append("\"askId\":").append(jsonString(q.askId())).append(",");
@@ -272,7 +289,7 @@ public class SseStreamService {
             sb.append("]");
         }
         sb.append("}");
-        push(evt.sessionId(), "pending", q.askId(), sb.toString());
+        push(sessionId, "pending", q.askId(), sb.toString());
     }
 
     /** 简单 JSON 字符串转义(不引 Jackson 保持轻量)。 */

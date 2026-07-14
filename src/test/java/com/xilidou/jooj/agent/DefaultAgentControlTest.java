@@ -115,7 +115,8 @@ class DefaultAgentControlTest {
                 Instant.parse("2026-07-13T12:00:00Z"),
                 "bash",
                 "{cmd: rm -rf}",
-                "matched destructive pattern");
+                "matched destructive pattern",
+                null, null);
     }
 
     @Test
@@ -254,7 +255,7 @@ class DefaultAgentControlTest {
     @DisplayName("D-10-B listPending 隔离:sid A 挂起不影响 sid B")
     void list_pending_isolated_by_session() throws Exception {
         var ctl = new DefaultAgentControl();
-        var qA = new PermissionQuestion("askA", Instant.now(), "bash", "{}", "test");
+        var qA = new PermissionQuestion("askA", Instant.now(), "bash", "{}", "test", null, null);
 
         CompletableFuture.runAsync(() -> {
             try { ctl.ask("A", qA, Duration.ofSeconds(5)); } catch (Exception ignore) {}
