@@ -7,7 +7,7 @@ import java.nio.file.Paths;
  * Cron Scheduler 配置 —— 跟 {@link com.xilidou.jooj.tasks.TaskConfig} 同形态。
  *
  * <p>纯 POJO,无 Spring 依赖;测试用全参构造器覆盖默认值,生产用
- * {@link CronConfiguration} 从 {@link com.xilidou.jooj.JoojProperties.Cron} 转出。
+ * {@link CronConfiguration} 从 {@link com.xilidou.jooj.cron.CronProperties} 转出。
  */
 public class CronConfig {
 

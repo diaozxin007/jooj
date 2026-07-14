@@ -1,7 +1,6 @@
 package com.xilidou.jooj.tasks;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xilidou.jooj.JoojProperties;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -14,7 +13,7 @@ import java.nio.file.Paths;
  *
  * <p>跟 {@link com.xilidou.jooj.memory.MemoryConfiguration} 1:1 模式:
  * <ul>
- *   <li>{@link TaskConfig} —— 从 {@link JoojProperties.Tasks} 转出</li>
+ *   <li>{@link TaskConfig} —— 从 {@link TasksProperties} 转出</li>
  *   <li>{@link TaskStore} —— 接收 {@link TaskConfig} + {@code joojObjectMapper}</li>
  *   <li>{@link TaskService} —— 接收 {@link TaskStore}</li>
  * </ul>
@@ -27,8 +26,8 @@ import java.nio.file.Paths;
 public class TasksConfiguration {
 
     @Bean
-    public TaskConfig taskConfig(JoojProperties props) {
-        Path tasksDir = Paths.get(props.getTasks().getTasksDir())
+    public TaskConfig taskConfig(TasksProperties props) {
+        Path tasksDir = Paths.get(props.getTasksDir())
                 .toAbsolutePath().normalize();
         return new TaskConfig(tasksDir);
     }

@@ -8,7 +8,7 @@ import java.nio.file.Paths;
  *
  * <p>跟 {@link com.xilidou.jooj.memory.MemoryConfig} 同模式:纯 POJO,
  * 无 Spring 依赖;测试用全参构造器覆盖默认值,生产用 {@link TasksConfiguration}
- * 从 {@link com.xilidou.jooj.JoojProperties.Tasks} 转出。
+ * 从 {@link com.xilidou.jooj.tasks.TasksProperties} 转出。
  *
  * <p>当前只有 1 个字段({@code tasksDir}),保留这个类是因为:
  * <ul>

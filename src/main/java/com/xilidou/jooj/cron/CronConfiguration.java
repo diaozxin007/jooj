@@ -1,7 +1,6 @@
 package com.xilidou.jooj.cron;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xilidou.jooj.JoojProperties;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -30,13 +29,13 @@ import java.util.concurrent.locks.ReentrantLock;
 public class CronConfiguration {
 
     @Bean
-    public CronConfig cronConfig(JoojProperties props) {
-        Path durablePath = Paths.get(props.getCron().getDurablePath())
+    public CronConfig cronConfig(CronProperties props) {
+        Path durablePath = Paths.get(props.getDurablePath())
                 .toAbsolutePath().normalize();
         return new CronConfig(
                 durablePath,
-                props.getCron().getSchedulerTickMs(),
-                props.getCron().getProcessorTickMs()
+                props.getSchedulerTickMs(),
+                props.getProcessorTickMs()
         );
     }
 

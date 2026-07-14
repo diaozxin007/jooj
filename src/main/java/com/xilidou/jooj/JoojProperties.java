@@ -53,11 +53,9 @@ public class JoojProperties {
 
     /** Recovery(s11)配置已拆到 {@link com.xilidou.jooj.agent.RecoveryProperties}(2026-07-14)。 */
 
-    /** Task System(s12)路径配置。 */
-    private Tasks tasks = new Tasks();
+    /** Tasks(s12)配置已拆到 {@link com.xilidou.jooj.tasks.TasksProperties}(2026-07-14)。 */
 
-    /** Cron Scheduler(s14)tick + 持久化路径配置。 */
-    private Cron cron = new Cron();
+    /** Cron(s14)配置已拆到 {@link com.xilidou.jooj.cron.CronProperties}(2026-07-14)。 */
 
     /** Team / MessageBus(s15)邮箱目录配置。 */
     private Team team = new Team();
@@ -162,40 +160,6 @@ public class JoojProperties {
     /**
      * Recovery(s11)配置已拆到 {@link com.xilidou.jooj.agent.RecoveryProperties}(2026-07-14)。
      */
-
-    /**
-     * Task System(s12)目录配置。对应 Python 的 {@code TASKS_DIR = WORKDIR / ".tasks"}。
-     *
-     * <p>每个 task 一个 JSON 文件,文件名是 task id(形如 {@code task_1729000000_3812.json})。
-     * 教学版不加 file lock —— 与上游严格一致;jooj 是单进程 REPL,不会并发写。
-     */
-    @Data
-    public static class Tasks {
-        /** task 文件目录(相对 cwd 或绝对路径)。默认 {@code .tasks}。 */
-        private String tasksDir = ".tasks";
-    }
-
-    /**
-     * Cron Scheduler(s14)配置。对应上游
-     * [s14_cron_scheduler/code.py] 的 4 层架构 + durable 持久化。
-     *
-     * <p>tick 间隔影响响应延迟与 CPU 开销。生产场景默认值即可:
-     * <ul>
-     *   <li>Layer 1 scheduler tick = 1000ms — 1 秒钟检查一次哪些 job 该 fire</li>
-     *   <li>Layer 3 processor tick = 200ms — 200ms 检查一次 queue 是否有 fired job</li>
-     * </ul>
-     *
-     * <p>测试 profile 把这俩调小让 cron-fire 测试快速完成。
-     */
-    @Data
-    public static class Cron {
-        /** Layer 1 CronScheduler 轮询间隔(毫秒)。默认 1000。 */
-        private int schedulerTickMs = 1000;
-        /** Layer 3 CronQueueProcessor 轮询间隔(毫秒)。默认 200。 */
-        private int processorTickMs = 200;
-        /** durable 持久化文件路径(相对 cwd 或绝对)。默认 {@code .scheduled_tasks.json}。 */
-        private String durablePath = ".scheduled_tasks.json";
-    }
 
     /**
      * Team / MessageBus(s15)配置 —— 文件邮箱形态的 agent 间通信。
