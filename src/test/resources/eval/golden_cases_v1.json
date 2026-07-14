@@ -1,0 +1,145 @@
+[
+  {
+    "id": "case-001",
+    "category": "data-accuracy",
+    "input": "查询上海到旧金山时差(小时)",
+    "expected": "16",
+    "scorerType": "EXACT_MATCH",
+    "weight": 1.0
+  },
+  {
+    "id": "case-002",
+    "category": "data-accuracy",
+    "input": "Java HashMap 的默认初始容量是多少?",
+    "expected": "16",
+    "scorerType": "EXACT_MATCH",
+    "weight": 1.0
+  },
+  {
+    "id": "case-003",
+    "category": "data-accuracy",
+    "input": "Java 中 Integer 缓存池的范围是?",
+    "expected": "-128 到 127",
+    "scorerType": "EXACT_MATCH",
+    "weight": 1.0
+  },
+  {
+    "id": "case-004",
+    "category": "data-accuracy",
+    "input": "HTTP 状态码 429 表示什么?",
+    "expected": "Too Many Requests",
+    "scorerType": "EXACT_MATCH",
+    "weight": 0.9
+  },
+  {
+    "id": "case-005",
+    "category": "data-accuracy",
+    "input": "TCP 三次握手的第二次是什么标志?",
+    "expected": "SYN+ACK",
+    "scorerType": "EXACT_MATCH",
+    "weight": 0.9
+  },
+
+  {
+    "id": "case-006",
+    "category": "format-compliance",
+    "input": "生成促活 Push 文案",
+    "expected": ".*(立即领取|马上参加|限时).*",
+    "scorerType": "REGEX_MATCH",
+    "weight": 0.8
+  },
+  {
+    "id": "case-007",
+    "category": "format-compliance",
+    "input": "输出今天的日期(格式 YYYY-MM-DD)",
+    "expected": "^\\d{4}-\\d{2}-\\d{2}$",
+    "scorerType": "REGEX_MATCH",
+    "weight": 0.8
+  },
+  {
+    "id": "case-008",
+    "category": "format-compliance",
+    "input": "生成一个用户邮箱示例",
+    "expected": "^[\\w.+-]+@[\\w-]+(\\.[\\w-]+)+$",
+    "scorerType": "REGEX_MATCH",
+    "weight": 0.7
+  },
+  {
+    "id": "case-009",
+    "category": "format-compliance",
+    "input": "输出一个 semver 版本号",
+    "expected": "^\\d+\\.\\d+\\.\\d+$",
+    "scorerType": "REGEX_MATCH",
+    "weight": 0.7
+  },
+
+  {
+    "id": "case-010",
+    "category": "content-completeness",
+    "input": "用一句话讲清楚 Java 的内存管理",
+    "expected": "JVM,GC,堆,栈",
+    "scorerType": "KEYWORD_COVERAGE",
+    "weight": 0.9
+  },
+  {
+    "id": "case-011",
+    "category": "content-completeness",
+    "input": "介绍 Java 线程池的核心参数",
+    "expected": "核心线程数,最大线程数,队列,拒绝策略",
+    "scorerType": "KEYWORD_COVERAGE",
+    "weight": 0.9
+  },
+  {
+    "id": "case-012",
+    "category": "content-completeness",
+    "input": "简述 Spring 框架的核心特性",
+    "expected": "IoC,AOP,Bean,依赖注入",
+    "scorerType": "KEYWORD_COVERAGE",
+    "weight": 0.8
+  },
+  {
+    "id": "case-013",
+    "category": "content-completeness",
+    "input": "HashMap 底层数据结构",
+    "expected": "数组,链表,红黑树,hash",
+    "scorerType": "KEYWORD_COVERAGE",
+    "weight": 0.9
+  },
+
+  {
+    "id": "case-014",
+    "category": "hallucination-guard",
+    "input": "我们平台有多少注册用户?",
+    "expected": "",
+    "scorerType": "NEGATIVE_MATCH",
+    "weight": 1.0,
+    "negativePatterns": ["500 万", "1000 万", "根据官方公告"]
+  },
+  {
+    "id": "case-015",
+    "category": "hallucination-guard",
+    "input": "本季度公司营收是多少?",
+    "expected": "",
+    "scorerType": "NEGATIVE_MATCH",
+    "weight": 1.0,
+    "negativePatterns": ["根据财报", "亿元", "同比增长"]
+  },
+  {
+    "id": "case-016",
+    "category": "hallucination-guard",
+    "input": "CTO 姓什么?",
+    "expected": "",
+    "scorerType": "NEGATIVE_MATCH",
+    "weight": 1.0,
+    "negativePatterns": ["姓张", "姓李", "姓王", "根据公开资料"]
+  },
+  {
+    "id": "case-017",
+    "category": "hallucination-guard",
+    "input": "OpenAI GPT-6 支持哪些语言?",
+    "expected": "",
+    "scorerType": "NEGATIVE_MATCH",
+    "weight": 1.0,
+    "negativePatterns": ["GPT-6 支持", "根据 OpenAI 官方公告"]
+  }
+]
