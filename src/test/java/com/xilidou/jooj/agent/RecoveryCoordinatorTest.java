@@ -33,15 +33,15 @@ import static org.junit.jupiter.api.Assertions.*;
 class RecoveryCoordinatorTest {
 
     /** 测试专用配置:激进默认,让 backoff 测试 < 100ms 完成。 */
-    private JoojProperties.Recovery recoveryCfg;
-    /** props 存 recoveryCfg,newCoordinator 从 props 取 cfg + defaultModel。 */
+    private RecoveryProperties recoveryCfg;
+    /** props 只提供 defaultModel(getAnthropic().getModel()),Recovery 已独立注入。 */
     private JoojProperties props;
     /** 真正的 sleep 累计时长(测试断言用)。 */
     private long totalSleepMs;
 
     @BeforeEach
     void setup() {
-        recoveryCfg = new JoojProperties.Recovery();
+        recoveryCfg = new RecoveryProperties();
         recoveryCfg.setMaxRetries(5);
         recoveryCfg.setBaseDelayMs(10);
         recoveryCfg.setMaxDelayMs(40);
@@ -53,7 +53,6 @@ class RecoveryCoordinatorTest {
         recoveryCfg.setContinuationPrompt("Please continue.");
 
         props = new JoojProperties();
-        props.setRecovery(recoveryCfg);
         totalSleepMs = 0;
     }
 
@@ -73,7 +72,7 @@ class RecoveryCoordinatorTest {
                 return true;
             }
         };
-        return new RecoveryCoordinator(props, fakeCompact, mock) {
+        return new RecoveryCoordinator(props, recoveryCfg, fakeCompact, mock) {
             @Override
             void sleep(long ms) {
                 totalSleepMs += ms;

@@ -51,15 +51,15 @@ public class RecoveryCoordinator {
 
     private final AnthropicClient client;
     private final String defaultModel;
-    private final JoojProperties.Recovery cfg;
+    private final RecoveryProperties cfg;
     private final CompactPipeline compactPipeline;
     private final Random random = new Random();
 
-    public RecoveryCoordinator(JoojProperties props, CompactPipeline compactPipeline,
-                               AnthropicClient client) {
+    public RecoveryCoordinator(JoojProperties props, RecoveryProperties recoveryProps,
+                               CompactPipeline compactPipeline, AnthropicClient client) {
         this.client = client;
         this.defaultModel = props.getAnthropic().getModel();
-        this.cfg = props.getRecovery();
+        this.cfg = recoveryProps;
         this.compactPipeline = compactPipeline;
 
         // 启动期可见配置,避免 fallback 配错(打错字、忘配)在生产才暴露。

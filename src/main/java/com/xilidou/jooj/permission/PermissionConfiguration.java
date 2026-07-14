@@ -1,6 +1,5 @@
 package com.xilidou.jooj.permission;
 
-import com.xilidou.jooj.JoojProperties;
 import com.xilidou.jooj.agent.AgentControl;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -29,8 +28,8 @@ public class PermissionConfiguration {
      * <p>未知模式回退到 {@code cli}(留下"配错也能跑"的鲁棒性)。
      */
     @Bean
-    public PermissionPipeline permissionPipeline(JoojProperties props, AgentControl agentControl) {
-        String mode = props.getPermission().getMode();
+    public PermissionPipeline permissionPipeline(PermissionProperties props, AgentControl agentControl) {
+        String mode = props.getMode();
         return switch (mode == null ? "cli" : mode) {
             case "web" -> PermissionPipeline.forWeb(agentControl);
             case "always-allow" -> PermissionPipeline.alwaysAllow();

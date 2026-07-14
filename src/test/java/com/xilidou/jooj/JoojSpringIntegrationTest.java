@@ -65,6 +65,7 @@ class JoojSpringIntegrationTest {
     @Autowired SkillRegistry skillRegistry;
     @Autowired TodoStore todoStore;
     @Autowired JoojProperties props;
+    @Autowired com.xilidou.jooj.permission.PermissionProperties permissionProps;
 
     @Test
     @DisplayName("Spring 容器把所有 jooj 核心 Bean 都装配成功")
@@ -85,7 +86,7 @@ class JoojSpringIntegrationTest {
     void config_properties_bound_from_test_yaml() {
         assertEquals("test-fake-key", props.getAnthropic().getApiKey());
         assertEquals("test-model", props.getAnthropic().getModel());
-        assertEquals("always-allow", props.getPermission().getMode());
+        assertEquals("always-allow", permissionProps.getMode());
     }
 
     @Test
