@@ -2,7 +2,7 @@ package com.xilidou.jooj.subagent;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xilidou.jooj.JoojProperties;
+import com.xilidou.jooj.http.AnthropicProperties;
 import com.xilidou.jooj.agent.AgentControl;
 import com.xilidou.jooj.agent.AgentInterruptedException;
 import com.xilidou.jooj.tool.ToolRegistry;
@@ -138,11 +138,11 @@ public class Subagent {
                     ToolRegistry registry,
                     @Qualifier("joojObjectMapper") ObjectMapper json,
                     HookManager hooks,
-                    JoojProperties props,
+                    AnthropicProperties anthropic,
                     AgentControl agentControl,
                     com.xilidou.jooj.agent.TurnEventStream turnEventStream) {
         this.client = client;
-        this.model = props.getAnthropic().getModel();
+        this.model = anthropic.getModel();
         this.registry = registry;
         this.json = json;
         this.hooks = hooks;

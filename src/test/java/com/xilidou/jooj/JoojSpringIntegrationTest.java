@@ -64,7 +64,7 @@ class JoojSpringIntegrationTest {
     @Autowired PermissionPipeline permissionPipeline;
     @Autowired SkillRegistry skillRegistry;
     @Autowired TodoStore todoStore;
-    @Autowired JoojProperties props;
+    @Autowired com.xilidou.jooj.http.AnthropicProperties anthropicProps;
     @Autowired com.xilidou.jooj.permission.PermissionProperties permissionProps;
 
     @Test
@@ -84,8 +84,8 @@ class JoojSpringIntegrationTest {
     @Test
     @DisplayName("application-test.yml 的 jooj.* 配置被正确绑定")
     void config_properties_bound_from_test_yaml() {
-        assertEquals("test-fake-key", props.getAnthropic().getApiKey());
-        assertEquals("test-model", props.getAnthropic().getModel());
+        assertEquals("test-fake-key", anthropicProps.getApiKey());
+        assertEquals("test-model", anthropicProps.getModel());
         assertEquals("always-allow", permissionProps.getMode());
     }
 

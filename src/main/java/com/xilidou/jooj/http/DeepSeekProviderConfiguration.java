@@ -1,7 +1,6 @@
 package com.xilidou.jooj.http;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xilidou.jooj.JoojProperties;
 import okhttp3.OkHttpClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -44,8 +43,7 @@ public class DeepSeekProviderConfiguration {
     @Bean
     public ModelProvider deepseekProvider(OkHttpClient http,
                                          ObjectMapper joojObjectMapper,
-                                         JoojProperties props) {
-        JoojProperties.DeepSeek cfg = props.getDeepseek();
+                                         DeepSeekProperties cfg) {
         log.info("Registering DeepSeek provider: baseUrl={}, model={}",
                 cfg.getBaseUrl(), cfg.getModel());
 

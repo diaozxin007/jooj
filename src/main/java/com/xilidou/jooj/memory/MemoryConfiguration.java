@@ -1,8 +1,8 @@
 package com.xilidou.jooj.memory;
 
-import com.xilidou.jooj.JoojProperties;
 import com.xilidou.jooj.config.JoojExecutors;
 import com.xilidou.jooj.http.AnthropicClient;
+import com.xilidou.jooj.http.AnthropicProperties;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -90,13 +90,13 @@ public class MemoryConfiguration {
     @Bean
     public BackgroundReviewer backgroundReviewer(MemoryStore store,
                                                  AnthropicClient client,
-                                                 JoojProperties props,
+                                                 AnthropicProperties anthropic,
                                                  MemoryProperties memProps,
                                                  PendingMemoryStore pendingStore) {
         return new BackgroundReviewer(
                 store,
                 client,
-                props.getAnthropic().getModel(),
+                anthropic.getModel(),
                 pendingStore,
                 memProps.isWriteApproval()
         );
@@ -112,11 +112,11 @@ public class MemoryConfiguration {
     @Bean
     public MemoryService memoryService(MemoryConfig config,
                                        AnthropicClient client,
-                                       JoojProperties props,
+                                       AnthropicProperties anthropic,
                                        BackgroundReviewer reviewer,
                                        @Qualifier(JoojExecutors.BG_BEAN) ExecutorService bgExecutor) {
         return new MemoryService(
-                config, client, props.getAnthropic().getModel(),
+                config, client, anthropic.getModel(),
                 reviewer, bgExecutor
         );
     }

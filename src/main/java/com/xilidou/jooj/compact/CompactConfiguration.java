@@ -1,7 +1,7 @@
 package com.xilidou.jooj.compact;
 
-import com.xilidou.jooj.JoojProperties;
 import com.xilidou.jooj.http.AnthropicClient;
+import com.xilidou.jooj.http.AnthropicProperties;
 import com.xilidou.jooj.memory.MemoryService;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -61,18 +61,14 @@ public class CompactConfiguration {
      *   <li>s22 D:token-aware 触发 —— 从 {@link CompactProperties} 读 contextLength +
      *       thresholdPercent,pipeline 内部据此判定 shouldCompress</li>
      * </ul>
-     *
-     * <p><b>为什么这里还依赖 {@link JoojProperties}</b>:仅为读 {@code jooj.anthropic.model}
-     * 传给 L4 摘要 client。Anthropic Properties 拆分在阶段 3-① 处理,届时改直接注入
-     * {@code AnthropicProperties}。
      */
     @Bean
     public CompactPipeline compactPipeline(CompactConfig config,
                                            AnthropicClient client,
                                            CompactProperties c,
-                                           JoojProperties props,
+                                           AnthropicProperties anthropic,
                                            MemoryService memoryService) {
-        return new CompactPipeline(config, client, props.getAnthropic().getModel(), memoryService,
+        return new CompactPipeline(config, client, anthropic.getModel(), memoryService,
                 c.getContextLength(), c.getThresholdPercent());
     }
 }

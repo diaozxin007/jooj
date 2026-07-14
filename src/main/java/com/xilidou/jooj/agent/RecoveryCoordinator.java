@@ -1,9 +1,9 @@
 package com.xilidou.jooj.agent;
 
-import com.xilidou.jooj.JoojProperties;
 import com.xilidou.jooj.compact.CompactPipeline;
 import com.xilidou.jooj.http.AnthropicClient;
 import com.xilidou.jooj.http.AnthropicException;
+import com.xilidou.jooj.http.AnthropicProperties;
 import com.xilidou.jooj.http.dto.CreateMessageRequest;
 import com.xilidou.jooj.http.dto.CreateMessageResponse;
 import com.xilidou.jooj.http.dto.MessageParam;
@@ -55,10 +55,10 @@ public class RecoveryCoordinator {
     private final CompactPipeline compactPipeline;
     private final Random random = new Random();
 
-    public RecoveryCoordinator(JoojProperties props, RecoveryProperties recoveryProps,
+    public RecoveryCoordinator(AnthropicProperties anthropic, RecoveryProperties recoveryProps,
                                CompactPipeline compactPipeline, AnthropicClient client) {
         this.client = client;
-        this.defaultModel = props.getAnthropic().getModel();
+        this.defaultModel = anthropic.getModel();
         this.cfg = recoveryProps;
         this.compactPipeline = compactPipeline;
 

@@ -1,7 +1,6 @@
 package com.xilidou.jooj.http;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xilidou.jooj.JoojProperties;
 import com.xilidou.jooj.config.JsonMappers;
 import okhttp3.OkHttpClient;
 import org.springframework.context.annotation.Bean;
@@ -42,8 +41,7 @@ public class HttpClientConfiguration {
      * </ul>
      */
     @Bean
-    public HttpAuth httpAuth(JoojProperties props) {
-        var anthropic = props.getAnthropic();
+    public HttpAuth httpAuth(AnthropicProperties anthropic) {
         if (StringUtils.hasText(anthropic.getApiKey())) {
             return new ApiKeyAuth(anthropic.getApiKey());
         }
@@ -95,9 +93,9 @@ public class HttpClientConfiguration {
     @Bean
     public ModelProvider anthropicProvider(OkHttpClient http,
                                           ObjectMapper joojObjectMapper,
-                                          JoojProperties props,
+                                          AnthropicProperties anthropic,
                                           HttpAuth auth) {
         return new AnthropicHttpClient(http, joojObjectMapper,
-                props.getAnthropic().getBaseUrl(), auth);
+                anthropic.getBaseUrl(), auth);
     }
 }

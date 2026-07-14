@@ -1,6 +1,6 @@
 package com.xilidou.jooj.agent;
 
-import com.xilidou.jooj.JoojProperties;
+import com.xilidou.jooj.http.AnthropicProperties;
 import com.xilidou.jooj.compact.CompactPipeline;
 import com.xilidou.jooj.http.AnthropicException;
 import com.xilidou.jooj.http.MockAnthropicClient;
@@ -34,8 +34,8 @@ class RecoveryCoordinatorTest {
 
     /** 测试专用配置:激进默认,让 backoff 测试 < 100ms 完成。 */
     private RecoveryProperties recoveryCfg;
-    /** props 只提供 defaultModel(getAnthropic().getModel()),Recovery 已独立注入。 */
-    private JoojProperties props;
+    /** anthropic 只提供 defaultModel(getModel()),Recovery 已独立注入。 */
+    private AnthropicProperties anthropic;
     /** 真正的 sleep 累计时长(测试断言用)。 */
     private long totalSleepMs;
 
@@ -52,7 +52,7 @@ class RecoveryCoordinatorTest {
         recoveryCfg.setMaxRecoveryRetries(2);
         recoveryCfg.setContinuationPrompt("Please continue.");
 
-        props = new JoojProperties();
+        anthropic = new AnthropicProperties();
         totalSleepMs = 0;
     }
 
@@ -72,7 +72,7 @@ class RecoveryCoordinatorTest {
                 return true;
             }
         };
-        return new RecoveryCoordinator(props, recoveryCfg, fakeCompact, mock) {
+        return new RecoveryCoordinator(anthropic, recoveryCfg, fakeCompact, mock) {
             @Override
             void sleep(long ms) {
                 totalSleepMs += ms;

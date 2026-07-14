@@ -1,6 +1,6 @@
 package com.xilidou.jooj.web;
 
-import com.xilidou.jooj.JoojProperties;
+import com.xilidou.jooj.http.AnthropicProperties;
 import com.xilidou.jooj.cron.CronJob;
 import com.xilidou.jooj.cron.CronService;
 import com.xilidou.jooj.memory.MemoryService;
@@ -53,18 +53,18 @@ public class SidebarController {
     private final MemoryService memoryService;
     private final ToolRegistry toolRegistry;
     private final CronService cronService;
-    private final JoojProperties props;
+    private final AnthropicProperties anthropic;
 
     public SidebarController(SkillRegistry skillRegistry,
                              MemoryService memoryService,
                              ToolRegistry toolRegistry,
                              CronService cronService,
-                             JoojProperties props) {
+                             AnthropicProperties anthropic) {
         this.skillRegistry = skillRegistry;
         this.memoryService = memoryService;
         this.toolRegistry = toolRegistry;
         this.cronService = cronService;
-        this.props = props;
+        this.anthropic = anthropic;
     }
 
     /**
@@ -116,7 +116,7 @@ public class SidebarController {
      */
     @GetMapping("/status")
     public StatusResponse status() {
-        String model = props.getAnthropic() == null ? "(unknown)" : props.getAnthropic().getModel();
+        String model = anthropic == null ? "(unknown)" : anthropic.getModel();
         String workspace = System.getProperty("user.dir");
 
         int toolCount = toolRegistry.getAllTools().size();

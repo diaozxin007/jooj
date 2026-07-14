@@ -2,7 +2,7 @@ package com.xilidou.jooj.subagent;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xilidou.jooj.JoojProperties;
+import com.xilidou.jooj.http.AnthropicProperties;
 import com.xilidou.jooj.agent.AgentControl;
 import com.xilidou.jooj.agent.AgentInterruptedException;
 import com.xilidou.jooj.agent.SessionContext;
@@ -198,12 +198,12 @@ public class Teammate {
                     AutonomousIdle autonomousIdle,
                     WorktreeService worktreeService,
                     com.xilidou.jooj.tasks.TaskService taskService,
-                    JoojProperties props,
+                    AnthropicProperties anthropic,
                     com.xilidou.jooj.team.TeamProperties teamProps,
                     AgentControl agentControl,
                     com.xilidou.jooj.agent.TurnEventStream turnEventStream) {
         this.client = client;
-        this.model = props.getAnthropic().getModel();
+        this.model = anthropic.getModel();
         this.registry = registry;
         this.json = json;
         this.hooks = hooks;
