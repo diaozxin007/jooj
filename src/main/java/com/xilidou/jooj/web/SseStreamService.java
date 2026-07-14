@@ -63,8 +63,11 @@ public class SseStreamService {
     /** s22 SSE:register 时回放已挂起 pending questions。 */
     private final AgentControl agentControl;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public SseStreamService(AgentControl agentControl) {
         this.agentControl = agentControl;
+        log.info("[SSE] SseStreamService wired with agentControl={}",
+                agentControl != null ? agentControl.getClass().getSimpleName() : "NULL");
     }
 
     /** 测试用无参 ctor —— 不做 replay,单测方便。 */
@@ -105,30 +108,24 @@ public class SseStreamService {
 
         log.info("[SSE] sid={} registered (total active={})", sessionId, sessions.size());
 
-        // **重要**:此时 emitter 还没有绑定 servlet response —— controller return 后
-        // Spring 才会把 emitter 挂上响应流。所以**不能立即 send**,那会抛
-        // IllegalStateException("ResponseBodyEmitter has not been initialized")。
-        //
-        // 用后台线程延迟发首个 connected 事件 + 回放 pending。轻微延迟(50ms)让
-        // Spring 有时间完成 dispatch。参考:
-        // https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-ann-async.html#mvc-ann-async-sse
-        java.util.concurrent.CompletableFuture.runAsync(() -> {
-            try {
-                Thread.sleep(50);
-            } catch (InterruptedException ie) {
-                Thread.currentThread().interrupt();
-                return;
-            }
-            // 首个 connected —— 直接调 push 走同一 try/catch 保护
-            push(sessionId, "connected", null, "{\"sessionId\":\"" + jsonEscape(sessionId) + "\"}");
+        // 首个 connected 事件 —— Spring ResponseBodyEmitter 支持 initialize 前 send:
+        // 内部 earlySendAttempts 队列会缓存,handler 挂上后 replay。所以直接调即可。
+        // 参考 ResponseBodyEmitter#send 源码:if (this.handler == null) earlySendAttempts.add(...)
+        try {
+            emitter.send(SseEmitter.event()
+                    .name("connected")
+                    .data("{\"sessionId\":\"" + jsonEscape(sessionId) + "\"}"));
+        } catch (Exception e) {
+            log.warn("[SSE] sid={} connected send failed: {}", sessionId, e.toString());
+        }
 
-            // s22 SSE:回放已挂起的 pending questions,防止 SSE 连接前已 ask 挂起的场景
-            if (agentControl != null) {
-                for (PendingQuestion q : agentControl.listPending(sessionId)) {
-                    onPendingQuestion(new PendingQuestionRegistered(sessionId, q));
-                }
+        // s22 SSE:回放已挂起的 pending questions —— 防止"SSE 连接前已 ask 挂起,前端
+        // 永远收不到 event"的 bug。register 后立即把 agentControl.listPending 都推一遍。
+        if (agentControl != null) {
+            for (PendingQuestion q : agentControl.listPending(sessionId)) {
+                onPendingQuestion(new PendingQuestionRegistered(sessionId, q));
             }
-        });
+        }
 
         return emitter;
     }
@@ -149,7 +146,8 @@ public class SseStreamService {
         if (sessionId == null || sessionId.isBlank()) return;
         SseEmitter emitter = sessions.get(sessionId);
         if (emitter == null) {
-            log.debug("[SSE] push no emitter sid={} event={} id={}", sessionId, eventName, id);
+            log.warn("[SSE] push NO EMITTER sid={} event={} id={} activeSessions={}",
+                    sessionId, eventName, id, sessions.keySet());
             return;
         }
 
@@ -158,7 +156,7 @@ public class SseStreamService {
             if (id != null) builder = builder.id(id);
             builder = builder.data(jsonPayload);
             emitter.send(builder);
-            log.debug("[SSE] pushed sid={} event={} id={} bytes={}",
+            log.info("[SSE] pushed sid={} event={} id={} bytes={}",
                     sessionId, eventName, id, jsonPayload.length());
         } catch (IOException e) {
             // 客户端断了或 IO 挂了 —— 清理 emitter,前端 EventSource 会自动重连再注册
@@ -219,6 +217,10 @@ public class SseStreamService {
      */
     @EventListener
     void onTurnEvent(TurnEventPushed evt) {
+        log.info("[SSE] onTurnEvent received sid={} seq={} type={}",
+                evt.sessionId(),
+                evt.event() != null ? evt.event().seq() : -1,
+                evt.event() != null ? evt.event().type() : "null");
         if (evt.event() == null) return;
         String json = "{\"seq\":" + evt.event().seq()
                 + ",\"at\":\"" + evt.event().at() + "\""
@@ -233,6 +235,10 @@ public class SseStreamService {
      */
     @EventListener
     void onPendingQuestion(PendingQuestionRegistered evt) {
+        log.info("[SSE] onPendingQuestion received sid={} askId={} type={}",
+                evt.sessionId(),
+                evt.question() != null ? evt.question().askId() : "null",
+                evt.question() != null ? evt.question().type() : "null");
         PendingQuestion q = evt.question();
         if (q == null) return;
         StringBuilder sb = new StringBuilder("{");

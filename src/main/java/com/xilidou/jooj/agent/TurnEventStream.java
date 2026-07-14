@@ -62,6 +62,7 @@ public class TurnEventStream {
     private final ObjectProvider<ApplicationEventPublisher> publisherProvider;
 
     /** Spring 容器构造。 */
+    @org.springframework.beans.factory.annotation.Autowired
     public TurnEventStream(ObjectProvider<ApplicationEventPublisher> publisherProvider) {
         this.publisherProvider = publisherProvider;
     }

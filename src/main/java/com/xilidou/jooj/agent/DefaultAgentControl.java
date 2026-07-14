@@ -66,9 +66,10 @@ public class DefaultAgentControl implements AgentControl {
      */
     private final ObjectProvider<ApplicationEventPublisher> publisherProvider;
 
-    /** Spring 容器构造。 */
+    @org.springframework.beans.factory.annotation.Autowired
     public DefaultAgentControl(ObjectProvider<ApplicationEventPublisher> publisherProvider) {
         this.publisherProvider = publisherProvider;
+        log.info("[AgentControl] DefaultAgentControl wired with publisherProvider (non-null)");
     }
 
     /** 测试路径 —— 无 event publisher。 */
@@ -160,7 +161,15 @@ public class DefaultAgentControl implements AgentControl {
             ApplicationEventPublisher pub = publisherProvider.getIfAvailable();
             if (pub != null) {
                 pub.publishEvent(new PendingQuestionRegistered(sessionId, question));
+                log.info("[AgentControl] published PendingQuestionRegistered sid={} askId={}",
+                        sessionId, question.askId());
+            } else {
+                log.warn("[AgentControl] publisher NOT available (ObjectProvider empty) sid={} askId={}",
+                        sessionId, question.askId());
             }
+        } else {
+            log.warn("[AgentControl] publisherProvider is NULL (using no-arg ctor?) sid={} askId={}",
+                    sessionId, question.askId());
         }
 
         try {
