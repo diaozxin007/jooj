@@ -18,14 +18,22 @@ import com.xilidou.jooj.compact.CompactPipeline;
 import com.xilidou.jooj.tool.ToolDefinition;
 import com.xilidou.jooj.tool.ToolResult;
 import com.xilidou.jooj.http.dto.ContentBlock;
-import com.xilidou.jooj.http.dto.CreateMessageRequest;
-import com.xilidou.jooj.http.dto.CreateMessageResponse;
 import com.xilidou.jooj.http.dto.MessageParam;
+import com.xilidou.jooj.http.dto.SystemTextBlock;
 import com.xilidou.jooj.http.dto.TextBlock;
-import com.xilidou.jooj.http.dto.ToolDef;
 import com.xilidou.jooj.http.dto.ToolResultBlock;
 import com.xilidou.jooj.http.dto.ToolUseBlock;
 import com.xilidou.jooj.hook.HookManager;
+import com.xilidou.jooj.llm.adapter.AnthropicShapeBridge;
+import com.xilidou.jooj.llm.domain.CacheHint;
+import com.xilidou.jooj.llm.domain.CacheTier;
+import com.xilidou.jooj.llm.domain.LlmContent;
+import com.xilidou.jooj.llm.domain.LlmMessage;
+import com.xilidou.jooj.llm.domain.LlmRequest;
+import com.xilidou.jooj.llm.domain.LlmResponse;
+import com.xilidou.jooj.llm.domain.LlmText;
+import com.xilidou.jooj.llm.domain.LlmToolCall;
+import com.xilidou.jooj.llm.domain.LlmToolDef;
 import com.xilidou.jooj.memory.MemoryService;
 import com.xilidou.jooj.prompt.SystemPromptAssembler;
 import com.xilidou.jooj.todo.TodoStore;
@@ -295,7 +303,7 @@ public class AgentLoopHarness {
     public void agentLoop(List<MessageParam> messages, ExecutionContext ctx) {
         // 提取 sessionId 给 todoStore / bgManager 等 per-session 状态服务用。
         String sessionId = ctx != null ? ctx.sessionId() : null;
-        List<ToolDef> tools = buildTools();
+        List<LlmToolDef> tools = buildTools();
         int roundsSinceTodo = 0;
 
         // s14: 进入 agent_loop 顶部 drain cron queue,把 fired job 转成 user message。
@@ -311,18 +319,11 @@ public class AgentLoopHarness {
 
         while (true) {
             // s22 D-8/D-10:每轮 turn 开始前先检查用户是否请求打断。
-            // consumeInterrupt 会同时消费并清除 flag,防止跨 turn 幽灵触发。
-            // 抛出后由 processOneQuery 兜底 catch,append [Interrupted] + publish 事件。
             if (agentControl.consumeInterrupt(sessionId)) {
                 throw new AgentInterruptedException(sessionId);
             }
 
-            // Nag 守卫(s20 Demo 7 修复):
-            // 1) 阈值轮数没到 → skip
-            // 2) messages 为空 → skip(没有上文可挂)
-            // 3) 没有任何 in_progress todo → skip(没事可催)。这是关键守卫——
-            //    旧逻辑无脑 nag,LLM 为了消炎抢先把 todo 全标 completed 造成幻觉完成。
-            //    只在有真正"挂着的活"时才催,反向激励 LLM 干完才标 completed。
+            // Nag 守卫(s20 Demo 7 修复):见方法内注释。
             boolean hasOpenWork = todoStore.countByStatus(sessionId, com.xilidou.jooj.todo.TodoStatus.IN_PROGRESS) > 0
                     || todoStore.countByStatus(sessionId, com.xilidou.jooj.todo.TodoStatus.PENDING) > 0;
             if (roundsSinceTodo >= NAG_THRESHOLD && !messages.isEmpty() && hasOpenWork) {
@@ -334,44 +335,44 @@ public class AgentLoopHarness {
                 roundsSinceTodo = 0;
             }
 
-            // s22 D:token-aware 触发门禁。上一次 API response 的
-            // input_tokens + cache_read_input_tokens ≥ threshold(默认 70% context)时才 compact。
-            // 优点:精确(用 provider 报的真实 token 数),不再靠"数量估计"。
-            //
-            // 行为矩阵(compressIfNeeded 内部决策 + log):
-            //   token-aware 关闭(contextLength=0):**总是** apply,维持旧行为(L1/L2/L3 内部
-            //     阈值兜底 —— L1 messages>50 才生效,L2 tool_results>keepRecent 才生效...)
-            //   token-aware 开启 + 未过阈值:skip apply,让 messages 自然增长
-            //   token-aware 开启 + 过阈值:apply,压掉大 tool_result / snip 中段 / L4 摘要
+            // s22 D:token-aware 触发门禁。
             compactPipeline.compressIfNeeded(messages);
 
-            // s21 Demo 25 副作用 v3:不变量级防御 —— 任何路径(SnipCompactor / cron 注入 /
-            // channel 入站) 把孤儿 tool_use / tool_result 塞进 messages,都在 send 给
-            // Anthropic 之前 scrub 一次。MessageBoundary 加固只是减少孤儿产生,
-            // 这里是"绝不能让孤儿被 send"的硬契约。
-            //
-            // HistoryScrubber.scrub 返回新 list(可能是原引用,可能是新 ArrayList),
-            // 这里需要把结果反向 mirror 回 messages 这个 list 引用 —— 因为
-            // recoveryCoordinator + reactiveCompact 都是原地 mutate 这个 list,引用要保持。
+            // Scrub orphan tool_use / tool_result;下沉不变量。
             List<MessageParam> scrubbed = HistoryScrubber.scrub(messages);
             if (scrubbed != messages) {
                 messages.clear();
                 messages.addAll(scrubbed);
             }
 
-            // memory catalog 全局共享(Demo 13 撤销 per-session 化 —— 见 MemoryService 类注释)
-            var system = promptAssembler.assembleBlocks(promptAssembler.currentContext());
+            // memory catalog 全局共享
+            var systemBlocks = promptAssembler.assembleBlocks(promptAssembler.currentContext());
+            // 桥接 wire SystemTextBlock list → canonical LlmText list + CacheHint list
+            List<LlmContent> canonicalSystem = new ArrayList<>(systemBlocks.size());
+            List<CacheHint> systemCacheHints = new ArrayList<>();
+            for (int i = 0; i < systemBlocks.size(); i++) {
+                SystemTextBlock stb = systemBlocks.get(i);
+                canonicalSystem.add(new LlmText(stb.getText()));
+                if (stb.getCacheControl() != null) {
+                    CacheTier tier = "1h".equals(stb.getCacheControl().getTtl())
+                            ? CacheTier.EPHEMERAL_1H : CacheTier.EPHEMERAL_5M;
+                    systemCacheHints.add(new CacheHint(i, tier));
+                }
+            }
 
             // s22 架构审查(B2):recovery 内部消化 escalate / continuation,只暴露成功 / fatal 二元。
-            // 消失的 4-branch dispatch 现在都在 RecoveryCoordinator.call 内部循环里,agent loop
-            // 只需要处理"我有 response 继续走" vs "彻底失败 append [Error] 结束 turn"。
-            CreateMessageResponse response;
+            //
+            // P2(2026-07-14):harness 现在构造 canonical LlmRequest,不再直接持有 wire CreateMessageRequest。
+            // messages 参数(List<MessageParam>)仍是 wire 类型 —— Step G 会连同 SessionStore 一并迁到
+            // List<LlmMessage>。目前 recovery 内部通过 bridgeMessages 桥接。
+            LlmResponse response;
             try {
                 response = recoveryCoordinator.call(
-                        state -> CreateMessageRequest.builder()
+                        state -> LlmRequest.builder()
                                 .model(state.getCurrentModel())
-                                .system(system)
-                                .messages(messages)
+                                .system(canonicalSystem)
+                                .systemCacheHints(systemCacheHints)
+                                .messages(bridgeMessagesToCanonical(messages))
                                 .tools(tools)
                                 .maxTokens(state.getCurrentMaxTokens())
                                 .build(),
@@ -385,7 +386,9 @@ public class AgentLoopHarness {
                 return;
             }
 
-            messages.add(MessageParam.assistant(response.getContent()));
+            // 把 canonical response.content 桥接回 wire ContentBlock 塞进 MessageParam.assistant(...)
+            messages.add(MessageParam.assistant(
+                    AnthropicShapeBridge.contentToWire(response.getContent())));
 
             if (!response.needsToolExecution()) {
                 Optional<String> forceContinue = hooks.triggerStop(messages);
@@ -399,21 +402,20 @@ public class AgentLoopHarness {
             roundsSinceTodo++;
 
             List<ToolResultBlock> toolResults = new ArrayList<>();
-            for (ToolUseBlock toolUse : response.toolUses()) {
-                // s22 D-8/D-10:每个 tool 之间也检查一次。已跑完的 tool 结果保留在 toolResults 里,
-                // 但不会 append 回 messages —— 抛异常直接跳出循环体和 while,messages 只到
-                // 上面 add(assistant response) 那一步。processOneQuery 兜底 catch 后
-                // append [Interrupted] user 消息,LLM 下一轮能看到"我上一轮被打断了"。
+            for (LlmToolCall toolCall : response.toolCalls()) {
+                // s22 D-8/D-10:每个 tool 之间也检查一次。
                 if (agentControl.consumeInterrupt(sessionId)) {
                     throw new AgentInterruptedException(sessionId);
                 }
+
+                // 桥接 canonical LlmToolCall → wire ToolUseBlock 供 harness 内部 helper 使用
+                ToolUseBlock toolUse = new ToolUseBlock(
+                        toolCall.getId(), toolCall.getName(), toolCall.getInput());
 
                 Map<String, Object> args = parseToolInput(toolUse);
 
                 printToolHeader(toolUse, args);
 
-                // s22 D-11:push tool 摘要到 event stream,前端 poll /events 拿实时进度。
-                // 放在 hook 之前 —— 就算 permission blocked,用户也知道 LLM 打算做什么。
                 pushToolEvent(sessionId, toolUse, args);
 
                 Optional<String> blocked = hooks.triggerPreToolUse(toolUse);
@@ -427,9 +429,6 @@ public class AgentLoopHarness {
                     Object cmd = args.get("command");
                     String command = cmd != null ? cmd.toString() : "(no command)";
                     final ExecutionContext bgCtx = ctx;
-                    // s20 Demo 12: bg 任务也带 sessionId,完成通知只回到本 session,
-                    // 不串味给其他 session 那一轮 history。
-                    // s21 Demo 20: 整个 ctx 透传(带 deliveryHint),让 bg 内 CronTool 等也能用。
                     String bgId = bgManager.start(sessionId, toolUse.getId(), command,
                             () -> registry.execute(new ToolCall(toolUse.getName(), args), bgCtx));
                     String placeholder = "[Background task " + bgId + " started] " +
@@ -449,7 +448,7 @@ public class AgentLoopHarness {
                 toolResults.add(result);
             }
 
-            // s20 Demo 12: drain 仅 drain 当前 session 启动的 bg(其他 session 的留着等他们自己 drain)。
+            // s20 Demo 12: drain 仅 drain 当前 session 启动的 bg。
             List<TextBlock> notifications = bgManager.drainNotifications(sessionId);
             if (!notifications.isEmpty()) {
                 log.info("[BG] session={} injected {} task_notification(s) into next turn",
@@ -457,6 +456,21 @@ public class AgentLoopHarness {
             }
             messages.add(MessageParam.toolResultsWithNotifications(toolResults, notifications));
         }
+    }
+
+    /**
+     * 桥接旧 {@code List<MessageParam>} → canonical {@code List<LlmMessage>},
+     * 用于每轮 turn 出站构建 {@link LlmRequest}。
+     *
+     * <p>Step G 完成后本方法可删 —— 那时 messages 本身就是 canonical list。
+     */
+    private List<LlmMessage> bridgeMessagesToCanonical(List<MessageParam> messages) {
+        var adapter = new com.xilidou.jooj.llm.adapter.AnthropicAdapter(json);
+        List<LlmMessage> out = new ArrayList<>(messages.size());
+        for (MessageParam m : messages) {
+            out.add(adapter.messageToDomain(m));
+        }
+        return out;
     }
 
     @SuppressWarnings("unchecked")
@@ -484,10 +498,14 @@ public class AgentLoopHarness {
         messages.set(lastIdx, merged);
     }
 
-    private List<ToolDef> buildTools() {
-        List<ToolDef> tools = new ArrayList<>();
+    private List<LlmToolDef> buildTools() {
+        List<LlmToolDef> tools = new ArrayList<>();
         for (ToolDefinition def : registry.getAllTools()) {
-            tools.add(new ToolDef(def.getName(), def.getDescription(), def.getInputSchema()));
+            // canonical LlmToolDef.schema 是 JsonNode;InputSchema 转 JsonNode 走 mapper。
+            tools.add(new LlmToolDef(
+                    def.getName(),
+                    def.getDescription(),
+                    json.valueToTree(def.getInputSchema())));
         }
         return tools;
     }

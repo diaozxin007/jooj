@@ -2,6 +2,7 @@ package com.xilidou.jooj;
 
 import com.xilidou.jooj.http.AnthropicClient;
 import com.xilidou.jooj.http.MockAnthropicClient;
+import com.xilidou.jooj.llm.LlmClient;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
@@ -57,4 +58,11 @@ public class JoojTestConfig {
                             "set up via mock.reset(...) in test @BeforeEach");
         });
     }
+
+    /**
+     * P2(2026-07-14):{@link MockAnthropicClient} 现在同时实现 {@link AnthropicClient}
+     * 和 {@link LlmClient}。{@link Primary} 的 by-type 解析对具体类的每一个 supertype
+     * 都生效,所以 canonical caller (RecoveryCoordinator 等)注入 {@link LlmClient} 时
+     * 直接拿到同一个 mock —— 不再需要额外注册一个平行 {@code mockLlmClient} bean。
+     */
 }

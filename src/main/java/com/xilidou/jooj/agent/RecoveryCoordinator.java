@@ -1,12 +1,15 @@
 package com.xilidou.jooj.agent;
 
 import com.xilidou.jooj.compact.CompactPipeline;
-import com.xilidou.jooj.http.AnthropicClient;
-import com.xilidou.jooj.http.AnthropicException;
 import com.xilidou.jooj.http.AnthropicProperties;
-import com.xilidou.jooj.http.dto.CreateMessageRequest;
-import com.xilidou.jooj.http.dto.CreateMessageResponse;
 import com.xilidou.jooj.http.dto.MessageParam;
+import com.xilidou.jooj.llm.LlmClient;
+import com.xilidou.jooj.llm.adapter.AnthropicShapeBridge;
+import com.xilidou.jooj.llm.domain.LlmErrorKind;
+import com.xilidou.jooj.llm.domain.LlmException;
+import com.xilidou.jooj.llm.domain.LlmRequest;
+import com.xilidou.jooj.llm.domain.LlmResponse;
+import com.xilidou.jooj.llm.domain.LlmStopReason;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
@@ -19,59 +22,55 @@ import java.util.function.Function;
  * Error Recovery 协调器(s11)。把"调用 LLM + 处理三条恢复路径"封装成单一入口
  * {@link #call},让 {@link AgentLoopHarness#agentLoop} 不再为错误恢复继续膨胀。
  *
- * <h3>三条恢复路径(对应 Python 原版 s11)</h3>
- *
+ * <h3>三条恢复路径</h3>
  * <ul>
- *   <li><b>Path 1</b>(max_tokens 截断):{@code stop_reason == "max_tokens"} 时,
- *       第一次升级 max_tokens(default → escalated,**不 append** 截断输出);
- *       仍截断时 append + 注入 continuation prompt,最多 {@code maxRecoveryRetries} 次</li>
- *   <li><b>Path 2</b>(prompt_too_long):{@link AnthropicException#isPromptTooLong} 时,
- *       触发 {@link CompactPipeline#reactiveCompact}(LLM 摘要历史)+ 重试一次;不行抛</li>
- *   <li><b>Path 3</b>(429/529):
- *       {@link #withRetry} 用指数退避 + 抖动重试 {@code maxRetries} 次;
- *       连续 {@code maxConsecutive529} 次 529 后切到 {@code fallbackModel}</li>
+ *   <li><b>Path 1</b>(MAX_TOKENS 截断):第一次升级 max_tokens(default → escalated,
+ *       **不 append** 截断输出);仍截断时 append + 注入 continuation prompt,
+ *       最多 {@code maxRecoveryRetries} 次</li>
+ *   <li><b>Path 2</b>(PROMPT_TOO_LONG):触发 {@link CompactPipeline#reactiveCompact}
+ *       (LLM 摘要历史)+ 重试一次;不行抛 fatal</li>
+ *   <li><b>Path 3</b>(RATE_LIMITED / OVERLOADED):{@link #withRetry} 用指数退避 +
+ *       抖动重试 {@code maxRetries} 次;连续 {@code maxConsecutive529} 次 OVERLOADED
+ *       后切到 {@code fallbackModel}</li>
  * </ul>
  *
- * <h3>设计要点</h3>
+ * <h3>P2 迁移(2026-07-14):vendor-neutral</h3>
  *
+ * <p>本类现已完全 vendor-neutral:
  * <ul>
- *   <li><b>per-call state</b>:每次 {@link #call} 由调用方(agentLoop)传入
- *       {@link RecoveryState},保证跨 loop 调用不污染</li>
- *   <li><b>requestBuilder 是 lambda</b>:retry 中 model / max_tokens 可能被 mutate,
- *       request 必须每次重建。lambda 接 RecoveryState 让构建逻辑读到最新状态</li>
- *   <li><b>messages 原地修改</b>:reactive compact 内部对 messages list 原地裁剪,
- *       coordinator 不需要返回新 list,Path 2 直接重试就拿到新 messages</li>
- *   <li><b>硬编码三条路径</b>:不抽 Strategy 接口。Path 1 在 stop_reason 后触发,
- *       Path 2/3 在 exception 后触发,统一接口反而别扭。简单直接</li>
+ *   <li>持有 {@link LlmClient} —— 通过 {@link com.xilidou.jooj.http.ModelRouter} 路由到
+ *       Anthropic / OpenAI / DeepSeek 任一 provider</li>
+ *   <li>错误分派用 {@link LlmErrorKind} 枚举,不再依赖 Anthropic 错误消息字符串匹配</li>
+ *   <li>stop_reason 用 {@link LlmStopReason} 枚举,不再是 String</li>
  * </ul>
+ *
+ * <p>messages 参数仍是 {@code List<MessageParam>} —— Step G 会连同 SessionStore
+ * 序列化格式一并迁到 {@code List<LlmMessage>}。Path 1 continuation 里用
+ * {@link AnthropicShapeBridge} 把 canonical 响应桥接回 MessageParam,过渡期用。
  */
 @Component
 @Slf4j
 public class RecoveryCoordinator {
 
-    private final AnthropicClient client;
+    private final LlmClient client;
     private final String defaultModel;
     private final RecoveryProperties cfg;
     private final CompactPipeline compactPipeline;
     private final Random random = new Random();
 
     public RecoveryCoordinator(AnthropicProperties anthropic, RecoveryProperties recoveryProps,
-                               CompactPipeline compactPipeline, AnthropicClient client) {
+                               CompactPipeline compactPipeline, LlmClient client) {
         this.client = client;
         this.defaultModel = anthropic.getModel();
         this.cfg = recoveryProps;
         this.compactPipeline = compactPipeline;
 
-        // 启动期可见配置,避免 fallback 配错(打错字、忘配)在生产才暴露。
         if (StringUtils.hasText(cfg.getFallbackModel())) {
             log.info("[Recovery] fallback model configured: {}", cfg.getFallbackModel());
         }
     }
 
-    /**
-     * s22 架构审查修复:创建 per-turn RecoveryState —— 用 coordinator 已知的默认 model
-     * 和 max_tokens 初始化,让 caller (AgentLoopHarness) 不再需要持有这两个配置字段。
-     */
+    /** 创建 per-turn RecoveryState —— 用默认 model 和 max_tokens 启动。 */
     public RecoveryState newState() {
         return new RecoveryState(defaultModel, cfg.getDefaultMaxTokens());
     }
@@ -79,47 +78,24 @@ public class RecoveryCoordinator {
     /**
      * 调用 LLM + 处理三条恢复路径,内部循环直到拿到可用 response 或 fatal。
      *
-     * <p>s22 架构审查(2026-07-13,B2 refactor):call 现在**只暴露成功 / 失败二元结局**
-     * ——caller (agentLoop) 拿到 response 就继续,拿到 FatalRecoveryException 就 append
-     * error 结束 turn。原来的 4-branch {@code RecoveryResult} sealed type 被删除:
-     * EscalateAndRetry 和 AppendContinuation 是 recovery **内部**决定"再试一次"的实现细节,
-     * caller 不该关心。
-     *
-     * <h3>Recovery 内部循环</h3>
-     *
-     * <p>三种 retry 场景现在都在本方法内部消化:
-     * <ul>
-     *   <li>Path 1 max_tokens 首次:升级 currentMaxTokens 后 continue</li>
-     *   <li>Path 1 max_tokens 后续:append truncated assistant + append user continuation prompt,continue</li>
-     *   <li>Path 2 prompt_too_long:reactiveCompact + continue</li>
-     * </ul>
-     *
-     * <p>Path 3(429/529)在 {@link #withRetry} 里处理(已本身就是内部循环)。
-     *
-     * <h3>Messages mutation 语义</h3>
-     *
-     * <p>Recovery **有权** mutate messages —— Path 2 之前就有 reactiveCompact,B2 把
-     * Path 1 continuation 的 mutation 也搬进来,语义一致。Caller 不需要知道 messages 是不是被改过。
-     *
-     * @param requestBuilder  接 RecoveryState 返回 request。state 每次改动后重建
-     * @param messages        对话历史。**Path 1 continuation / Path 2 compact 会原地修改**
+     * @param requestBuilder  接 RecoveryState 返回 canonical {@link LlmRequest}
+     * @param messages        对话历史(**Path 1 continuation / Path 2 compact 会原地修改**)
      * @param state           per-agent-loop 状态机(由 {@link #newState()} 创建)
-     * @return 成功的 LLM response(保证 stop_reason != max_tokens)
+     * @return 成功的 LLM response(保证 stop_reason != MAX_TOKENS)
      * @throws FatalRecoveryException 三条路径都尝试过后仍无法恢复
      */
-    public CreateMessageResponse call(
-            Function<RecoveryState, CreateMessageRequest> requestBuilder,
+    public LlmResponse call(
+            Function<RecoveryState, LlmRequest> requestBuilder,
             List<MessageParam> messages,
             RecoveryState state) throws FatalRecoveryException {
 
         while (true) {
-            // ── 调 LLM,withRetry 处理 Path 3(429/529)─────────────────
-            CreateMessageResponse response;
+            LlmResponse response;
             try {
                 response = withRetry(requestBuilder, state);
-            } catch (AnthropicException e) {
-                // ── Path 2: prompt_too_long → reactive compact + 重试一次 ──
-                if (e.isPromptTooLong()
+            } catch (LlmException e) {
+                // Path 2: PROMPT_TOO_LONG → reactive compact + 重试一次
+                if (e.getKind() == LlmErrorKind.PROMPT_TOO_LONG
                         && !state.hasAttemptedReactiveCompact
                         && compactPipeline.hasReactiveSupport()) {
                     log.warn("[Recovery] prompt_too_long detected → reactive compact");
@@ -130,20 +106,17 @@ public class RecoveryCoordinator {
                                 "Context too large and reactive compact failed: " + e.getMessage());
                     }
                     state.hasAttemptedReactiveCompact = true;
-                    // messages 已被 reactiveCompact 原地修改 → 本 while 循环重新调用
                     continue;
                 }
-                // 已尝试过 reactive compact 仍然 prompt_too_long,或不可重试错误
-                String reason = e.isPromptTooLong()
+                String reason = e.getKind() == LlmErrorKind.PROMPT_TOO_LONG
                         ? "Context still too large after reactive compact"
-                        : type(e) + ": " + truncate(e.getMessage(), 200);
+                        : e.getKind() + ": " + truncate(e.getMessage(), 200);
                 log.error("[Recovery] unrecoverable: {}", reason);
                 throw new FatalRecoveryException(reason);
             }
 
-            // ── Path 1: stop_reason == max_tokens ───────────────────────
-            if ("max_tokens".equals(response.getStopReason())) {
-                // 第一次升级:不 append 截断输出,让 while 循环重试
+            // Path 1: stop_reason == MAX_TOKENS
+            if (response.getStopReason() == LlmStopReason.MAX_TOKENS) {
                 if (!state.hasEscalated) {
                     state.hasEscalated = true;
                     state.currentMaxTokens = cfg.getEscalatedMaxTokens();
@@ -151,14 +124,14 @@ public class RecoveryCoordinator {
                             cfg.getDefaultMaxTokens(), cfg.getEscalatedMaxTokens());
                     continue;
                 }
-                // 已升级仍截断 → append 截断输出 + continuation prompt,while 循环续写
                 if (state.recoveryCount < cfg.getMaxRecoveryRetries()) {
                     state.recoveryCount++;
                     log.info("[Recovery] continuation {}/{}",
                             state.recoveryCount, cfg.getMaxRecoveryRetries());
-                    // s22 B2:messages mutation 从 caller (agentLoop) 搬来 recovery 内部,
-                    // 保证 recovery 的 4 种旧结局对 caller 收敛成"成功 / fatal" 二元
-                    messages.add(MessageParam.assistant(response.getContent()));
+                    // 桥接 canonical LlmResponse.content → wire ContentBlock list,
+                    // 塞进 MessageParam.assistant(...);Step G 迁完 SessionStore 后可删。
+                    messages.add(MessageParam.assistant(
+                            AnthropicShapeBridge.contentToWire(response.getContent())));
                     messages.add(MessageParam.user(cfg.getContinuationPrompt()));
                     continue;
                 }
@@ -167,77 +140,76 @@ public class RecoveryCoordinator {
                         "Output truncated, max recovery retries reached");
             }
 
-            // 成功拿到非 max_tokens 截断的 response —— 顺手把 usage 推给 CompactPipeline,
-            // 让下一轮 turn 开始前可以基于**精确 token 数**决定是否 compact(s22 D)。
-            // update 是 null-safe 的,response.usage 为 null 时不更新。
-            compactPipeline.updateFromResponse(response.getUsage());
+            // 成功:usage 推给 CompactPipeline
+            if (response.getUsage() != null) {
+                compactPipeline.updateFromResponse(bridgeUsage(response.getUsage()));
+            }
             return response;
         }
     }
 
+    /** 桥接 canonical LlmUsage → wire Usage,供 CompactPipeline 消费(Step D 迁完可删)。 */
+    private static com.xilidou.jooj.http.dto.Usage bridgeUsage(com.xilidou.jooj.llm.domain.LlmUsage u) {
+        return new com.xilidou.jooj.http.dto.Usage(
+                u.getInputTokens(),
+                u.getOutputTokens(),
+                u.getCacheCreationInputTokens(),
+                u.getCacheReadInputTokens());
+    }
+
     /**
-     * Path 3 的核心:retry-with-backoff。封装单次 LLM 调用,把 429/529 转成
-     * 指数退避重试。非重试错误(400/401/etc)直接抛,让外层 try/catch 处理 Path 2。
-     *
-     * <p>fallback 切换语义:连续 {@code maxConsecutive529} 次 529 后,**修改 state.currentModel**
-     * 但**不重建 request**(那是调用方的事)。下一轮 retry 时 requestBuilder 看到新 model。
+     * Path 3:retry-with-backoff。RATE_LIMITED / OVERLOADED / IO_ERROR 走重试;
+     * 其它 kind 直接抛给外层(可能命中 Path 2 的 PROMPT_TOO_LONG 分支)。
      */
-    private CreateMessageResponse withRetry(
-            Function<RecoveryState, CreateMessageRequest> requestBuilder,
+    private LlmResponse withRetry(
+            Function<RecoveryState, LlmRequest> requestBuilder,
             RecoveryState state) {
 
-        AnthropicException lastError = null;
+        LlmException lastError = null;
         for (int attempt = 0; attempt < cfg.getMaxRetries(); attempt++) {
             try {
-                CreateMessageResponse r = client.createMessage(requestBuilder.apply(state));
-                state.consecutive529 = 0;   // 一次成功清零
+                LlmResponse r = client.createMessage(requestBuilder.apply(state));
+                state.consecutive529 = 0;
                 return r;
-            } catch (AnthropicException e) {
+            } catch (LlmException e) {
                 lastError = e;
-                int code = e.getStatusCode();
 
-                // 429: rate limit → 指数退避重试
-                if (code == 429) {
+                if (e.getKind() == LlmErrorKind.RATE_LIMITED) {
                     long delay = retryDelayMs(attempt);
-                    log.warn("[Recovery] 429 rate limit, retry {}/{} after {} ms",
+                    log.warn("[Recovery] rate limited, retry {}/{} after {} ms",
                             attempt + 1, cfg.getMaxRetries(), delay);
                     sleepQuietly(delay);
                     continue;
                 }
 
-                // 529 / 5xx: overloaded → 累加 + 退避;连续达阈值切 fallback
-                if (code == 529 || (code >= 500 && code < 600)) {
+                if (e.getKind() == LlmErrorKind.OVERLOADED
+                        || e.getKind() == LlmErrorKind.IO_ERROR) {
                     state.consecutive529++;
                     if (state.consecutive529 >= cfg.getMaxConsecutive529()
                             && StringUtils.hasText(cfg.getFallbackModel())
                             && !state.currentModel.equals(cfg.getFallbackModel())) {
-                        log.warn("[Recovery] 529 × {} → switching model {} → {}",
+                        log.warn("[Recovery] overloaded × {} → switching model {} → {}",
                                 state.consecutive529, state.currentModel, cfg.getFallbackModel());
                         state.currentModel = cfg.getFallbackModel();
                         state.consecutive529 = 0;
                     }
                     long delay = retryDelayMs(attempt);
                     log.warn("[Recovery] {} overloaded, retry {}/{} after {} ms",
-                            code, attempt + 1, cfg.getMaxRetries(), delay);
+                            e.getKind(), attempt + 1, cfg.getMaxRetries(), delay);
                     sleepQuietly(delay);
                     continue;
                 }
 
-                // 其它错误(prompt_too_long、400 invalid、401 auth、404 等)→ 抛给外层
+                // PROMPT_TOO_LONG / BAD_REQUEST / AUTH → 抛给外层
                 throw e;
             }
         }
-        // 重试上限,把最后一次错误重新抛给外层(可能命中 prompt_too_long 路径)
         throw lastError != null ? lastError
-                : new AnthropicException(0, "max retries exceeded with no error captured");
+                : new LlmException(LlmErrorKind.UNKNOWN, 0,
+                        "max retries exceeded with no error captured");
     }
 
-    /**
-     * 退避延迟计算:{@code min(base × 2^attempt, max) + 0~25% 抖动}。
-     *
-     * <p>抖动避免"惊群效应":多个客户端在同一时刻收到 529,如果都用确定的 backoff,
-     * 重试还会撞在一起。25% 抖动让它们错开。
-     */
+    /** 退避延迟:min(base × 2^attempt, max) + 0~25% 抖动。 */
     private long retryDelayMs(int attempt) {
         long base = Math.min((long) cfg.getBaseDelayMs() << attempt, cfg.getMaxDelayMs());
         long jitter = (long) (random.nextDouble() * base * 0.25);
@@ -256,10 +228,6 @@ public class RecoveryCoordinator {
     /** 测试可见:供单测覆盖 sleep 行为。 */
     void sleep(long ms) throws InterruptedException {
         Thread.sleep(ms);
-    }
-
-    private static String type(Throwable t) {
-        return t.getClass().getSimpleName();
     }
 
     private static String truncate(String s, int max) {

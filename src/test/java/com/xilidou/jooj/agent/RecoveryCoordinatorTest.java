@@ -5,9 +5,11 @@ import com.xilidou.jooj.compact.CompactPipeline;
 import com.xilidou.jooj.http.AnthropicException;
 import com.xilidou.jooj.http.MockAnthropicClient;
 import com.xilidou.jooj.http.ResponseFixtures;
-import com.xilidou.jooj.http.dto.CreateMessageRequest;
-import com.xilidou.jooj.http.dto.CreateMessageResponse;
 import com.xilidou.jooj.http.dto.MessageParam;
+import com.xilidou.jooj.llm.domain.LlmMessage;
+import com.xilidou.jooj.llm.domain.LlmRequest;
+import com.xilidou.jooj.llm.domain.LlmResponse;
+import com.xilidou.jooj.llm.domain.LlmStopReason;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -81,11 +83,11 @@ class RecoveryCoordinatorTest {
     }
 
     /** 帮助:构造一个用固定 model + state 的 request builder。 */
-    private Function<RecoveryState, CreateMessageRequest> buildSimpleRequest() {
-        return state -> CreateMessageRequest.builder()
+    private Function<RecoveryState, LlmRequest> buildSimpleRequest() {
+        return state -> LlmRequest.builder()
                 .model(state.getCurrentModel())
                 .maxTokens(state.getCurrentMaxTokens())
-                .messages(List.of(MessageParam.user("hi")))
+                .messages(List.of(LlmMessage.userText("hi")))
                 .build();
     }
 
@@ -98,10 +100,10 @@ class RecoveryCoordinatorTest {
         var coordinator = newCoordinator(mock, false);
         var state = new RecoveryState("m1", 8000);
 
-        CreateMessageResponse r = coordinator.call(buildSimpleRequest(), new ArrayList<>(), state);
+        LlmResponse r = coordinator.call(buildSimpleRequest(), new ArrayList<>(), state);
 
         assertNotNull(r);
-        assertEquals("end_turn", r.getStopReason());
+        assertEquals(LlmStopReason.END_TURN, r.getStopReason());
         assertEquals(1, mock.getCallCount());
         assertEquals(0, state.getConsecutive529());
     }
@@ -120,7 +122,7 @@ class RecoveryCoordinatorTest {
         var coordinator = newCoordinator(mock, false);
 
         var state = new RecoveryState("m1", 8000);
-        CreateMessageResponse r = coordinator.call(buildSimpleRequest(), new ArrayList<>(), state);
+        LlmResponse r = coordinator.call(buildSimpleRequest(), new ArrayList<>(), state);
 
         assertNotNull(r);
         assertEquals(2, mock.getCallCount(), "429 + 重试 = 2 次调用");
@@ -160,7 +162,7 @@ class RecoveryCoordinatorTest {
         var coordinator = newCoordinator(mock, false);
 
         var state = new RecoveryState("primary-model", 8000);
-        CreateMessageResponse r = coordinator.call(buildSimpleRequest(), new ArrayList<>(), state);
+        LlmResponse r = coordinator.call(buildSimpleRequest(), new ArrayList<>(), state);
 
         assertNotNull(r);
         assertEquals("fallback-model", state.getCurrentModel(),
@@ -200,10 +202,10 @@ class RecoveryCoordinatorTest {
         var coordinator = newCoordinator(mock, false);
 
         var state = new RecoveryState("m1", 8000);
-        CreateMessageResponse r = coordinator.call(buildSimpleRequest(), new ArrayList<>(), state);
+        LlmResponse r = coordinator.call(buildSimpleRequest(), new ArrayList<>(), state);
 
         assertNotNull(r);
-        assertEquals("end_turn", r.getStopReason(),
+        assertEquals(LlmStopReason.END_TURN, r.getStopReason(),
                 "内部 escalate + retry 后应返回正常 end_turn");
         assertTrue(state.isHasEscalated());
         assertEquals(64000, state.getCurrentMaxTokens(),
@@ -232,10 +234,10 @@ class RecoveryCoordinatorTest {
         List<MessageParam> messages = new ArrayList<>();
         messages.add(MessageParam.user("original query"));
 
-        CreateMessageResponse r = coordinator.call(buildSimpleRequest(), messages, state);
+        LlmResponse r = coordinator.call(buildSimpleRequest(), messages, state);
 
         assertNotNull(r);
-        assertEquals("end_turn", r.getStopReason());
+        assertEquals(LlmStopReason.END_TURN, r.getStopReason());
         assertEquals(1, state.getRecoveryCount(),
                 "触发一次 continuation");
         // Recovery 内部 append 2 条:截断的 assistant + continuation prompt user
@@ -285,10 +287,10 @@ class RecoveryCoordinatorTest {
         messages.add(MessageParam.user("second"));
         messages.add(MessageParam.user("third"));
 
-        CreateMessageResponse r = coordinator.call(buildSimpleRequest(), messages, state);
+        LlmResponse r = coordinator.call(buildSimpleRequest(), messages, state);
 
         assertNotNull(r);
-        assertEquals("end_turn", r.getStopReason());
+        assertEquals(LlmStopReason.END_TURN, r.getStopReason());
         assertTrue(state.isHasAttemptedReactiveCompact());
         assertEquals(1, messages.size(), "reactiveCompact 把 messages 砍到 1 条");
         assertEquals(2, mock.getCallCount());

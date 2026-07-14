@@ -1,7 +1,12 @@
 package com.xilidou.jooj.http;
 
+import com.xilidou.jooj.config.JsonMappers;
 import com.xilidou.jooj.http.dto.CreateMessageRequest;
 import com.xilidou.jooj.http.dto.CreateMessageResponse;
+import com.xilidou.jooj.llm.LlmClient;
+import com.xilidou.jooj.llm.adapter.AnthropicAdapter;
+import com.xilidou.jooj.llm.domain.LlmRequest;
+import com.xilidou.jooj.llm.domain.LlmResponse;
 import lombok.Getter;
 
 import java.util.ArrayList;
@@ -41,7 +46,13 @@ import java.util.function.Function;
  *   }
  * </pre>
  */
-public class MockAnthropicClient implements AnthropicClient {
+public class MockAnthropicClient implements AnthropicClient, LlmClient {
+
+    /**
+     * P2: canonical ↔ wire 桥接。所有 canonical 请求都通过 adapter 翻译成 wire,
+     * 走同一条 responder 路径,让 fixture 保持在 wire shape 定义,mock 行为一致。
+     */
+    private final AnthropicAdapter adapter = new AnthropicAdapter(JsonMappers.newMapper());
 
     /**
      * 所有收到过的 request(顺序保留,最旧 → 最新)。
@@ -106,6 +117,24 @@ public class MockAnthropicClient implements AnthropicClient {
         // 拍快照:复制 messages 列表,避免 AgentLoopHarness 后续修改 List 影响断言
         requests.add(snapshot(req));
         return responder.apply(req);
+    }
+
+    /**
+     * P2 canonical entrypoint. Translates the incoming {@link LlmRequest} to wire shape,
+     * delegates to the wire responder (records the wire request for existing assertions),
+     * then translates the wire response back to canonical. Wire-side {@link AnthropicException}s
+     * thrown by fixtures are classified into canonical {@link com.xilidou.jooj.llm.domain.LlmException}
+     * so callers on the P2 path see the expected error type.
+     */
+    @Override
+    public LlmResponse createMessage(LlmRequest req) {
+        CreateMessageRequest wire = adapter.toWire(req);
+        try {
+            CreateMessageResponse resp = createMessage(wire);
+            return adapter.toDomain(resp);
+        } catch (AnthropicException e) {
+            throw adapter.classify(e);
+        }
     }
 
     /**

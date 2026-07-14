@@ -8,6 +8,12 @@ import com.xilidou.jooj.hook.HookManager;
 import com.xilidou.jooj.http.AnthropicClient;
 import com.xilidou.jooj.http.ResponseFixtures;
 import com.xilidou.jooj.http.dto.CreateMessageRequest;
+import com.xilidou.jooj.llm.LlmClient;
+import com.xilidou.jooj.llm.domain.LlmMessage;
+import com.xilidou.jooj.llm.domain.LlmRequest;
+import com.xilidou.jooj.llm.domain.LlmResponse;
+import com.xilidou.jooj.llm.domain.LlmStopReason;
+import com.xilidou.jooj.llm.domain.LlmText;
 import com.xilidou.jooj.memory.MemoryService;
 import com.xilidou.jooj.permission.PermissionPipeline;
 import com.xilidou.jooj.skill.SkillRegistry;
@@ -22,6 +28,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -54,6 +62,14 @@ class JoojSpringIntegrationTest {
 
     @MockitoBean
     AnthropicClient mockClient;
+
+    /**
+     * P2(2026-07-14):{@link RecoveryCoordinator} 依赖 canonical {@link LlmClient} 契约,
+     * 也要在 test context 中提供。用 @MockitoBean 独立 mock,避免和 mockClient 混淆
+     * (它们签名不同,fixture setup 也不同)。
+     */
+    @MockitoBean
+    LlmClient mockLlmClient;
 
     @Autowired AgentLoopHarness harness;
     @Autowired ToolRegistry toolRegistry;
@@ -123,6 +139,9 @@ class JoojSpringIntegrationTest {
     void agent_loop_works_end_to_end_with_mock_client() {
         Mockito.when(mockClient.createMessage(ArgumentMatchers.any(CreateMessageRequest.class)))
                 .thenReturn(ResponseFixtures.endTurn("hello from spring-wired jooj"));
+        // P2: canonical entrypoint used by RecoveryCoordinator → mock it in parallel.
+        Mockito.when(mockLlmClient.createMessage(ArgumentMatchers.any(LlmRequest.class)))
+                .thenReturn(canonicalEndTurn("hello from spring-wired jooj"));
 
         // 测试隔离:从空 history 起,避免被之前残留的盘上 history 污染
         harness.clearHistory(Session.DEFAULT_ID);
@@ -133,11 +152,20 @@ class JoojSpringIntegrationTest {
         assertEquals("user", harness.getHistory(Session.DEFAULT_ID).get(0).getRole());
         assertEquals("assistant", harness.getHistory(Session.DEFAULT_ID).get(1).getRole());
 
-        // mockClient 至少被调用 1 次(主 LLM 调用);
-        // MemoryExtractor.extract 在 onTurnEnd 也会再调一次(LLM 用于抽取 fact),
-        // 所以验证 atLeastOnce,不锁定具体次数
-        Mockito.verify(mockClient, Mockito.atLeastOnce())
-                .createMessage(ArgumentMatchers.any(CreateMessageRequest.class));
+        // canonical mockLlmClient 至少被调用 1 次(主 LLM 调用,走 RecoveryCoordinator);
+        // MemoryExtractor.extract 走 legacy AnthropicClient 路径(未迁移),会调 mockClient
+        Mockito.verify(mockLlmClient, Mockito.atLeastOnce())
+                .createMessage(ArgumentMatchers.any(LlmRequest.class));
+    }
+
+    /** P2 helper: build a canonical end-turn response for stubbing {@link LlmClient}. */
+    private static LlmResponse canonicalEndTurn(String text) {
+        return LlmResponse.builder()
+                .id("msg_test")
+                .model("claude-test-model")
+                .content(List.of(new LlmText(text)))
+                .stopReason(LlmStopReason.END_TURN)
+                .build();
     }
 
     /**
@@ -182,19 +210,25 @@ class JoojSpringIntegrationTest {
 
         try {
             // ── 跑一轮普通 query,SYSTEM 应已含新 memory ──
+            // Legacy AnthropicClient path (MemoryExtractor still uses it)
             Mockito.when(mockClient.createMessage(ArgumentMatchers.any(CreateMessageRequest.class)))
                     .thenReturn(ResponseFixtures.endTurn("ack"));
+            // P2 canonical LlmClient path (RecoveryCoordinator → agent loop)
+            Mockito.when(mockLlmClient.createMessage(ArgumentMatchers.any(LlmRequest.class)))
+                    .thenReturn(canonicalEndTurn("ack"));
 
             harness.clearHistory(Session.DEFAULT_ID);
             harness.processOneQuery(Session.DEFAULT_ID, "any query after memory write");
 
-            // 用 ArgumentCaptor 抓所有调用的 request,检查 SYSTEM
-            var captor = ArgumentCaptor.forClass(CreateMessageRequest.class);
-            Mockito.verify(mockClient, Mockito.atLeastOnce())
+            // 用 ArgumentCaptor 抓所有 canonical 调用,检查 system content 里有 memory
+            var captor = ArgumentCaptor.forClass(LlmRequest.class);
+            Mockito.verify(mockLlmClient, Mockito.atLeastOnce())
                     .createMessage(captor.capture());
 
             boolean foundMemoryInSystem = captor.getAllValues().stream()
-                    .map(CreateMessageRequest::getSystemText)
+                    .flatMap(r -> r.getSystem().stream())
+                    .filter(c -> c instanceof LlmText)
+                    .map(c -> ((LlmText) c).getText())
                     .filter(java.util.Objects::nonNull)
                     .anyMatch(sys -> sys.contains("s10-test-fact")
                             || sys.contains("User prefers Java"));
