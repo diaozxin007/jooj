@@ -255,6 +255,50 @@
         }
         group.appendChild(row);
       });
+
+      // s22 AQ:每 sub-question 自动追加 "Other" 选项 + 文本框(SDK 兼容行为)
+      // 前端处理,后端 tool 层不需要写 —— 用户选中 Other 时提交 label="Other: <text>",
+      // LLM 拿到 tool_result 一眼能识别是自由文本。
+      const otherRow = document.createElement('label');
+      otherRow.className = 'clarify-option clarify-other';
+      const otherInput = document.createElement('input');
+      otherInput.type = sq.multiSelect ? 'checkbox' : 'radio';
+      otherInput.name = 'q' + idx;
+      otherInput.value = 'Other';   // 占位值,submit 时会替换成 "Other: <text>"
+      otherInput.setAttribute('data-role', 'other-toggle');
+      otherRow.appendChild(otherInput);
+      const otherLabelSpan = document.createElement('span');
+      otherLabelSpan.className = 'clarify-label';
+      otherLabelSpan.textContent = '其它(自定义)';
+      otherRow.appendChild(otherLabelSpan);
+      const otherText = document.createElement('input');
+      otherText.type = 'text';
+      otherText.className = 'clarify-other-text';
+      otherText.placeholder = '请输入自定义内容...';
+      otherText.disabled = true;   // 只有勾选 Other 时才启用
+      otherText.setAttribute('data-role', 'other-text');
+      otherRow.appendChild(otherText);
+      // 勾选 Other 时启用文本框 + 自动 focus;取消勾选时禁用 + 清空
+      otherInput.addEventListener('change', () => {
+        otherText.disabled = !otherInput.checked;
+        if (otherInput.checked) {
+          setTimeout(() => otherText.focus(), 0);
+        } else {
+          otherText.value = '';
+        }
+      });
+      // 单选场景:同 group 里点击别的 radio → Other 自动取消勾选 → 文本框应禁用
+      if (!sq.multiSelect) {
+        group.addEventListener('change', (e) => {
+          if (e.target === otherInput) return;   // Other 自己的 change 上面处理
+          if (e.target.name === 'q' + idx && !otherInput.checked) {
+            otherText.disabled = true;
+            otherText.value = '';
+          }
+        });
+      }
+      group.appendChild(otherRow);
+
       form.appendChild(group);
     });
 
@@ -281,10 +325,29 @@
       const groups = form.querySelectorAll('.clarify-group');
       for (const g of groups) {
         const idx = g.getAttribute('data-question-idx');
-        const inputs = g.querySelectorAll('input:checked');
-        selections[idx] = Array.from(inputs).map(i => i.value);
+        // s22 AQ:处理 Other 选项 —— 只收 checked 的 input,但 Other input 的 value
+        // 要用同 group 内 clarify-other-text 的实际文本
+        const checkedInputs = Array.from(g.querySelectorAll('input:checked'));
+        const otherText = g.querySelector('input[data-role="other-text"]');
+        const otherToggle = g.querySelector('input[data-role="other-toggle"]');
+        const values = [];
+        for (const inp of checkedInputs) {
+          if (inp === otherToggle) {
+            // Other 勾选中 —— 文本框非空才算数
+            const custom = (otherText.value || '').trim();
+            if (!custom) {
+              alert('已选择"其它"但未填写自定义内容,请填写或取消勾选');
+              otherText.focus();
+              return;
+            }
+            values.push('Other: ' + custom);
+          } else {
+            values.push(inp.value);
+          }
+        }
+        selections[idx] = values;
       }
-      // 校验:至少每个问题选 1 项
+      // 校验:每个问题至少 1 项
       for (const g of groups) {
         const idx = g.getAttribute('data-question-idx');
         if (!selections[idx] || selections[idx].length === 0) {

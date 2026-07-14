@@ -791,6 +791,34 @@ textarea::placeholder { color: var(--text-faint); }
   font-weight: 600;
 }
 
+/* s22 AQ:Other 自定义选项 —— radio/checkbox 后面跟自定义 text input */
+.clarify-other {
+  flex-wrap: wrap;   /* 文本框可能被挤到下一行 */
+}
+
+.clarify-other-text {
+  flex: 1 1 100%;
+  margin-top: 6px;
+  margin-left: 24px;   /* 对齐 label 起点(留出 radio 宽度) */
+  padding: 6px 10px;
+  border-radius: var(--radius, 8px);
+  border: 1px solid var(--border, #2a313e);
+  background: var(--bg-input, #1f242e);
+  color: var(--text, #e4e6ea);
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.clarify-other-text:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.clarify-other-text:focus {
+  outline: none;
+  border-color: var(--accent, #d97706);
+}
+
 .clarify-actions {
   display: flex;
   gap: 10px;

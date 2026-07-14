@@ -31,6 +31,8 @@ import java.util.Map;
  *   <li>每 option 有 {@code label} + 可选 {@code description}</li>
  *   <li>可 {@code multiSelect}(用户勾多个)</li>
  *   <li>{@code header} 12 字符内短标签(chip/tag)</li>
+ *   <li><b>UI 自动追加 "Other" 选项 + 文本框</b>—— LLM 不需要写,用户选中后
+ *       会回传 {@code "Other: <用户文本>"}</li>
  * </ul>
  *
  * <h3>使用协议</h3>
@@ -93,7 +95,10 @@ public class AskUserQuestionTool implements Tool {
     public String getDescription() {
         return "Ask the human user 1-4 multiple-choice questions and get their answers. " +
                 "Use this when you need clarification on decisions the user must make " +
-                "(library choice, approach, feature scope, etc.). Blocks until user answers.";
+                "(library choice, approach, feature scope, etc.). Blocks until user answers. " +
+                "**Do not add an 'Other' option** — the UI automatically appends one with a " +
+                "text box so the user can type a custom value. When the user picks it, you'll " +
+                "receive the answer as 'Other: <user text>'.";
     }
 
     @Override
