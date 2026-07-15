@@ -8,18 +8,17 @@ import com.xilidou.jooj.agent.AgentInterruptedException;
 import com.xilidou.jooj.agent.SessionContext;
 import com.xilidou.jooj.config.JoojExecutors;
 import com.xilidou.jooj.hook.HookManager;
-import com.xilidou.jooj.http.dto.ContentBlock;
-import com.xilidou.jooj.http.dto.MessageParam;
-import com.xilidou.jooj.http.dto.TextBlock;
-import com.xilidou.jooj.http.dto.ToolResultBlock;
 import com.xilidou.jooj.http.dto.ToolUseBlock;
 import com.xilidou.jooj.llm.LlmClient;
-import com.xilidou.jooj.llm.adapter.AnthropicShapeBridge;
+import com.xilidou.jooj.llm.domain.LlmContent;
 import com.xilidou.jooj.llm.domain.LlmMessage;
 import com.xilidou.jooj.llm.domain.LlmRequest;
 import com.xilidou.jooj.llm.domain.LlmResponse;
+import com.xilidou.jooj.llm.domain.LlmRole;
+import com.xilidou.jooj.llm.domain.LlmText;
 import com.xilidou.jooj.llm.domain.LlmToolCall;
 import com.xilidou.jooj.llm.domain.LlmToolDef;
+import com.xilidou.jooj.llm.domain.LlmToolResult;
 import com.xilidou.jooj.tasks.TaskRecord;
 import com.xilidou.jooj.team.AutonomousIdle;
 import com.xilidou.jooj.team.Message;
@@ -308,8 +307,8 @@ public class Teammate {
                 "Check inbox for protocol messages (shutdown_request, plan_approval_response). " +
                 "Be concise.";
 
-        List<MessageParam> messages = new ArrayList<>();
-        messages.add(MessageParam.user(prompt));
+        List<LlmMessage> messages = new ArrayList<>();
+        messages.add(LlmMessage.userText(prompt));
 
         // s18: per-spawn worktree 状态。每个 spawn 一份独立 AtomicReference,
         // 跟 Python 闭包 wt_ctx={"path": None} 语义对应。线程安全(workerExecutor 复用 thread
@@ -344,7 +343,7 @@ public class Teammate {
             // 简单粗暴判断:messages.size() <= 3 时 prepend identity。
             // 后期优化清单 #11:精准检测 [Conversation summary] 标记。
             if (messages.size() <= 3) {
-                messages.add(0, MessageParam.user(
+                messages.add(0, LlmMessage.userText(
                         "<identity>You are '" + name + "', role: " + role +
                                 ". Continue your work.</identity>"));
             }
@@ -363,16 +362,12 @@ public class Teammate {
                     break outer;
                 }
 
-                // 调 LLM(canonical)
-                List<MessageParam> window = trimWindow(messages);
-                // 桥接 List<MessageParam> → List<LlmMessage>(Step G 完成后可删)
-                var adapter = new com.xilidou.jooj.llm.adapter.AnthropicAdapter(json);
-                List<LlmMessage> canonicalWindow = new ArrayList<>(window.size());
-                for (MessageParam m : window) canonicalWindow.add(adapter.messageToDomain(m));
+                // 调 LLM(canonical,messages 已 canonical)
+                List<LlmMessage> window = trimWindow(messages);
 
                 LlmRequest request = LlmRequest.builderWithSystemText(system)
                         .model(model)
-                        .messages(canonicalWindow)
+                        .messages(window)
                         .tools(tools)
                         .maxTokens(MAX_TOKENS)
                         .build();
@@ -387,14 +382,11 @@ public class Teammate {
                     break outer;
                 }
                 // 守卫:LLM 偶尔返回 content == null 或空 list(thinking-only 被 strip 等场景)。
-                // P2 之前会让下一轮 Anthropic API 报 `messages.X.content: Input should be a valid list`,
-                // 现在 adapter 层已经把 content 规范成 List(不会是 null),但空 content 仍是"上一轮
-                // 没实际输出"的信号 —— 跳过 append 让下条 user message 接在前一条 user 后即可
-                // (Anthropic 允许 user→user 连续)。
-                List<com.xilidou.jooj.llm.domain.LlmContent> canonicalContent = response.getContent();
+                // 空 content 是"上一轮没实际输出"的信号 —— 跳过 append 让下条 user message
+                // 接在前一条 user 后即可(Anthropic 允许 user→user 连续)。
+                List<LlmContent> canonicalContent = response.getContent();
                 if (canonicalContent != null && !canonicalContent.isEmpty()) {
-                    messages.add(MessageParam.assistant(
-                            AnthropicShapeBridge.contentToWire(canonicalContent)));
+                    messages.add(LlmMessage.assistant(canonicalContent));
                 } else {
                     log.debug("[Teammate {}] LLM returned empty content at turn {}, skipping history append",
                             name, activeTurnTotal);
@@ -453,10 +445,10 @@ public class Teammate {
      * </ul>
      */
     private void executeToolsInResponse(String name, LlmResponse response,
-                                         List<MessageParam> messages,
+                                         List<LlmMessage> messages,
                                          AtomicReference<Path> currentCwd,
                                          AtomicReference<String> currentWorktreeName) {
-        List<ToolResultBlock> results = new ArrayList<>();
+        List<LlmToolResult> results = new ArrayList<>();
         for (LlmToolCall toolCall : response.toolCalls()) {
             // 桥接 canonical LlmToolCall → wire ToolUseBlock 供 hooks / registry 复用
             ToolUseBlock tu = new ToolUseBlock(
@@ -469,7 +461,7 @@ public class Teammate {
 
             Optional<String> blocked = hooks.triggerPreToolUse(tu);
             if (blocked.isPresent()) {
-                results.add(ToolResultBlock.ofText(tu.getId(), blocked.get()));
+                results.add(LlmToolResult.success(tu.getId(), blocked.get()));
                 continue;
             }
 
@@ -512,9 +504,9 @@ public class Teammate {
             } else {
                 output = "Error: tool '" + tu.getName() + "' not available to teammates";
             }
-            results.add(ToolResultBlock.ofText(tu.getId(), output));
+            results.add(LlmToolResult.success(tu.getId(), output));
         }
-        messages.add(MessageParam.toolResults(results));
+        messages.add(LlmMessage.toolResults(results));
     }
 
     /**
@@ -564,7 +556,7 @@ public class Teammate {
      * <p>非协议消息作为单条 {@code <inbox>...</inbox>} user message 追加到 messages,
      * 让 LLM 下一轮看到。
      */
-    private DispatchResult consumeInboxAndDispatch(String name, List<MessageParam> messages) {
+    private DispatchResult consumeInboxAndDispatch(String name, List<LlmMessage> messages) {
         List<Message> inbox = bus.readInbox(name);
         if (inbox.isEmpty()) return new DispatchResult(false);
 
@@ -585,7 +577,7 @@ public class Teammate {
         }
 
         if (!nonProtocol.isEmpty()) {
-            messages.add(MessageParam.user(formatInboxAsUserText(nonProtocol)));
+            messages.add(LlmMessage.userText(formatInboxAsUserText(nonProtocol)));
             System.out.println(GRAY + "  [" + name + "] inbox " + nonProtocol.size()
                     + " non-protocol msg(s)" + RESET);
         }
@@ -597,7 +589,7 @@ public class Teammate {
      *
      * @return true 表示这是 shutdown_request,调用方应停止 loop
      */
-    private boolean dispatchProtocolMessage(String name, Message msg, List<MessageParam> messages) {
+    private boolean dispatchProtocolMessage(String name, Message msg, List<LlmMessage> messages) {
         String type = msg.getType();
         Map<String, Object> meta = msg.getMetadata() != null ? msg.getMetadata() : Map.of();
         String reqId = String.valueOf(meta.getOrDefault("request_id", ""));
@@ -623,7 +615,7 @@ public class Teammate {
             } else {
                 injection = "[Plan rejected] (" + reqId + ") Feedback: " + msg.getContent();
             }
-            messages.add(MessageParam.user(injection));
+            messages.add(LlmMessage.userText(injection));
             System.out.println((approved ? "\033[32m" : "\033[31m") + "  [protocol] " + name
                     + " plan " + (approved ? "approved" : "rejected") + " (" + reqId + ")" + RESET);
             return false;
@@ -648,7 +640,7 @@ public class Teammate {
      *
      * <p>s18:auto-claim 时同步更新 currentCwd/currentWorktreeName 引用。
      */
-    private IdleResult idlePoll(String name, List<MessageParam> messages,
+    private IdleResult idlePoll(String name, List<LlmMessage> messages,
                                 AtomicReference<Path> currentCwd,
                                 AtomicReference<String> currentWorktreeName) {
         long deadline = System.currentTimeMillis() + idleTimeoutMs;
@@ -678,7 +670,7 @@ public class Teammate {
                         t.getSubject() +
                         (t.getDescription() != null && !t.getDescription().isBlank()
                                 ? "\n" + t.getDescription() : "");
-                messages.add(MessageParam.user(injection));
+                messages.add(LlmMessage.userText(injection));
                 System.out.println("\033[32m  [idle] " + name + " auto-claimed: "
                         + t.getSubject() + RESET);
                 // s18:auto-claim 也要更新 cwd
@@ -812,7 +804,7 @@ public class Teammate {
      * <p>这套规则跟 jooj 已有的 {@link com.xilidou.jooj.compact.MessageBoundary} 同源,
      * 但 MessageBoundary 只挡 1 格,这里的窗口可能撞奇数偏移,所以用循环。
      */
-    private List<MessageParam> trimWindow(List<MessageParam> messages) {
+    private List<LlmMessage> trimWindow(List<LlmMessage> messages) {
         return trimWindow(messages, MESSAGE_WINDOW);
     }
 
@@ -823,7 +815,7 @@ public class Teammate {
      * @param window   理想保留尾部消息数
      * @return 安全裁剪后的窗口(可能比 window 大,因为要回退到安全 user 起点)
      */
-    static List<MessageParam> trimWindow(List<MessageParam> messages, int window) {
+    static List<LlmMessage> trimWindow(List<LlmMessage> messages, int window) {
         if (messages.size() <= window) return messages;
         int start = messages.size() - window;
         while (start > 0 && !isSafeStart(messages.get(start))) {
@@ -833,37 +825,14 @@ public class Teammate {
     }
 
     /**
-     * 一条 message 是否能作为 history 的第一条而不让 Anthropic API 报错。
+     * 一条 message 是否能作为 history 的第一条而不让 provider API 报错。
      *
-     * <p>"安全 user 起点" = role==user 且 content 不是含 ToolResultBlock 的 list。
-     * String content / 仅含 TextBlock 的 list 都 OK;tool_result list 不行(孤儿)。
+     * <p>P2 Step G follow-up:canonical 判定 —— "安全 user 起点" = role == USER。
+     * TOOL role(含 tool_result)不能作 history 首条(缺前置 tool_call 就是孤儿),
+     * ASSISTANT / (canonical 不允许在首条)显然不行。
      */
-    static boolean isSafeStart(MessageParam m) {
-        if (!"user".equals(m.getRole())) return false;
-        Object c = m.getContent();
-        if (c instanceof String) return true;
-        if (c instanceof List<?> blocks) {
-            for (Object b : blocks) {
-                if (b instanceof com.xilidou.jooj.http.dto.ToolResultBlock) return false;
-            }
-            return true;
-        }
-        return true;   // null / 其他形态:容忍,不阻断
-    }
-
-    @SuppressWarnings("unused")
-    private static String extractLastText(List<? extends com.xilidou.jooj.http.dto.ContentBlock> content) {
-        // P2 Step G:dead code —— canonical 主路径改用 response.firstText() 直接从
-        // LlmResponse 拿。TODO G2 完全 flip 后删。
-        if (content == null || content.isEmpty()) return "";
-        StringBuilder sb = new StringBuilder();
-        for (com.xilidou.jooj.http.dto.ContentBlock b : content) {
-            if (b instanceof TextBlock t && t.getText() != null) {
-                if (sb.length() > 0) sb.append('\n');
-                sb.append(t.getText());
-            }
-        }
-        return sb.toString();
+    static boolean isSafeStart(LlmMessage m) {
+        return m != null && m.getRole() == LlmRole.USER;
     }
 
     /**
