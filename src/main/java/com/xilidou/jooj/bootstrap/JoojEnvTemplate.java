@@ -63,6 +63,22 @@ final class JoojEnvTemplate {
             # DEEPSEEK_MODEL=
 
             # =============================================================================
+            # OpenAI Chat Completions —— 可选(P2 Step H)。api-key 非空才注册 provider,
+            # 之后 model ID 以 gpt-/o1-/o3-/o4-/chatgpt- 开头的请求自动路由过来。
+            # 常见搭配:MODEL_ID=claude-sonnet-4-6 + FALLBACK_MODEL_ID=gpt-4o-mini —— Anthropic
+            # 主模型 + OpenAI fallback 跨 provider 兜底。
+            # =============================================================================
+            # 从 https://platform.openai.com/api-keys 申请
+            # OPENAI_API_KEY=
+
+            # 覆盖默认端点(默认 https://api.openai.com;走 Azure OpenAI proxy 时改这个)
+            # OPENAI_BASE_URL=
+
+            # 若想让 OpenAI 做主 provider 而非仅 fallback,把 MODEL_ID 直接设成 gpt-4o-mini 等
+            # OpenAiHttpClient 内部按 model 前缀路由,不依赖 default-model 字段。
+            # OPENAI_DEFAULT_MODEL=
+
+            # =============================================================================
             # Recovery (s11) —— 连续 529 ≥ 3 时切换到的 fallback 模型
             # =============================================================================
             # FALLBACK_MODEL_ID=

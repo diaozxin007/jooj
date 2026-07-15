@@ -30,6 +30,15 @@ jooj:
     api-key: ${DEEPSEEK_API_KEY:}
     model: ${DEEPSEEK_MODEL:deepseek-chat}
 
+  # OpenAI Chat Completions (原生协议) —— 可选;api-key 为空则不注册 provider(P2 Step H)。
+  # 配置后,model ID 以 gpt-/o1-/o3-/o4-/chatgpt- 开头的请求由 ModelRouter 自动路由到此 provider。
+  # o1/o3/o4 reasoning 模型的差异(max_completion_tokens/无 temperature/system 折叠)
+  # 在 OpenAiChatAdapter 里按 model 前缀自动处理,application.yml 无需区分。
+  openai:
+    base-url: ${OPENAI_BASE_URL:https://api.openai.com}
+    api-key: ${OPENAI_API_KEY:}
+    default-model: ${OPENAI_DEFAULT_MODEL:}
+
   compact:
     max-messages: 50
     snip-head-keep: 3
