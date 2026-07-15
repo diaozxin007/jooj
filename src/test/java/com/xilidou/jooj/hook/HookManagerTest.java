@@ -3,8 +3,8 @@ package com.xilidou.jooj.hook;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xilidou.jooj.config.JsonMappers;
-import com.xilidou.jooj.http.dto.MessageParam;
 import com.xilidou.jooj.http.dto.ToolUseBlock;
+import com.xilidou.jooj.llm.domain.LlmMessage;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -115,14 +115,14 @@ class HookManagerTest {
                         messages.size() < 3 ? Optional.of("Please elaborate") : Optional.empty());
 
         // 短对话：触发"再追一句"
-        Optional<String> result = m.triggerStop(List.of(MessageParam.user("hi")));
+        Optional<String> result = m.triggerStop(List.of(LlmMessage.userText("hi")));
         assertEquals(Optional.of("Please elaborate"), result);
 
         // 长对话：让它走
         assertTrue(m.triggerStop(List.of(
-                MessageParam.user("hi"),
-                MessageParam.user("hi2"),
-                MessageParam.user("hi3"))).isEmpty());
+                LlmMessage.userText("hi"),
+                LlmMessage.userText("hi2"),
+                LlmMessage.userText("hi3"))).isEmpty());
     }
 
     @Test

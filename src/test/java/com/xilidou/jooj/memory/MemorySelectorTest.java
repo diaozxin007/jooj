@@ -3,9 +3,9 @@ package com.xilidou.jooj.memory;
 import com.xilidou.jooj.http.MockAnthropicClient;
 import com.xilidou.jooj.http.ResponseFixtures;
 import com.xilidou.jooj.llm.LlmClient;
-import com.xilidou.jooj.http.dto.MessageParam;
-import com.xilidou.jooj.http.dto.TextBlock;
-import com.xilidou.jooj.http.dto.ToolResultBlock;
+import com.xilidou.jooj.llm.domain.LlmMessage;
+import com.xilidou.jooj.llm.domain.LlmText;
+import com.xilidou.jooj.llm.domain.LlmToolResult;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -43,17 +43,20 @@ class MemorySelectorTest {
         return MemoryFile.of(name, type, desc, body);
     }
 
-    private static MessageParam userText(String text) {
-        return MessageParam.user(text);
+    private static LlmMessage userText(String text) {
+        return LlmMessage.userText(text);
     }
 
-    private static MessageParam userToolResult(String id, String content) {
-        return new MessageParam("user",
-                new ArrayList<>(List.of(ToolResultBlock.ofText(id, content))));
+    private static LlmMessage userToolResult(String id, String content) {
+        return LlmMessage.toolResults(
+                new ArrayList<>(List.of(LlmToolResult.success(id, content))));
     }
 
-    private static MessageParam userTextBlocks(String text) {
-        return new MessageParam("user", List.of(new TextBlock(text)));
+    private static LlmMessage userTextBlocks(String text) {
+        // canonical:总是 List<LlmContent>,userText 已经返回 [LlmText] 结构。
+        // 为保测试原意("多 block 的 USER"),返 2 个 empty block + 1 real
+        return new LlmMessage(com.xilidou.jooj.llm.domain.LlmRole.USER,
+                List.of(new LlmText(text)));
     }
 
     // ─────────────────────────────────────────────────────────────

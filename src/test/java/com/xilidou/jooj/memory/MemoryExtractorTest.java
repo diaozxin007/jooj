@@ -6,9 +6,7 @@ import com.xilidou.jooj.llm.LlmClient;
 import com.xilidou.jooj.llm.domain.LlmContent;
 import com.xilidou.jooj.llm.domain.LlmMessage;
 import com.xilidou.jooj.llm.domain.LlmText;
-import com.xilidou.jooj.http.dto.MessageParam;
-import com.xilidou.jooj.http.dto.TextBlock;
-import com.xilidou.jooj.http.dto.ToolResultBlock;
+import com.xilidou.jooj.llm.domain.LlmToolResult;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -42,17 +40,17 @@ class MemoryExtractorTest {
         return new MemoryStore(new MemoryConfig(dir, "MEMORY.md", 4096, 10));
     }
 
-    private static MessageParam userText(String text) {
-        return MessageParam.user(text);
+    private static LlmMessage userText(String text) {
+        return LlmMessage.userText(text);
     }
 
-    private static MessageParam assistantText(String text) {
-        return new MessageParam("assistant", List.of(new TextBlock(text)));
+    private static LlmMessage assistantText(String text) {
+        return LlmMessage.assistant(List.of(new LlmText(text)));
     }
 
-    private static MessageParam userToolResult(String id, String content) {
-        return new MessageParam("user",
-                new ArrayList<>(List.of(ToolResultBlock.ofText(id, content))));
+    private static LlmMessage userToolResult(String id, String content) {
+        return LlmMessage.toolResults(
+                new ArrayList<>(List.of(LlmToolResult.success(id, content))));
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -74,7 +72,7 @@ class MemoryExtractorTest {
                 ResponseFixtures.endTurn(llmJson));
         MemoryExtractor extractor = new MemoryExtractor(store, mock, "test-model");
 
-        List<MessageParam> messages = List.of(
+        List<LlmMessage> messages = List.of(
                 userText("I prefer tabs and don't mock my Postgres."),
                 assistantText("ok, noted."));
 
@@ -310,7 +308,7 @@ class MemoryExtractorTest {
         MemoryStore store = freshStore(tempDir);
         MemoryExtractor extractor = new MemoryExtractor(store, null, null);
 
-        List<MessageParam> messages = List.of(
+        List<LlmMessage> messages = List.of(
                 userText("hello"),
                 assistantText("hi there"));
 

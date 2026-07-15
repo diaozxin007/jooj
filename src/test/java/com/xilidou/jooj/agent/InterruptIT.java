@@ -3,7 +3,9 @@ package com.xilidou.jooj.agent;
 import com.xilidou.jooj.JoojTestConfig;
 import com.xilidou.jooj.http.MockAnthropicClient;
 import com.xilidou.jooj.http.ResponseFixtures;
-import com.xilidou.jooj.http.dto.MessageParam;
+import com.xilidou.jooj.llm.domain.LlmMessage;
+import com.xilidou.jooj.llm.domain.LlmRole;
+import com.xilidou.jooj.llm.domain.LlmText;
 import com.xilidou.jooj.session.SessionService;
 import com.xilidou.jooj.transcript.TranscriptLine;
 import com.xilidou.jooj.transcript.TranscriptService;
@@ -104,10 +106,14 @@ class InterruptIT {
         assertFalse(agentControl.isInterruptRequested(SID), "interrupt flag 应被消费清除");
 
         // messages 里应有 [Interrupted by user] user 消息(打断前状态 + 打断标记)
-        List<MessageParam> history = sessionService.loadHistory(SID);
+        List<LlmMessage> history = sessionService.loadHistory(SID);
         boolean hasInterruptedMarker = history.stream()
-                .filter(m -> "user".equals(m.getRole()))
-                .anyMatch(m -> m.getContent() instanceof String s && s.contains("[Interrupted by user]"));
+                .filter(m -> m.getRole() == LlmRole.USER)
+                .anyMatch(m -> m.getContent() != null
+                        && m.getContent().stream()
+                                .filter(c -> c instanceof LlmText)
+                                .map(c -> ((LlmText) c).getText())
+                                .anyMatch(s -> s != null && s.contains("[Interrupted by user]")));
         assertTrue(hasInterruptedMarker,
                 "history 应包含 [Interrupted by user] user 消息,history=" + history);
 

@@ -472,14 +472,23 @@ public class AgentLoopHarness {
         int lastIdx = messages.size() - 1;
         LlmMessage last = messages.get(lastIdx);
 
+        // TOOL 消息(canonical)在 wire 上映射到 role=user + tool_result blocks。
+        // Nag 追加进 TOOL.content 里的 LlmText,Anthropic 适配器合并同一条 role=user,
+        // 不会产生 user→user 连续。
+        if (last.getRole() == LlmRole.TOOL) {
+            List<LlmContent> merged = new ArrayList<>(last.getContent());
+            merged.add(new LlmText(nag));
+            messages.set(lastIdx, new LlmMessage(LlmRole.TOOL, merged, last.getCacheHints()));
+            return;
+        }
+
         if (last.getRole() != LlmRole.USER) {
             messages.add(LlmMessage.userText(nag));
             return;
         }
 
-        // Append 到最后一个 LlmText;若没 text 则整条新加
+        // USER role:append 到最后一个 LlmText;若没 text 则整条新加块
         List<LlmContent> merged = new ArrayList<>(last.getContent());
-        // 找最后一个 LlmText 追加
         for (int i = merged.size() - 1; i >= 0; i--) {
             if (merged.get(i) instanceof LlmText t) {
                 merged.set(i, new LlmText(t.getText() + "\n\n" + nag));

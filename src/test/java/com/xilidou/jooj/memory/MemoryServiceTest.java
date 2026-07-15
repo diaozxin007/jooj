@@ -3,7 +3,7 @@ package com.xilidou.jooj.memory;
 import com.xilidou.jooj.http.MockAnthropicClient;
 import com.xilidou.jooj.http.ResponseFixtures;
 import com.xilidou.jooj.llm.LlmClient;
-import com.xilidou.jooj.http.dto.MessageParam;
+import com.xilidou.jooj.llm.domain.LlmMessage;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -30,8 +30,8 @@ class MemoryServiceTest {
         return new MemoryConfig(tempDir, "MEMORY.md", 4096, threshold);
     }
 
-    private static MessageParam userText(String text) {
-        return MessageParam.user(text);
+    private static LlmMessage userText(String text) {
+        return LlmMessage.userText(text);
     }
 
     // ─────────────────────────────────────────────────────────────

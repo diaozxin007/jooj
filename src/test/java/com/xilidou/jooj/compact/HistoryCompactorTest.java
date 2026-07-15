@@ -5,12 +5,14 @@ import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.xilidou.jooj.http.MockAnthropicClient;
 import com.xilidou.jooj.http.ResponseFixtures;
 import com.xilidou.jooj.http.dto.CreateMessageRequest;
-import com.xilidou.jooj.http.dto.CreateMessageResponse;
-import com.xilidou.jooj.http.dto.MessageParam;
 import com.xilidou.jooj.llm.LlmClient;
-import com.xilidou.jooj.http.dto.TextBlock;
-import com.xilidou.jooj.http.dto.ToolResultBlock;
-import com.xilidou.jooj.http.dto.ToolUseBlock;
+import com.xilidou.jooj.llm.domain.LlmContent;
+import com.xilidou.jooj.llm.domain.LlmMessage;
+import com.xilidou.jooj.llm.domain.LlmRole;
+import com.xilidou.jooj.llm.domain.LlmText;
+import com.xilidou.jooj.llm.domain.LlmToolCall;
+import com.xilidou.jooj.llm.domain.LlmToolResult;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -41,21 +43,34 @@ class HistoryCompactorTest {
 
     private static final JsonNodeFactory JSON = JsonNodeFactory.instance;
 
-    private static MessageParam userText(String text) {
-        return MessageParam.user(text);
+    private static LlmMessage userText(String text) {
+        return LlmMessage.userText(text);
     }
 
-    private static MessageParam assistantText(String text) {
-        return new MessageParam("assistant", List.of(new TextBlock(text)));
+    private static LlmMessage assistantText(String text) {
+        return LlmMessage.assistant(List.of(new LlmText(text)));
     }
 
-    private static MessageParam assistantToolUse(String id) {
+    private static LlmMessage assistantToolUse(String id) {
         JsonNode input = JSON.objectNode();
-        return new MessageParam("assistant", List.of(new ToolUseBlock(id, "test_tool", input)));
+        return LlmMessage.assistant(List.of(new LlmToolCall(id, "test_tool", input)));
     }
 
-    private static MessageParam userToolResult(String id, String content) {
-        return new MessageParam("user", new ArrayList<>(List.of(ToolResultBlock.ofText(id, content))));
+    private static LlmMessage userToolResult(String id, String content) {
+        return LlmMessage.toolResults(new ArrayList<>(List.of(LlmToolResult.success(id, content))));
+    }
+
+    /** 抽 message 里所有 LlmText 拼接文本(用于断言);TOOL/ToolCall 忽略。 */
+    private static String extractText(LlmMessage m) {
+        if (m.getContent() == null) return "";
+        StringBuilder sb = new StringBuilder();
+        for (LlmContent c : m.getContent()) {
+            if (c instanceof LlmText t && t.getText() != null) {
+                if (sb.length() > 0) sb.append('\n');
+                sb.append(t.getText());
+            }
+        }
+        return sb.toString();
     }
 
     /** 用 @TempDir 路径构造 config,L1/L2/L3 字段不影响 L4。*/
@@ -80,7 +95,7 @@ class HistoryCompactorTest {
         HistoryCompactor h = new HistoryCompactor(
                 configWithDir(tempDir, 3, 10, 500), client, "test-model");
 
-        List<MessageParam> messages = new ArrayList<>();
+        List<LlmMessage> messages = new ArrayList<>();
         for (int i = 0; i < 13; i++) messages.add(userText("m" + i));
 
         boolean changed = h.apply(messages);
@@ -101,7 +116,7 @@ class HistoryCompactorTest {
         HistoryCompactor h = new HistoryCompactor(
                 configWithDir(tempDir, 2, 3, 500), client, "test-model");
 
-        List<MessageParam> messages = new ArrayList<>();
+        List<LlmMessage> messages = new ArrayList<>();
         // 头 2:m0/m1
         messages.add(userText("query"));
         messages.add(assistantText("ok"));
@@ -119,23 +134,21 @@ class HistoryCompactorTest {
         assertEquals(6, messages.size(), "替换后应剩 head + summary + tail = 6 条");
 
         // 头部保留
-        assertEquals("query", messages.get(0).getContent());
-        assertEquals("assistant", messages.get(1).getRole());
+        assertEquals("query", extractText(messages.get(0)));
+        assertEquals(LlmRole.ASSISTANT, messages.get(1).getRole());
 
         // 摘要在 idx 2
-        MessageParam summaryMsg = messages.get(2);
-        assertEquals("user", summaryMsg.getRole());
-        String s = (String) summaryMsg.getContent();
+        LlmMessage summaryMsg = messages.get(2);
+        assertEquals(LlmRole.USER, summaryMsg.getRole());
+        String s = extractText(summaryMsg);
         assertTrue(s.startsWith(HistoryCompactor.SUMMARY_PREFIX), "应以 SUMMARY_PREFIX 开头: " + s);
         assertTrue(s.contains("Agent read 10 files"), "应含 LLM 返回的摘要文本: " + s);
         assertTrue(s.contains("transcript-"), "应含 transcript 文件路径: " + s);
 
         // 尾部保留
-        assertEquals("recent-1", messages.get(3).getContent());
-        assertEquals("recent-2", ((List<?>) messages.get(4).getContent()).stream()
-                .filter(b -> b instanceof TextBlock).map(b -> ((TextBlock) b).getText())
-                .findFirst().orElse(""));
-        assertEquals("recent-3", messages.get(5).getContent());
+        assertEquals("recent-1", extractText(messages.get(3)));
+        assertEquals("recent-2", extractText(messages.get(4)));
+        assertEquals("recent-3", extractText(messages.get(5)));
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -150,7 +163,7 @@ class HistoryCompactorTest {
         HistoryCompactor h = new HistoryCompactor(
                 configWithDir(tempDir, 2, 3, 500), client, "test-model");
 
-        List<MessageParam> messages = new ArrayList<>();
+        List<LlmMessage> messages = new ArrayList<>();
         messages.add(userText("query"));
         messages.add(assistantText("ok"));
         for (int i = 0; i < 5; i++) messages.add(userText("archived-" + i));
@@ -188,7 +201,7 @@ class HistoryCompactorTest {
         HistoryCompactor h = new HistoryCompactor(
                 configWithDir(tempDir, 2, 3, 500), throwing, "test-model");
 
-        List<MessageParam> messages = new ArrayList<>();
+        List<LlmMessage> messages = new ArrayList<>();
         messages.add(userText("query"));
         messages.add(assistantText("ok"));
         for (int i = 0; i < 10; i++) messages.add(userText("middle-" + i));
@@ -201,8 +214,8 @@ class HistoryCompactorTest {
         assertEquals(sizeBefore, messages.size(),
                 "messages 不应被修改(数据保留,等待外层抛错)");
         // 内容也应原封不动
-        assertEquals("query", messages.get(0).getContent());
-        assertEquals("middle-0", messages.get(2).getContent());
+        assertEquals("query", extractText(messages.get(0)));
+        assertEquals("middle-0", extractText(messages.get(2)));
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -220,7 +233,7 @@ class HistoryCompactorTest {
         HistoryCompactor h = new HistoryCompactor(
                 configWithDir(tempDir, 2, 3, 100), client, "test-model");
 
-        List<MessageParam> messages = new ArrayList<>();
+        List<LlmMessage> messages = new ArrayList<>();
         messages.add(userText("q"));
         messages.add(assistantText("a"));
         for (int i = 0; i < 5; i++) messages.add(userText("m" + i));
@@ -228,7 +241,7 @@ class HistoryCompactorTest {
 
         h.apply(messages);
 
-        String summaryContent = (String) messages.get(2).getContent();
+        String summaryContent = extractText(messages.get(2));
         // SUMMARY_PREFIX + (...messages archived to ...): + truncated 100 chars + "..."
         assertTrue(summaryContent.endsWith("..."), "超长摘要应被截断 + 加 ...");
         // 实际摘要部分(冒号 + 空格之后)长度 ≈ 100 + "..."
@@ -249,7 +262,7 @@ class HistoryCompactorTest {
         HistoryCompactor h = new HistoryCompactor(
                 configWithDir(tempDir, 2, 3, 500), client, "test-model");
 
-        List<MessageParam> messages = new ArrayList<>();
+        List<LlmMessage> messages = new ArrayList<>();
         // 头部:safe
         messages.add(userText("query"));
         messages.add(assistantText("ok"));
@@ -291,7 +304,7 @@ class HistoryCompactorTest {
         HistoryCompactor h = new HistoryCompactor(
                 configWithDir(tempDir, 2, 3, 500), client, "test-model");
 
-        List<MessageParam> messages = new ArrayList<>();
+        List<LlmMessage> messages = new ArrayList<>();
         messages.add(userText("q"));
         messages.add(assistantText("a"));
         for (int i = 0; i < 10; i++) messages.add(userText("m" + i));
@@ -326,7 +339,7 @@ class HistoryCompactorTest {
     @DisplayName("CompactPipeline.reactiveCompact returns false when L4 disabled")
     void pipeline_reactive_returns_false_without_client() {
         CompactPipeline noL4 = new CompactPipeline(new CompactConfig());
-        List<MessageParam> messages = new ArrayList<>();
+        List<LlmMessage> messages = new ArrayList<>();
         for (int i = 0; i < 100; i++) messages.add(userText("m" + i));
 
         assertFalse(noL4.reactiveCompact(messages),
@@ -349,7 +362,7 @@ class HistoryCompactorTest {
                 configWithDir(tempDir, 2, 3, 500), client, "test-model");
 
         // 第一次:中段没摘要 → fresh
-        List<MessageParam> messages = new ArrayList<>();
+        List<LlmMessage> messages = new ArrayList<>();
         for (int i = 0; i < 20; i++) messages.add(userText("m" + i));
         assertTrue(h.apply(messages));
 
@@ -379,7 +392,7 @@ class HistoryCompactorTest {
     @DisplayName("extractPreviousSummary should pull plain summary text, stripping the prefix")
     void extractPreviousSummary_strips_prefix() {
         // 标准格式:`[Conversation summary] (5 messages archived to /tmp/x): summary here`
-        MessageParam m = MessageParam.user(
+        LlmMessage m = LlmMessage.userText(
                 "[Conversation summary] (5 messages archived to /tmp/x.jsonl): "
                         + "agent fixed bug A, now working on B");
         String s = HistoryCompactor.extractPreviousSummary(List.of(m));
@@ -389,7 +402,7 @@ class HistoryCompactorTest {
     @Test
     @DisplayName("extractPreviousSummary returns null when no summary message in middle")
     void extractPreviousSummary_returns_null_when_absent() {
-        MessageParam normal = MessageParam.user("hello there");
+        LlmMessage normal = LlmMessage.userText("hello there");
         assertNull(HistoryCompactor.extractPreviousSummary(List.of(normal)),
                 "无摘要 marker 应返回 null,走 from-scratch 分支");
     }
@@ -418,7 +431,7 @@ class HistoryCompactorTest {
                 configWithDir(tempDir, 2, 3, 500), client, "test-model", spy);
 
         // 准备足够长 messages 让 L4 跑得动
-        List<MessageParam> messages = new ArrayList<>();
+        List<LlmMessage> messages = new ArrayList<>();
         for (int i = 0; i < 10; i++) messages.add(userText("m" + i));
 
         assertTrue(pipeline.hasPreCompressionExtraction(),
@@ -442,7 +455,7 @@ class HistoryCompactorTest {
         CompactPipeline pipeline = new CompactPipeline(
                 configWithDir(tempDir, 2, 3, 500), client, "test-model", spy);
 
-        List<MessageParam> messages = new ArrayList<>();
+        List<LlmMessage> messages = new ArrayList<>();
         for (int i = 0; i < 10; i++) messages.add(userText("m" + i));
 
         // 抢救阶段失败,L4 仍应跑完返回 true
@@ -463,7 +476,7 @@ class HistoryCompactorTest {
         assertFalse(pipeline.hasPreCompressionExtraction(),
                 "未注入 service 时 pre-compression 应不启用");
 
-        List<MessageParam> messages = new ArrayList<>();
+        List<LlmMessage> messages = new ArrayList<>();
         for (int i = 0; i < 10; i++) messages.add(userText("m" + i));
         assertTrue(pipeline.reactiveCompact(messages),
                 "无 service 时 L4 仍应跑完");
@@ -485,7 +498,7 @@ class HistoryCompactorTest {
         }
 
         @Override
-        public void preCompressionExtract(List<MessageParam> messages) {
+        public void preCompressionExtract(List<LlmMessage> messages) {
             preCompressionExtractCalls++;
             if (throwOnExtract != null) throw throwOnExtract;
         }

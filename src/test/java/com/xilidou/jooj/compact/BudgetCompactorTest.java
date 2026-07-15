@@ -1,9 +1,10 @@
 package com.xilidou.jooj.compact;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xilidou.jooj.http.dto.MessageParam;
-import com.xilidou.jooj.http.dto.ToolResultBlock;
-import com.xilidou.jooj.http.dto.ToolUseBlock;
+import com.xilidou.jooj.llm.domain.LlmContent;
+import com.xilidou.jooj.llm.domain.LlmMessage;
+import com.xilidou.jooj.llm.domain.LlmToolCall;
+import com.xilidou.jooj.llm.domain.LlmToolResult;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -26,14 +27,20 @@ import static org.junit.jupiter.api.Assertions.*;
  *   <li>小内容(≤ maxToolResultBytes)不动</li>
  *   <li>大内容 → 落盘 + 替换为 stub,文件路径准确</li>
  *   <li>幂等:已是 stub 的不重复处理</li>
- *   <li>多个 tool_result 各落各的盘,文件名 = tool_use_id</li>
- *   <li>tool_use_id 含特殊字符 → 文件名 sanitize 后不会路径穿越</li>
+ *   <li>多个 tool_result 各落各的盘,文件名 = tool_call_id</li>
+ *   <li>tool_call_id 含特殊字符 → 文件名 sanitize 后不会路径穿越</li>
  * </ol>
+ *
+ * <p>P2 Step G:fixture 迁到 canonical {@link LlmMessage / LlmToolCall / LlmToolResult}(TOOL 一等 role)。
  */
 class BudgetCompactorTest {
 
-    private static MessageParam userToolResult(String id, String content) {
-        return new MessageParam("user", new ArrayList<>(List.of(ToolResultBlock.ofText(id, content))));
+    private static LlmMessage userToolResult(String id, String content) {
+        return LlmMessage.toolResults(new ArrayList<>(List.of(LlmToolResult.success(id, content))));
+    }
+
+    private static LlmToolResult firstToolResult(LlmMessage m) {
+        return (LlmToolResult) m.getContent().get(0);
     }
 
     private static String hugeContent(int len) {
@@ -55,9 +62,9 @@ class BudgetCompactorTest {
     @DisplayName("budget should not modify when no tool_results present")
     void budget_should_skip_when_no_tool_results(@TempDir Path tempDir) {
         BudgetCompactor budget = new BudgetCompactor(configWithDir(tempDir, 100));
-        List<MessageParam> messages = new ArrayList<>();
-        messages.add(MessageParam.user("hello"));
-        messages.add(MessageParam.user("world"));
+        List<LlmMessage> messages = new ArrayList<>();
+        messages.add(LlmMessage.userText("hello"));
+        messages.add(LlmMessage.userText("world"));
 
         boolean changed = budget.apply(messages);
 
@@ -78,8 +85,8 @@ class BudgetCompactorTest {
     @DisplayName("budget should not persist small tool_results")
     void budget_should_not_persist_small_results(@TempDir Path tempDir) {
         BudgetCompactor budget = new BudgetCompactor(configWithDir(tempDir, 1000));
-        List<MessageParam> messages = new ArrayList<>();
-        messages.add(MessageParam.user("query"));
+        List<LlmMessage> messages = new ArrayList<>();
+        messages.add(LlmMessage.userText("query"));
         messages.add(userToolResult("tu_1", "small content (only 20 chars)"));
         messages.add(userToolResult("tu_2", hugeContent(500)));  // 仍 < 1000
 
@@ -87,10 +94,8 @@ class BudgetCompactorTest {
 
         assertFalse(changed, "所有内容都 ≤ maxToolResultBytes,不应触发");
         // 内容原封不动
-        ToolResultBlock r1 = (ToolResultBlock) ((List<?>) messages.get(1).getContent()).get(0);
-        ToolResultBlock r2 = (ToolResultBlock) ((List<?>) messages.get(2).getContent()).get(0);
-        assertEquals("small content (only 20 chars)", r1.getContent());
-        assertEquals(hugeContent(500), r2.getContent());
+        assertEquals("small content (only 20 chars)", firstToolResult(messages.get(1)).getOutput());
+        assertEquals(hugeContent(500), firstToolResult(messages.get(2)).getOutput());
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -101,8 +106,8 @@ class BudgetCompactorTest {
     @DisplayName("budget should persist large content to disk and replace with stub")
     void budget_should_persist_large_content(@TempDir Path tempDir) throws IOException {
         BudgetCompactor budget = new BudgetCompactor(configWithDir(tempDir, 100));
-        List<MessageParam> messages = new ArrayList<>();
-        messages.add(MessageParam.user("query"));
+        List<LlmMessage> messages = new ArrayList<>();
+        messages.add(LlmMessage.userText("query"));
         String original = hugeContent(500);  // > 100
         messages.add(userToolResult("tu_42", original));
 
@@ -117,8 +122,7 @@ class BudgetCompactorTest {
                 "落盘文件内容必须 = 原 tool_result content");
 
         // 验证 stub 替换
-        ToolResultBlock r = (ToolResultBlock) ((List<?>) messages.get(1).getContent()).get(0);
-        String stub = (String) r.getContent();
+        String stub = firstToolResult(messages.get(1)).getOutput();
         assertTrue(stub.startsWith(BudgetCompactor.STUB_PREFIX),
                 "stub 必须以 STUB_PREFIX 开头,实际: " + stub);
         assertTrue(stub.contains(expectedFile.toAbsolutePath().toString()),
@@ -135,14 +139,13 @@ class BudgetCompactorTest {
     @DisplayName("budget should be idempotent: stubbed content not re-persisted")
     void budget_should_be_idempotent(@TempDir Path tempDir) throws IOException {
         BudgetCompactor budget = new BudgetCompactor(configWithDir(tempDir, 100));
-        List<MessageParam> messages = new ArrayList<>();
-        messages.add(MessageParam.user("q"));
+        List<LlmMessage> messages = new ArrayList<>();
+        messages.add(LlmMessage.userText("q"));
         messages.add(userToolResult("tu_1", hugeContent(500)));
 
         // 第一次:正常落盘
         assertTrue(budget.apply(messages));
-        ToolResultBlock r = (ToolResultBlock) ((List<?>) messages.get(1).getContent()).get(0);
-        String firstStub = (String) r.getContent();
+        String firstStub = firstToolResult(messages.get(1)).getOutput();
 
         // 第二次:stub 已经在 content 里(且 stub 长度可能 > 100),
         //       但 STUB_PREFIX 检查必须挡住,不重复落盘
@@ -150,8 +153,7 @@ class BudgetCompactorTest {
                 "第二次 apply 不应再次落盘:已经是 stub");
 
         // 验证 stub 文本完全一样(未被覆盖)
-        ToolResultBlock r2 = (ToolResultBlock) ((List<?>) messages.get(1).getContent()).get(0);
-        assertEquals(firstStub, r2.getContent());
+        assertEquals(firstStub, firstToolResult(messages.get(1)).getOutput());
 
         // 临时目录里应该只有 1 个文件(没把 stub 当原文重新写)
         try (var stream = Files.newDirectoryStream(tempDir)) {
@@ -169,8 +171,8 @@ class BudgetCompactorTest {
     @DisplayName("budget should persist multiple large results to separate files")
     void budget_should_handle_multiple_results(@TempDir Path tempDir) {
         BudgetCompactor budget = new BudgetCompactor(configWithDir(tempDir, 100));
-        List<MessageParam> messages = new ArrayList<>();
-        messages.add(MessageParam.user("q"));
+        List<LlmMessage> messages = new ArrayList<>();
+        messages.add(LlmMessage.userText("q"));
         for (int i = 0; i < 4; i++) {
             messages.add(userToolResult("tu_" + i, hugeContent(500)));
         }
@@ -181,8 +183,7 @@ class BudgetCompactorTest {
         for (int i = 0; i < 4; i++) {
             assertTrue(Files.exists(tempDir.resolve("tu_" + i + ".txt")),
                     "tu_" + i + ".txt 应该存在");
-            ToolResultBlock r = (ToolResultBlock) ((List<?>) messages.get(i + 1).getContent()).get(0);
-            String stub = (String) r.getContent();
+            String stub = firstToolResult(messages.get(i + 1)).getOutput();
             assertTrue(stub.startsWith(BudgetCompactor.STUB_PREFIX));
             assertTrue(stub.contains("tu_" + i + ".txt"),
                     "tu_" + i + " 的 stub 应该指向 tu_" + i + ".txt");
@@ -190,16 +191,16 @@ class BudgetCompactorTest {
     }
 
     // ─────────────────────────────────────────────────────────────
-    //  测试 6:tool_use_id 路径穿越防御
+    //  测试 6:tool_call_id 路径穿越防御
     // ─────────────────────────────────────────────────────────────
 
     @Test
-    @DisplayName("budget should sanitize tool_use_id to prevent path traversal")
+    @DisplayName("budget should sanitize tool_call_id to prevent path traversal")
     void budget_should_sanitize_tool_use_id(@TempDir Path tempDir) {
         BudgetCompactor budget = new BudgetCompactor(configWithDir(tempDir, 100));
-        List<MessageParam> messages = new ArrayList<>();
-        messages.add(MessageParam.user("q"));
-        // 恶意 tool_use_id:试图跳出 tempDir 写到 ../etc/passwd
+        List<LlmMessage> messages = new ArrayList<>();
+        messages.add(LlmMessage.userText("q"));
+        // 恶意 tool_call_id:试图跳出 tempDir 写到 ../etc/passwd
         messages.add(userToolResult("../../../etc/passwd", hugeContent(500)));
 
         assertTrue(budget.apply(messages));
@@ -236,10 +237,10 @@ class BudgetCompactorTest {
     /**
      * 回归防线:曾经的死循环。BudgetCompactor 每轮 apply 都对超阈值 tool_result 落盘换 stub,
      * 但如果那个 tool_result 恰好是 read_file 读**上一轮 stub 文件**返回的原文,又会被拆一次
-     * (新 tool_use_id → 新文件),形成 read_file → 拆 → read_file → 拆 的 ping-pong,
+     * (新 tool_call_id → 新文件),形成 read_file → 拆 → read_file → 拆 的 ping-pong,
      * 至少在实测里跑掉几十次 API 调用直到某次输出恰好 ≤ 阈值。
      *
-     * <p>修复思路:apply 时把 tool_use 的调用参数带上——若 tool_use 是 {@code read_file} 或
+     * <p>修复思路:apply 时把 tool_call 的调用参数带上——若 tool_call 是 {@code read_file} 或
      * {@code bash cat/head/tail} 读位于 taskOutputDir 之下的路径,即使内容超阈值也不再拆,
      * 直接把原文送给 LLM 让它自己决定截断。
      */
@@ -251,24 +252,23 @@ class BudgetCompactorTest {
 
         // 模拟:assistant 上一轮调 read_file 读了 tempDir 下的一个 stub 文件
         String stubPath = tempDir.resolve("previous_dump.txt").toAbsolutePath().toString();
-        ToolUseBlock readCall = new ToolUseBlock(
+        LlmToolCall readCall = new LlmToolCall(
                 "tu_readback",
                 "read_file",
                 mapper.readTree("{\"path\":\"" + stubPath.replace("\\", "\\\\") + "\"}")
         );
-        MessageParam asst = new MessageParam("assistant", new ArrayList<>(List.of(readCall)));
+        LlmMessage asst = LlmMessage.assistant(new ArrayList<>(List.<LlmContent>of(readCall)));
 
         // read_file 返回的 tool_result 是原文的完整内容(> 阈值)
         String origContent = hugeContent(500);
-        MessageParam usr = userToolResult("tu_readback", origContent);
+        LlmMessage usr = userToolResult("tu_readback", origContent);
 
-        List<MessageParam> messages = new ArrayList<>(List.of(asst, usr));
+        List<LlmMessage> messages = new ArrayList<>(List.of(asst, usr));
         boolean changed = budget.apply(messages);
 
         assertFalse(changed, "读回 stub 文件的 tool_result 必须跳过,不再拆");
         // content 保持原文,没被替换成新 stub
-        ToolResultBlock r = (ToolResultBlock) ((List<?>) messages.get(1).getContent()).get(0);
-        assertEquals(origContent, r.getContent(),
+        assertEquals(origContent, firstToolResult(messages.get(1)).getOutput(),
                 "原文应完整送到 LLM,不该换成 stub 让它再读一次");
         // 临时目录没有新落盘文件
         try (var stream = Files.newDirectoryStream(tempDir)) {
@@ -284,13 +284,13 @@ class BudgetCompactorTest {
         ObjectMapper mapper = new ObjectMapper();
 
         String stubPath = tempDir.resolve("dump.txt").toAbsolutePath().toString();
-        ToolUseBlock bashCall = new ToolUseBlock(
+        LlmToolCall bashCall = new LlmToolCall(
                 "tu_bash_cat",
                 "bash",
                 mapper.readTree("{\"command\":\"cat " + stubPath.replace("\\", "\\\\") + "\"}")
         );
-        MessageParam asst = new MessageParam("assistant", new ArrayList<>(List.of(bashCall)));
-        MessageParam usr = userToolResult("tu_bash_cat", hugeContent(500));
+        LlmMessage asst = LlmMessage.assistant(new ArrayList<>(List.<LlmContent>of(bashCall)));
+        LlmMessage usr = userToolResult("tu_bash_cat", hugeContent(500));
 
         boolean changed = budget.apply(new ArrayList<>(List.of(asst, usr)));
 
@@ -304,13 +304,13 @@ class BudgetCompactorTest {
         ObjectMapper mapper = new ObjectMapper();
 
         // 用户真的读了一个 workdir 下的普通大文件——应该拆
-        ToolUseBlock readCall = new ToolUseBlock(
+        LlmToolCall readCall = new LlmToolCall(
                 "tu_normal_read",
                 "read_file",
                 mapper.readTree("{\"path\":\"/tmp/some/user/file.log\"}")
         );
-        MessageParam asst = new MessageParam("assistant", new ArrayList<>(List.of(readCall)));
-        MessageParam usr = userToolResult("tu_normal_read", hugeContent(500));
+        LlmMessage asst = LlmMessage.assistant(new ArrayList<>(List.<LlmContent>of(readCall)));
+        LlmMessage usr = userToolResult("tu_normal_read", hugeContent(500));
 
         boolean changed = budget.apply(new ArrayList<>(List.of(asst, usr)));
 

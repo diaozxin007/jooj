@@ -3,7 +3,7 @@ package com.xilidou.jooj.agent;
 import com.xilidou.jooj.JoojTestConfig;
 import com.xilidou.jooj.http.MockAnthropicClient;
 import com.xilidou.jooj.http.ResponseFixtures;
-import com.xilidou.jooj.http.dto.MessageParam;
+import com.xilidou.jooj.llm.domain.LlmMessage;
 import com.xilidou.jooj.session.Session;
 import com.xilidou.jooj.session.SessionService;
 import com.xilidou.jooj.transcript.TranscriptLine;
@@ -149,7 +149,7 @@ class S22AcceptanceIT {
         int historyBefore = harness.getHistory(SID_N2_1).size();
         harness.processOneQuery(SID_N2_1, "hi");
 
-        List<MessageParam> history = harness.getHistory(SID_N2_1);
+        List<LlmMessage> history = harness.getHistory(SID_N2_1);
         int addedToHistory = history.size() - historyBefore;
         assertTrue(addedToHistory >= 2,
                 "session history 应至少 +2 (user + assistant),实际 +" + addedToHistory);
@@ -199,7 +199,7 @@ class S22AcceptanceIT {
         // 触发压缩:再跑一轮 —— CompactPipeline.apply 会在 loop 入门跑一次
         harness.processOneQuery(SID_N3_1, "trigger-compaction");
 
-        List<MessageParam> historyAfter = harness.getHistory(SID_N3_1);
+        List<LlmMessage> historyAfter = harness.getHistory(SID_N3_1);
         // 如果压缩生效,history size 应 << 60 + 2 (可能是 head-keep=3 + tail-keep=3 + 摘要占位)
         // 这里不硬断言压缩数字(依赖 CompactPipeline 具体实现),只关心 transcript 未被影响
         assertTrue(historyAfter.size() < 62,

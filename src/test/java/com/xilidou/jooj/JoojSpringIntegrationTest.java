@@ -149,8 +149,8 @@ class JoojSpringIntegrationTest {
         harness.processOneQuery(Session.DEFAULT_ID, "ping");
 
         assertEquals(2, harness.getHistory(Session.DEFAULT_ID).size());
-        assertEquals("user", harness.getHistory(Session.DEFAULT_ID).get(0).getRole());
-        assertEquals("assistant", harness.getHistory(Session.DEFAULT_ID).get(1).getRole());
+        assertEquals(com.xilidou.jooj.llm.domain.LlmRole.USER, harness.getHistory(Session.DEFAULT_ID).get(0).getRole());
+        assertEquals(com.xilidou.jooj.llm.domain.LlmRole.ASSISTANT, harness.getHistory(Session.DEFAULT_ID).get(1).getRole());
 
         // canonical mockLlmClient 至少被调用 1 次(主 LLM 调用,走 RecoveryCoordinator);
         // MemoryExtractor.extract 走 legacy AnthropicClient 路径(未迁移),会调 mockClient

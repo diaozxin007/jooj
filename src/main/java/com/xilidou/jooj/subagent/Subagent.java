@@ -10,17 +10,14 @@ import com.xilidou.jooj.tool.ToolCall;
 import com.xilidou.jooj.tool.ToolDefinition;
 import com.xilidou.jooj.tool.ToolResult;
 import com.xilidou.jooj.hook.HookManager;
-import com.xilidou.jooj.http.dto.MessageParam;
-import com.xilidou.jooj.http.dto.TextBlock;
-import com.xilidou.jooj.http.dto.ToolResultBlock;
 import com.xilidou.jooj.http.dto.ToolUseBlock;
 import com.xilidou.jooj.llm.LlmClient;
-import com.xilidou.jooj.llm.adapter.AnthropicShapeBridge;
 import com.xilidou.jooj.llm.domain.LlmMessage;
 import com.xilidou.jooj.llm.domain.LlmRequest;
 import com.xilidou.jooj.llm.domain.LlmResponse;
 import com.xilidou.jooj.llm.domain.LlmToolCall;
 import com.xilidou.jooj.llm.domain.LlmToolDef;
+import com.xilidou.jooj.llm.domain.LlmToolResult;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
@@ -179,8 +176,8 @@ public class Subagent {
         System.out.println();
         System.out.println(PURPLE + "[Subagent spawned]" + RESET);
 
-        List<MessageParam> messages = new ArrayList<>();
-        messages.add(MessageParam.user(description));    // fresh context
+        List<LlmMessage> messages = new ArrayList<>();
+        messages.add(LlmMessage.userText(description));    // fresh context
 
         List<LlmToolDef> tools = buildSubTools();
 
@@ -188,26 +185,16 @@ public class Subagent {
             // s22 D-9:每轮 turn 顶部检查 interrupt(只读,不消费)
             checkInterrupt();
 
-            // P2 Step F:出站构造 canonical LlmRequest。messages(List<MessageParam>)
-            // 通过 AnthropicAdapter.messageToDomain 桥回 List<LlmMessage>,response.content
-            // 再通过 AnthropicShapeBridge.contentToWire 桥回塞进 MessageParam.assistant(...)
-            // —— 与 AgentLoopHarness 主循环同一 pattern。Step G flip messages 类型后
-            // 这两条桥接都可删。
-            var adapter = new com.xilidou.jooj.llm.adapter.AnthropicAdapter(json);
-            List<LlmMessage> canonicalMessages = new ArrayList<>(messages.size());
-            for (MessageParam m : messages) {
-                canonicalMessages.add(adapter.messageToDomain(m));
-            }
+            // P2 Step G2:messages 已 canonical,直接构造 LlmRequest
             LlmRequest request = LlmRequest.builderWithSystemText(SUB_SYSTEM_PROMPT)
                     .model(model)
-                    .messages(canonicalMessages)
+                    .messages(messages)
                     .tools(tools)
                     .maxTokens(MAX_TOKENS)
                     .build();
 
             LlmResponse response = client.createMessage(request);
-            messages.add(MessageParam.assistant(
-                    AnthropicShapeBridge.contentToWire(response.getContent())));
+            messages.add(LlmMessage.assistant(response.getContent()));
 
             if (!response.needsToolExecution()) {
                 String result = extractText(messages);
@@ -215,7 +202,7 @@ public class Subagent {
                 return result;
             }
 
-            List<ToolResultBlock> toolResults = new ArrayList<>();
+            List<LlmToolResult> toolResults = new ArrayList<>();
             for (LlmToolCall toolCall : response.toolCalls()) {
                 // s22 D-9:每个 tool 之间也检查 —— 用户点 stop 后已跑完的 tool 结果不进 messages,
                 // subagent 直接抛出。跟 lead 的检查点粒度对齐。
@@ -233,7 +220,7 @@ public class Subagent {
                 Optional<String> blocked = hooks.triggerPreToolUse(toolUse);
                 if (blocked.isPresent()) {
                     System.out.println(GRAY + "  [sub] ⛔ " + blocked.get() + RESET);
-                    toolResults.add(ToolResultBlock.ofText(toolUse.getId(), blocked.get()));
+                    toolResults.add(LlmToolResult.success(toolUse.getId(), blocked.get()));
                     continue;
                 }
 
@@ -247,10 +234,10 @@ public class Subagent {
 
                 hooks.triggerPostToolUse(toolUse, output);
 
-                toolResults.add(ToolResultBlock.ofText(toolUse.getId(), output));
+                toolResults.add(LlmToolResult.success(toolUse.getId(), output));
             }
 
-            messages.add(MessageParam.toolResults(toolResults));
+            messages.add(LlmMessage.toolResults(toolResults));
         }
 
         log.warn("[Subagent] hit MAX_TURNS={} without natural stop", MAX_TURNS);
@@ -315,22 +302,19 @@ public class Subagent {
         return tools;
     }
 
-    private String extractText(List<MessageParam> messages) {
+    private String extractText(List<LlmMessage> messages) {
         for (int i = messages.size() - 1; i >= 0; i--) {
-            MessageParam msg = messages.get(i);
-            if (!"assistant".equals(msg.getRole())) continue;
-
-            Object content = msg.getContent();
-            if (content instanceof List<?> blocks) {
-                StringBuilder sb = new StringBuilder();
-                for (Object block : blocks) {
-                    if (block instanceof TextBlock t && t.getText() != null) {
-                        if (sb.length() > 0) sb.append("\n");
-                        sb.append(t.getText());
-                    }
+            LlmMessage msg = messages.get(i);
+            if (msg.getRole() != com.xilidou.jooj.llm.domain.LlmRole.ASSISTANT) continue;
+            if (msg.getContent() == null) continue;
+            StringBuilder sb = new StringBuilder();
+            for (com.xilidou.jooj.llm.domain.LlmContent c : msg.getContent()) {
+                if (c instanceof com.xilidou.jooj.llm.domain.LlmText t && t.getText() != null) {
+                    if (sb.length() > 0) sb.append("\n");
+                    sb.append(t.getText());
                 }
-                if (sb.length() > 0) return sb.toString();
             }
+            if (sb.length() > 0) return sb.toString();
         }
         return "";
     }

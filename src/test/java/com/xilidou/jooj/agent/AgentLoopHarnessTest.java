@@ -24,6 +24,10 @@ import com.xilidou.jooj.http.dto.TextBlock;
 import com.xilidou.jooj.http.dto.ThinkingBlock;
 import com.xilidou.jooj.http.dto.ToolResultBlock;
 import com.xilidou.jooj.http.dto.ToolUseBlock;
+import com.xilidou.jooj.llm.domain.LlmContent;
+import com.xilidou.jooj.llm.domain.LlmMessage;
+import com.xilidou.jooj.llm.domain.LlmRole;
+import com.xilidou.jooj.llm.domain.LlmText;
 import com.xilidou.jooj.tool.Tool;
 import com.xilidou.jooj.todo.TodoItem;
 import com.xilidou.jooj.todo.TodoStatus;
@@ -104,16 +108,16 @@ class AgentLoopHarnessTest {
     void loop_should_stop_when_end_turn() {
         mock.reset(ResponseFixtures.endTurn("Hello"));
 
-        List<MessageParam> messages = new ArrayList<>();
-        messages.add(MessageParam.user("Say hello"));
+        List<LlmMessage> messages = new ArrayList<>();
+        messages.add(LlmMessage.userText("Say hello"));
         harness.agentLoop(messages);
 
         assertEquals(1, mock.getCallCount(), "应该只调用一次 LLM");
         assertEquals(0, spyTool.executionCount(), "end_turn 不应该执行任何工具");
 
         assertEquals(2, messages.size());
-        assertEquals("user", messages.get(0).getRole());
-        assertEquals("assistant", messages.get(1).getRole());
+        assertEquals(com.xilidou.jooj.llm.domain.LlmRole.USER, messages.get(0).getRole());
+        assertEquals(com.xilidou.jooj.llm.domain.LlmRole.ASSISTANT, messages.get(1).getRole());
     }
 
     // ────────────────────────────────────────────────────────────
@@ -128,8 +132,8 @@ class AgentLoopHarnessTest {
                 ResponseFixtures.endTurn("Done")
         );
 
-        List<MessageParam> messages = new ArrayList<>();
-        messages.add(MessageParam.user("Run the tool"));
+        List<LlmMessage> messages = new ArrayList<>();
+        messages.add(LlmMessage.userText("Run the tool"));
 
         harness.agentLoop(messages);
 
@@ -141,10 +145,10 @@ class AgentLoopHarnessTest {
         assertEquals("value1", lastCall.getArguments().get("arg"));
 
         assertEquals(4, messages.size());
-        assertEquals("user", messages.get(0).getRole());
-        assertEquals("assistant", messages.get(1).getRole());
-        assertEquals("user", messages.get(2).getRole());
-        assertEquals("assistant", messages.get(3).getRole());
+        assertEquals(com.xilidou.jooj.llm.domain.LlmRole.USER, messages.get(0).getRole());
+        assertEquals(com.xilidou.jooj.llm.domain.LlmRole.ASSISTANT, messages.get(1).getRole());
+        assertEquals(com.xilidou.jooj.llm.domain.LlmRole.TOOL, messages.get(2).getRole());
+        assertEquals(com.xilidou.jooj.llm.domain.LlmRole.ASSISTANT, messages.get(3).getRole());
 
         CreateMessageRequest secondRequest = mock.getRequests().get(1);
         assertEquals(3, secondRequest.getMessages().size());
@@ -173,8 +177,8 @@ class AgentLoopHarnessTest {
                 ResponseFixtures.endTurn("All done")
         );
 
-        List<MessageParam> messages = new ArrayList<>();
-        messages.add(MessageParam.user("Run all tools"));
+        List<LlmMessage> messages = new ArrayList<>();
+        messages.add(LlmMessage.userText("Run all tools"));
 
         harness.agentLoop(messages);
 
@@ -207,8 +211,8 @@ class AgentLoopHarnessTest {
 
         mock.reset(firstResp, ResponseFixtures.endTurn("Done"));
 
-        List<MessageParam> messages = new ArrayList<>();
-        messages.add(MessageParam.user("Use the tool"));
+        List<LlmMessage> messages = new ArrayList<>();
+        messages.add(LlmMessage.userText("Use the tool"));
 
         harness.agentLoop(messages);
 
@@ -241,8 +245,8 @@ class AgentLoopHarnessTest {
                 ResponseFixtures.endTurn("OK, I tried something else")
         );
 
-        List<MessageParam> messages = new ArrayList<>();
-        messages.add(MessageParam.user("Use a tool"));
+        List<LlmMessage> messages = new ArrayList<>();
+        messages.add(LlmMessage.userText("Use a tool"));
 
         assertDoesNotThrow(() -> harness.agentLoop(messages));
 
@@ -280,8 +284,8 @@ class AgentLoopHarnessTest {
         responses[AgentLoopHarness.NAG_THRESHOLD] = ResponseFixtures.endTurn("done");
         mock.reset(responses);
 
-        List<MessageParam> messages = new ArrayList<>();
-        messages.add(MessageParam.user("do work"));
+        List<LlmMessage> messages = new ArrayList<>();
+        messages.add(LlmMessage.userText("do work"));
 
         harness.agentLoop(messages);
 
@@ -316,8 +320,8 @@ class AgentLoopHarnessTest {
                 ResponseFixtures.endTurn("done")
         );
 
-        List<MessageParam> messages = new ArrayList<>();
-        messages.add(MessageParam.user("plan"));
+        List<LlmMessage> messages = new ArrayList<>();
+        messages.add(LlmMessage.userText("plan"));
 
         harness.agentLoop(messages);
 
@@ -352,8 +356,8 @@ class AgentLoopHarnessTest {
         responses[AgentLoopHarness.NAG_THRESHOLD] = ResponseFixtures.endTurn("done");
         mock.reset(responses);
 
-        List<MessageParam> messages = new ArrayList<>();
-        messages.add(MessageParam.user("do work"));
+        List<LlmMessage> messages = new ArrayList<>();
+        messages.add(LlmMessage.userText("do work"));
 
         harness.agentLoop(messages);
 
@@ -461,8 +465,8 @@ class AgentLoopHarnessTest {
                 ResponseFixtures.endTurn("done")
         );
 
-        List<MessageParam> messages = new ArrayList<>();
-        messages.add(MessageParam.user("kick off a slow op"));
+        List<LlmMessage> messages = new ArrayList<>();
+        messages.add(LlmMessage.userText("kick off a slow op"));
 
         harness.agentLoop(messages);
 
@@ -520,8 +524,8 @@ class AgentLoopHarnessTest {
                 ResponseFixtures.endTurn("ok")
         );
 
-        List<MessageParam> messages = new ArrayList<>();
-        messages.add(MessageParam.user("run slow op"));
+        List<LlmMessage> messages = new ArrayList<>();
+        messages.add(LlmMessage.userText("run slow op"));
 
         harness.agentLoop(messages);
 
@@ -555,8 +559,8 @@ class AgentLoopHarnessTest {
         cronService.fireMatching(java.time.LocalDateTime.now());
         assertTrue(cronService.queueSize() >= 1, "至少应有 1 个 fired job 在队列");
 
-        List<MessageParam> messages = new ArrayList<>();
-        messages.add(MessageParam.user("hi"));
+        List<LlmMessage> messages = new ArrayList<>();
+        messages.add(LlmMessage.userText("hi"));
 
         harness.agentLoop(messages);
 
@@ -589,15 +593,15 @@ class AgentLoopHarnessTest {
         cronService.fireMatching(java.time.LocalDateTime.now());
         assertEquals(2, cronService.queueSize());
 
-        List<MessageParam> messages = new ArrayList<>();
-        messages.add(MessageParam.user("hi"));
+        List<LlmMessage> messages = new ArrayList<>();
+        messages.add(LlmMessage.userText("hi"));
 
         harness.agentLoop(messages);
 
         // 验证 messages 里有 2 条 [Scheduled] —— 顺序由 ConcurrentLinkedQueue 决定(先 fire 先入)
         long count = messages.stream()
-                .filter(m -> "user".equals(m.getRole()))
-                .filter(m -> m.getContent() instanceof String s && s.contains("[Scheduled]"))
+                .filter(m -> m.getRole() == com.xilidou.jooj.llm.domain.LlmRole.USER)
+                .filter(m -> containsText(m, "[Scheduled]"))
                 .count();
         assertEquals(2, count, "两条 [Scheduled] user message 应被注入");
 
@@ -628,14 +632,9 @@ class AgentLoopHarnessTest {
         assertEquals(0, messageBus.peekSize("lead"), "lead inbox 应被 drain");
 
         boolean injected = harness.getHistory(SID).stream()
-                .filter(m -> "user".equals(m.getRole()))
-                .anyMatch(m -> {
-                    Object c = m.getContent();
-                    return c instanceof String s
-                            && s.contains("[Inbox]")
-                            && s.contains("alice")
-                            && s.contains("Schema done");
-                });
+                .filter(m -> m.getRole() == com.xilidou.jooj.llm.domain.LlmRole.USER)
+                .anyMatch(m -> containsText(m, "[Inbox]") && containsText(m, "alice")
+                        && containsText(m, "Schema done"));
         assertTrue(injected, "队友消息应注入 history");
     }
 
@@ -708,14 +707,12 @@ class AgentLoopHarnessTest {
 
         // history 应有 [Inbox] 注入,但只含 bob 的消息(alice 的协议响应被路由走)
         boolean hasBob = harness.getHistory(SID).stream()
-                .filter(m -> "user".equals(m.getRole()))
-                .anyMatch(m -> m.getContent() instanceof String s
-                        && s.contains("[Inbox]") && s.contains("bob")
-                        && s.contains("Schema done"));
+                .filter(m -> m.getRole() == com.xilidou.jooj.llm.domain.LlmRole.USER)
+                .anyMatch(m -> containsText(m, "[Inbox]") && containsText(m, "bob")
+                        && containsText(m, "Schema done"));
         boolean hasAlice = harness.getHistory(SID).stream()
-                .filter(m -> "user".equals(m.getRole()))
-                .anyMatch(m -> m.getContent() instanceof String s
-                        && s.contains("[Inbox]") && s.contains("Shutting down"));
+                .filter(m -> m.getRole() == com.xilidou.jooj.llm.domain.LlmRole.USER)
+                .anyMatch(m -> containsText(m, "[Inbox]") && containsText(m, "Shutting down"));
         assertTrue(hasBob, "bob 的非协议 result 应注入 history");
         assertFalse(hasAlice, "alice 的 shutdown_response 不应出现在 history");
     }
@@ -766,33 +763,28 @@ class AgentLoopHarnessTest {
         cronOrchestrator.processFired(List.of(jobA, jobB));
 
         // 各自 session 的 history 应该有自己的 [Scheduled] 注入
-        List<MessageParam> historyA = sessionService.loadHistory(sA.id());
-        List<MessageParam> historyB = sessionService.loadHistory(sB.id());
+        List<LlmMessage> historyA = sessionService.loadHistory(sA.id());
+        List<LlmMessage> historyB = sessionService.loadHistory(sB.id());
 
         assertTrue(historyA.stream().anyMatch(m ->
-                "user".equals(m.getRole())
-                        && m.getContent() instanceof String s
-                        && s.contains("[Scheduled] wake A")),
+                m.getRole() == com.xilidou.jooj.llm.domain.LlmRole.USER
+                        && containsText(m, "[Scheduled] wake A")),
                 "session A 的 history 应包含 [Scheduled] wake A");
         assertTrue(historyB.stream().anyMatch(m ->
-                "user".equals(m.getRole())
-                        && m.getContent() instanceof String s
-                        && s.contains("[Scheduled] wake B")),
+                m.getRole() == com.xilidou.jooj.llm.domain.LlmRole.USER
+                        && containsText(m, "[Scheduled] wake B")),
                 "session B 的 history 应包含 [Scheduled] wake B");
 
         // 反向交叉检查:A 不能漏到 B,反之亦然
-        assertFalse(historyA.stream().anyMatch(m ->
-                m.getContent() instanceof String s && s.contains("wake B")),
+        assertFalse(historyA.stream().anyMatch(m -> containsText(m, "wake B")),
                 "session A 不该看到 wake B");
-        assertFalse(historyB.stream().anyMatch(m ->
-                m.getContent() instanceof String s && s.contains("wake A")),
+        assertFalse(historyB.stream().anyMatch(m -> containsText(m, "wake A")),
                 "session B 不该看到 wake A");
 
         // cron-default 不该收到任何东西(都路由到了具体 session)
-        List<MessageParam> historyDefault = sessionService.loadHistory(Session.CRON_DEFAULT_ID);
+        List<LlmMessage> historyDefault = sessionService.loadHistory(Session.CRON_DEFAULT_ID);
         assertTrue(historyDefault.stream().noneMatch(m ->
-                m.getContent() instanceof String s
-                        && (s.contains("wake A") || s.contains("wake B"))),
+                containsText(m, "wake A") || containsText(m, "wake B")),
                 "cron-default 不该作为兜底收到任何 session 已存在的 cron 通知");
     }
 
@@ -811,9 +803,8 @@ class AgentLoopHarnessTest {
         // s22 架构审查(B1)
         cronOrchestrator.processFired(List.of(legacy));
 
-        List<MessageParam> historyDefault = sessionService.loadHistory(Session.CRON_DEFAULT_ID);
-        assertTrue(historyDefault.stream().anyMatch(m ->
-                m.getContent() instanceof String s && s.contains("legacy job")),
+        List<LlmMessage> historyDefault = sessionService.loadHistory(Session.CRON_DEFAULT_ID);
+        assertTrue(historyDefault.stream().anyMatch(m -> containsText(m, "legacy job")),
                 "sessionId == null 的 cron 必须兜底注入 cron-default");
     }
 
@@ -832,6 +823,19 @@ class AgentLoopHarnessTest {
      * 每次执行都记录调用次数和最后的 ToolCall,方便测试断言。
      * 通过 @Bean 注册到容器,被 ToolRegistry 自动收集。
      */
+
+    /** helper: canonical message 里所有 LlmText 拼接后是否包含 needle。 */
+    private static boolean containsText(LlmMessage m, String needle) {
+        if (m == null || m.getContent() == null) return false;
+        for (var c : m.getContent()) {
+            if (c instanceof com.xilidou.jooj.llm.domain.LlmText t
+                    && t.getText() != null && t.getText().contains(needle)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     static class SpyTestTool implements Tool {
         private final AtomicInteger executionCount = new AtomicInteger(0);
         private ToolCall lastCall;

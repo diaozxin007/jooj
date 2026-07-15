@@ -1,7 +1,8 @@
 package com.xilidou.jooj.session;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xilidou.jooj.http.dto.MessageParam;
+import com.xilidou.jooj.llm.domain.LlmMessage;
+import com.xilidou.jooj.llm.domain.LlmText;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -100,8 +101,8 @@ class SessionServiceTest {
     void delete_removes_session_and_history_file() {
         Session s = service.create("temp");
         // 写一条 history 触发 history 文件落盘
-        List<MessageParam> hist = service.loadHistory(s.id());
-        hist.add(MessageParam.user("hello"));
+        List<LlmMessage> hist = service.loadHistory(s.id());
+        hist.add(LlmMessage.userText("hello"));
         service.saveHistory(s.id(), hist);
 
         service.delete(s.id());
@@ -136,7 +137,7 @@ class SessionServiceTest {
     @Test
     @DisplayName("loadHistory 自动注册未知 session")
     void load_history_auto_registers() {
-        List<MessageParam> hist = service.loadHistory("auto-test");
+        List<LlmMessage> hist = service.loadHistory("auto-test");
         assertNotNull(hist);
         assertTrue(service.exists("auto-test"));
     }
@@ -145,10 +146,10 @@ class SessionServiceTest {
     @DisplayName("save+load history round-trip:盘上的内容能再读出来")
     void save_load_history_round_trip() {
         Session s = service.create("rt");
-        List<MessageParam> hist = service.loadHistory(s.id());
-        hist.add(MessageParam.user("hello"));
-        hist.add(MessageParam.assistant(List.of(
-                new com.xilidou.jooj.http.dto.TextBlock("world"))));
+        List<LlmMessage> hist = service.loadHistory(s.id());
+        hist.add(LlmMessage.userText("hello"));
+        hist.add(LlmMessage.assistant(List.of(
+                new LlmText("world"))));
         service.saveHistory(s.id(), hist);
 
         // 重新构造 service,清掉 in-memory cache,模拟进程重启
@@ -157,21 +158,21 @@ class SessionServiceTest {
         SessionService newService = SessionService.forTests(newStore);
         newService.ensureBootstrap();
 
-        List<MessageParam> reloaded = newService.loadHistory(s.id());
+        List<LlmMessage> reloaded = newService.loadHistory(s.id());
         assertEquals(2, reloaded.size());
         assertEquals(2, reloaded.size());
-        assertEquals("user", reloaded.get(0).getRole());
-        assertEquals("assistant", reloaded.get(1).getRole());
+        assertEquals(com.xilidou.jooj.llm.domain.LlmRole.USER, reloaded.get(0).getRole());
+        assertEquals(com.xilidou.jooj.llm.domain.LlmRole.ASSISTANT, reloaded.get(1).getRole());
     }
 
     @Test
     @DisplayName("saveHistory 同步更新 messageCount + lastActiveAt")
     void save_history_updates_metadata() {
         Session s = service.create("meta");
-        List<MessageParam> hist = service.loadHistory(s.id());
-        hist.add(MessageParam.user("a"));
-        hist.add(MessageParam.user("b"));
-        hist.add(MessageParam.user("c"));
+        List<LlmMessage> hist = service.loadHistory(s.id());
+        hist.add(LlmMessage.userText("a"));
+        hist.add(LlmMessage.userText("b"));
+        hist.add(LlmMessage.userText("c"));
         service.saveHistory(s.id(), hist);
 
         Session refreshed = service.get(s.id());
@@ -183,8 +184,8 @@ class SessionServiceTest {
     @DisplayName("clearHistory 清空 + 落盘空文件")
     void clear_history_resets() {
         Session s = service.create("c");
-        List<MessageParam> hist = service.loadHistory(s.id());
-        hist.add(MessageParam.user("hi"));
+        List<LlmMessage> hist = service.loadHistory(s.id());
+        hist.add(LlmMessage.userText("hi"));
         service.saveHistory(s.id(), hist);
 
         service.clearHistory(s.id());
@@ -250,7 +251,7 @@ class SessionServiceTest {
         SessionService fresh = SessionService.forTests(store);
         fresh.ensureBootstrap();  // 只 bootstrap reserved session,普通 session 不在 map
 
-        List<MessageParam> hist = List.of(MessageParam.user("hello"));
+        List<LlmMessage> hist = List.of(LlmMessage.userText("hello"));
         // saveHistory 应该 warn + 自动注册,不 silently return
         assertDoesNotThrow(() -> fresh.saveHistory(id, hist));
 
@@ -258,7 +259,7 @@ class SessionServiceTest {
         assertTrue(fresh.exists(id), "saveHistory 应自动注册 unknown session");
 
         // 磁盘 JSON 也已更新(saveHistory 调 store.writeHistory)
-        List<MessageParam> loaded = fresh.loadHistory(id);
+        List<LlmMessage> loaded = fresh.loadHistory(id);
         assertEquals(1, loaded.size());
     }
 
@@ -268,7 +269,7 @@ class SessionServiceTest {
         // searchService=null 的 service(老 1 参 ctor)调 clearHistory 不应 NPE
         // 这守门"不再显式调 searchService.onClearHistory"不会因 NPE 爆
         Session s = service.create("c");
-        service.loadHistory(s.id()).add(MessageParam.user("hi"));
+        service.loadHistory(s.id()).add(LlmMessage.userText("hi"));
         service.saveHistory(s.id(), service.loadHistory(s.id()));
         assertEquals(1, service.loadHistory(s.id()).size());
 
@@ -325,7 +326,7 @@ class SessionServiceTest {
         String sid = "auto-created-" + System.nanoTime();
         assertFalse(service.exists(sid), "前置:session 不存在");
 
-        List<MessageParam> hist = service.loadHistory(sid, true);
+        List<LlmMessage> hist = service.loadHistory(sid, true);
         assertNotNull(hist, "应返回空 list 而非 null");
         assertTrue(hist.isEmpty(), "新建 session 的 history 应是空的");
         assertTrue(service.exists(sid), "loadHistory(sid, true) 应触发 auto-register");
@@ -336,7 +337,7 @@ class SessionServiceTest {
     void load_history_default_signature_is_lenient() {
         String sid = "auto-lenient-" + System.nanoTime();
         // 通过老 1 参签名调用
-        List<MessageParam> hist = service.loadHistory(sid);
+        List<LlmMessage> hist = service.loadHistory(sid);
         assertNotNull(hist);
         assertTrue(service.exists(sid),
                 "1 参 loadHistory 默认 createIfMissing=true,兼容旧行为");
@@ -347,17 +348,17 @@ class SessionServiceTest {
     void save_history_updates_cache_reference() {
         Session s = service.create("cache-sync-test");
         // 第一次 loadHistory 拿到空 list
-        List<MessageParam> firstRef = service.loadHistory(s.id());
-        firstRef.add(MessageParam.user("first"));
+        List<LlmMessage> firstRef = service.loadHistory(s.id());
+        firstRef.add(LlmMessage.userText("first"));
         service.saveHistory(s.id(), firstRef);
 
         // 现在 caller 换成一个**新 list** 传给 saveHistory
-        List<MessageParam> newList = new ArrayList<>();
-        newList.add(MessageParam.user("second-new-ref"));
+        List<LlmMessage> newList = new ArrayList<>();
+        newList.add(LlmMessage.userText("second-new-ref"));
         service.saveHistory(s.id(), newList);
 
         // 关键断言:下次 loadHistory 应看到新 list 内容(cache 已更新引用)
-        List<MessageParam> reloaded = service.loadHistory(s.id());
+        List<LlmMessage> reloaded = service.loadHistory(s.id());
         assertEquals(1, reloaded.size(),
                 "cache 应更新到 saveHistory 传入的新 list,而非保留旧引用");
         // MessageParam.content 可能是 String 或 List<ContentBlock>,取决于工厂

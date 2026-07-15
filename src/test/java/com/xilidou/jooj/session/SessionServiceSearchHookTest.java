@@ -1,7 +1,7 @@
 package com.xilidou.jooj.session;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xilidou.jooj.http.dto.MessageParam;
+import com.xilidou.jooj.llm.domain.LlmMessage;
 import com.xilidou.jooj.search.SearchConfig;
 import com.xilidou.jooj.search.SearchHit;
 import com.xilidou.jooj.search.SearchQuery;
@@ -108,8 +108,8 @@ class SessionServiceSearchHookTest {
     @DisplayName("saveHistory 不再触发索引(P3-b:事件驱动后旧钩子已断)")
     void save_history_no_longer_auto_indexes() {
         Session s = service.create("no-hook");
-        List<MessageParam> hist = service.loadHistory(s.id());
-        hist.add(MessageParam.user("this bypasses events"));
+        List<LlmMessage> hist = service.loadHistory(s.id());
+        hist.add(LlmMessage.userText("this bypasses events"));
         // 关键:直接调 saveHistory,不发事件。P3-b 之前会自动索引,现在不会。
         service.saveHistory(s.id(), hist);
 
@@ -184,8 +184,8 @@ class SessionServiceSearchHookTest {
         // 模拟 SearchStore 故障:关掉它
         searchStore.close();
 
-        List<MessageParam> hist = service.loadHistory(s.id());
-        hist.add(MessageParam.user("must persist to JSON regardless"));
+        List<LlmMessage> hist = service.loadHistory(s.id());
+        hist.add(LlmMessage.userText("must persist to JSON regardless"));
         // s22 P3-b 后 saveHistory 不再调 searchService,更不会因为它出错。
         // 但保留这个测试锁定"JSON 主流程独立可用"这个更根本的属性。
         assertDoesNotThrow(() -> service.saveHistory(s.id(), hist));
@@ -202,8 +202,8 @@ class SessionServiceSearchHookTest {
         SessionService legacy = SessionService.forTests(store);
         legacy.ensureBootstrap();
         Session s = legacy.create("legacy");
-        List<MessageParam> hist = legacy.loadHistory(s.id());
-        hist.add(MessageParam.user("legacy path"));
+        List<LlmMessage> hist = legacy.loadHistory(s.id());
+        hist.add(LlmMessage.userText("legacy path"));
         // 不应抛 NPE
         assertDoesNotThrow(() -> legacy.saveHistory(s.id(), hist));
     }

@@ -2,10 +2,12 @@ package com.xilidou.jooj.compact;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
-import com.xilidou.jooj.http.dto.MessageParam;
-import com.xilidou.jooj.http.dto.TextBlock;
-import com.xilidou.jooj.http.dto.ToolResultBlock;
-import com.xilidou.jooj.http.dto.ToolUseBlock;
+import com.xilidou.jooj.llm.domain.LlmContent;
+import com.xilidou.jooj.llm.domain.LlmMessage;
+import com.xilidou.jooj.llm.domain.LlmRole;
+import com.xilidou.jooj.llm.domain.LlmText;
+import com.xilidou.jooj.llm.domain.LlmToolCall;
+import com.xilidou.jooj.llm.domain.LlmToolResult;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -34,24 +36,37 @@ class SnipCompactorTest {
     private static final JsonNodeFactory JSON = JsonNodeFactory.instance;
 
     /** 构造一条普通 user 文本消息(非 tool_result)。*/
-    private static MessageParam userText(String text) {
-        return MessageParam.user(text);
+    private static LlmMessage userText(String text) {
+        return LlmMessage.userText(text);
     }
 
-    /** 构造一条普通 assistant 文本消息(非 tool_use)。*/
-    private static MessageParam assistantText(String text) {
-        return new MessageParam("assistant", List.of(new TextBlock(text)));
+    /** 构造一条普通 assistant 文本消息(非 tool_call)。*/
+    private static LlmMessage assistantText(String text) {
+        return LlmMessage.assistant(List.of(new LlmText(text)));
     }
 
-    /** 构造一条含 tool_use 的 assistant 消息。*/
-    private static MessageParam assistantToolUse(String id) {
+    /** 构造一条含 tool_call 的 assistant 消息。*/
+    private static LlmMessage assistantToolUse(String id) {
         JsonNode input = JSON.objectNode();
-        return new MessageParam("assistant", List.of(new ToolUseBlock(id, "test_tool", input)));
+        return LlmMessage.assistant(List.of(new LlmToolCall(id, "test_tool", input)));
     }
 
-    /** 构造一条含 tool_result 的 user 消息。*/
-    private static MessageParam userToolResult(String id, String content) {
-        return new MessageParam("user", List.of(ToolResultBlock.ofText(id, content)));
+    /** 构造一条含 tool_result 的 TOOL 消息。*/
+    private static LlmMessage userToolResult(String id, String content) {
+        return LlmMessage.toolResults(List.of(LlmToolResult.success(id, content)));
+    }
+
+    /** 抽 message 里所有 LlmText 拼接文本(用于断言);ToolCall / ToolResult 忽略。 */
+    private static String extractText(LlmMessage m) {
+        if (m.getContent() == null) return "";
+        StringBuilder sb = new StringBuilder();
+        for (LlmContent c : m.getContent()) {
+            if (c instanceof LlmText t && t.getText() != null) {
+                if (sb.length() > 0) sb.append('\n');
+                sb.append(t.getText());
+            }
+        }
+        return sb.toString();
     }
 
     /**
@@ -59,9 +74,8 @@ class SnipCompactorTest {
      * 归档成功会带 {@code , archived to /path}, 失败降级为不带 path 的旧格式;
      * 两种都合法,只锁定 "[snipped N messages" 前缀 + 结尾 "]"。
      */
-    private static void assertSnippedPlaceholder(int expected, Object content) {
-        assertTrue(content instanceof String, "占位 content 应为 String");
-        String s = (String) content;
+    private static void assertSnippedPlaceholder(int expected, LlmMessage m) {
+        String s = extractText(m);
         assertTrue(s.startsWith("[snipped " + expected + " messages"),
                 "占位应以 [snipped N messages 开头,实际:" + s);
         assertTrue(s.endsWith("]"), "占位应以 ] 结尾,实际:" + s);
@@ -75,7 +89,7 @@ class SnipCompactorTest {
     @DisplayName("snip should not modify when messages.size() <= maxMessages")
     void snip_should_not_touch_short_history() {
         SnipCompactor snip = new SnipCompactor(new CompactConfig(50, 3, 3, 120));
-        List<MessageParam> messages = new ArrayList<>();
+        List<LlmMessage> messages = new ArrayList<>();
         for (int i = 0; i < 50; i++) messages.add(userText("m" + i));
 
         boolean changed = snip.apply(messages);
@@ -92,7 +106,7 @@ class SnipCompactorTest {
     @DisplayName("snip should keep first 3 + placeholder + last 47 when no tool_use boundary")
     void snip_should_split_at_default_boundary() {
         SnipCompactor snip = new SnipCompactor(new CompactConfig(50, 3, 3, 120));
-        List<MessageParam> messages = new ArrayList<>();
+        List<LlmMessage> messages = new ArrayList<>();
         // 51 条普通 user 文本(无 tool_use/tool_result),保证不触发边界保护
         for (int i = 0; i < 51; i++) messages.add(userText("msg-" + i));
 
@@ -103,12 +117,12 @@ class SnipCompactorTest {
         // headEnd=3, tailStart=51-(50-3)=4, snipped=4-3=1 条
         // 结果:[m0, m1, m2, "[snipped 1 messages]", m4, m5, ..., m50]
         assertEquals(51, messages.size(), "结果应该是 head 3 + placeholder + tail 47 = 51 条");
-        assertEquals("msg-0", messages.get(0).getContent());
-        assertEquals("msg-1", messages.get(1).getContent());
-        assertEquals("msg-2", messages.get(2).getContent());
-        assertSnippedPlaceholder(1, messages.get(3).getContent());
-        assertEquals("msg-4", messages.get(4).getContent());
-        assertEquals("msg-50", messages.get(50).getContent());
+        assertEquals("msg-0", extractText(messages.get(0)));
+        assertEquals("msg-1", extractText(messages.get(1)));
+        assertEquals("msg-2", extractText(messages.get(2)));
+        assertSnippedPlaceholder(1, messages.get(3));
+        assertEquals("msg-4", extractText(messages.get(4)));
+        assertEquals("msg-50", extractText(messages.get(50)));
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -119,7 +133,7 @@ class SnipCompactorTest {
     @DisplayName("snip should advance headEnd past tool_result if head ends on tool_use")
     void snip_should_protect_head_tool_use_pair() {
         SnipCompactor snip = new SnipCompactor(new CompactConfig(50, 3, 3, 120));
-        List<MessageParam> messages = new ArrayList<>();
+        List<LlmMessage> messages = new ArrayList<>();
         messages.add(userText("query"));                         // idx 0
         messages.add(assistantToolUse("tu_001"));                // idx 1 (tool_use)
         messages.add(userToolResult("tu_001", "result-1 long content"));  // idx 2 (tool_result)
@@ -135,11 +149,11 @@ class SnipCompactorTest {
         // 所以这个 case 实际上 headEnd 不需要后移(已经在 tool_result 之后)
         // 头 3 + 占位 + 尾 47
         assertEquals(51, messages.size());
-        assertEquals("query", messages.get(0).getContent());
-        // idx 1 是 tool_use,idx 2 是 tool_result(配对已被完整保留在头部)
-        assertTrue(messages.get(1).getContent() instanceof List<?>);
+        assertEquals("query", extractText(messages.get(0)));
+        // idx 1 是 tool_call,idx 2 是 tool_result(配对已被完整保留在头部)
+        assertTrue(messages.get(1).getContent().stream().anyMatch(c -> c instanceof LlmToolCall));
         assertTrue(messages.get(2).getContent() instanceof List<?>);
-        assertSnippedPlaceholder(1, messages.get(3).getContent());
+        assertSnippedPlaceholder(1, messages.get(3));
     }
 
     @Test
@@ -148,7 +162,7 @@ class SnipCompactorTest {
         // headKeep=2 → headEnd=2,假如 idx 1 是 tool_use,idx 2 是 tool_result,
         // 则 adjustHeadEnd 应该把 headEnd 推到 3(把 tool_result 也保留)
         SnipCompactor snip = new SnipCompactor(new CompactConfig(50, 2, 3, 120));
-        List<MessageParam> messages = new ArrayList<>();
+        List<LlmMessage> messages = new ArrayList<>();
         messages.add(userText("query"));                     // idx 0
         messages.add(assistantToolUse("tu_001"));            // idx 1 ← head 末尾会落这里(tool_use)
         messages.add(userToolResult("tu_001", "result-1"));  // idx 2 (tool_result,需要被吃进 head)
@@ -164,8 +178,8 @@ class SnipCompactorTest {
         assertFalse(changed,
                 "boundary protection 把 head 推到 3,与 tailStart=3 重合 → 不裁");
         assertEquals(51, messages.size(), "不裁剪时 messages 不应被修改");
-        // 头部完整保留,验证 tool_use ↔ tool_result 配对没被切开
-        assertEquals("query", messages.get(0).getContent());
+        // 头部完整保留,验证 tool_call ↔ tool_result 配对没被切开
+        assertEquals("query", extractText(messages.get(0)));
         assertTrue(MessageBoundary.hasToolUse(messages.get(1)));
         assertTrue(MessageBoundary.isToolResult(messages.get(2)));
     }
@@ -178,7 +192,7 @@ class SnipCompactorTest {
     @DisplayName("snip should retreat tailStart by 1 when tail starts on tool_result")
     void snip_should_protect_tail_tool_result_pair() {
         SnipCompactor snip = new SnipCompactor(new CompactConfig(10, 3, 3, 120));
-        List<MessageParam> messages = new ArrayList<>();
+        List<LlmMessage> messages = new ArrayList<>();
         // 头 3
         messages.add(userText("query"));
         messages.add(assistantText("init"));
@@ -209,7 +223,7 @@ class SnipCompactorTest {
         // 精心设计:tailStart 计算后正好落在 tool_result 上
         // total=11, maxMessages=8, snipHeadKeep=3 → tailStart = 11 -(8-3) = 6
         SnipCompactor snip = new SnipCompactor(new CompactConfig(8, 3, 3, 120));
-        List<MessageParam> messages = new ArrayList<>();
+        List<LlmMessage> messages = new ArrayList<>();
         // 头 3:idx 0/1/2
         messages.add(userText("query"));
         messages.add(assistantText("init"));
@@ -233,11 +247,11 @@ class SnipCompactorTest {
         // 结果 = head 3 + 占位 + 尾(11-5)=6 → 总 10 条
         assertEquals(10, messages.size());
         // 第 4 条是占位
-        assertSnippedPlaceholder(2, messages.get(3).getContent());
-        // 第 5 条应该是 assistant(tool_use)(被边界保护带进来)
-        MessageParam fifth = messages.get(4);
-        assertEquals("assistant", fifth.getRole());
-        assertTrue(fifth.getContent() instanceof List<?>);
+        assertSnippedPlaceholder(2, messages.get(3));
+        // 第 5 条应该是 assistant(tool_call)(被边界保护带进来)
+        LlmMessage fifth = messages.get(4);
+        assertEquals(LlmRole.ASSISTANT, fifth.getRole());
+        assertTrue(fifth.getContent().stream().anyMatch(c -> c instanceof LlmToolCall));
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -248,16 +262,16 @@ class SnipCompactorTest {
     @DisplayName("placeholder message should be role=user with [snipped N messages] text")
     void snip_placeholder_should_be_user_role_with_correct_text() {
         SnipCompactor snip = new SnipCompactor(new CompactConfig(10, 3, 3, 120));
-        List<MessageParam> messages = new ArrayList<>();
+        List<LlmMessage> messages = new ArrayList<>();
         for (int i = 0; i < 20; i++) messages.add(userText("m" + i));
 
         snip.apply(messages);
 
         // headEnd=3, tailStart=20-(10-3)=13, snipped=10
-        MessageParam placeholder = messages.get(3);
-        assertEquals("user", placeholder.getRole(),
-                "占位必须是 user role(Anthropic 不接受 system role 在 messages 里)");
-        assertSnippedPlaceholder(10, placeholder.getContent());
+        LlmMessage placeholder = messages.get(3);
+        assertEquals(LlmRole.USER, placeholder.getRole(),
+                "占位必须是 USER role(canonical 一等约束)");
+        assertSnippedPlaceholder(10, placeholder);
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -280,7 +294,7 @@ class SnipCompactorTest {
         // 预期:adjustTailStart 必须把整对 tu_use(date) + tu_result(date) 都带进 tail,
         //       否则 tu_result(date) 会成尾部孤儿 → Anthropic 400。
         SnipCompactor snip = new SnipCompactor(new CompactConfig(8, 2, 3, 120));
-        List<MessageParam> messages = new ArrayList<>();
+        List<LlmMessage> messages = new ArrayList<>();
         messages.add(userText("你好"));                                    // 0
         messages.add(assistantText("hello!"));                             // 1
         messages.add(userText("你用哪个模型"));                             // 2
@@ -317,7 +331,7 @@ class SnipCompactorTest {
         // 老 adjustTailStart 只看 msgs[N] 不看 msgs[N+1],漏掉这种孤儿。
         // 新 self-consistency walk 必须把 tail 缩到包含 tool_use 才停。
         SnipCompactor snip = new SnipCompactor(new CompactConfig(6, 2, 3, 120));
-        List<MessageParam> messages = new ArrayList<>();
+        List<LlmMessage> messages = new ArrayList<>();
         messages.add(userText("hi"));                                  // 0
         messages.add(assistantText("hi back"));                         // 1
         // 中间被 snip 的部分应该带 tu_use,但故意不放 → 模拟 tu_use 已被旧 snip 切掉的现状
@@ -353,7 +367,7 @@ class SnipCompactorTest {
         //   tail [2..6] = [tu_use(X), middle, tu_result(X), end] → 配对 OK,停。
 
         SnipCompactor snip2 = new SnipCompactor(new CompactConfig(4, 2, 3, 120));
-        List<MessageParam> nasty = new ArrayList<>();
+        List<LlmMessage> nasty = new ArrayList<>();
         nasty.add(userText("hi"));                              // 0
         nasty.add(assistantText("hi back"));                     // 1
         nasty.add(assistantToolUse("tu_X"));                    // 2
@@ -384,7 +398,7 @@ class SnipCompactorTest {
         // [4] user middle text             ← intervening 普通文本
         // [5] user tu_result(B)
         // [6..] 后续
-        List<MessageParam> messages = new ArrayList<>();
+        List<LlmMessage> messages = new ArrayList<>();
         messages.add(userText("q"));                       // 0
         messages.add(assistantToolUse("A"));               // 1
         messages.add(assistantToolUse("B"));               // 2
@@ -405,7 +419,7 @@ class SnipCompactorTest {
     @Test
     @DisplayName("adjustTailStart self-consistency walk 扩到包含 tool_use(跨 intervening)")
     void boundary_tail_walk_retreats_across_intervening() {
-        List<MessageParam> messages = new ArrayList<>();
+        List<LlmMessage> messages = new ArrayList<>();
         messages.add(userText("head-0"));                  // 0
         messages.add(assistantText("head-1"));             // 1
         messages.add(assistantToolUse("X"));               // 2
@@ -421,21 +435,21 @@ class SnipCompactorTest {
     }
 
     /**
-     * 验证不变量:列表里任一 {@code tool_result} 块,前面必有同 id 的 {@code tool_use}。
+     * 验证不变量:列表里任一 tool_result 块,前面必有同 id 的 tool_call。
      */
-    private static void assertNoOrphanToolResult(List<MessageParam> messages) {
-        java.util.Set<String> seenUseIds = new java.util.HashSet<>();
+    private static void assertNoOrphanToolResult(List<LlmMessage> messages) {
+        java.util.Set<String> seenCallIds = new java.util.HashSet<>();
         for (int i = 0; i < messages.size(); i++) {
-            MessageParam m = messages.get(i);
-            if (!(m.getContent() instanceof List<?> blocks)) continue;
-            for (Object b : blocks) {
-                if (b instanceof ToolUseBlock tu && tu.getId() != null) {
-                    seenUseIds.add(tu.getId());
+            LlmMessage m = messages.get(i);
+            if (m.getContent() == null) continue;
+            for (LlmContent b : m.getContent()) {
+                if (b instanceof LlmToolCall tc && tc.getId() != null) {
+                    seenCallIds.add(tc.getId());
                 }
-                if (b instanceof ToolResultBlock tr && tr.getToolUseId() != null) {
-                    assertTrue(seenUseIds.contains(tr.getToolUseId()),
-                            "messages[" + i + "] 含孤儿 tool_result, tool_use_id="
-                                    + tr.getToolUseId() + ",前面没有匹配的 tool_use");
+                if (b instanceof LlmToolResult tr && tr.getToolCallId() != null) {
+                    assertTrue(seenCallIds.contains(tr.getToolCallId()),
+                            "messages[" + i + "] 含孤儿 tool_result, tool_call_id="
+                                    + tr.getToolCallId() + ",前面没有匹配的 tool_call");
                 }
             }
         }
@@ -454,7 +468,7 @@ class SnipCompactorTest {
           1, 1, tmp, 500);
         SnipCompactor snip = new SnipCompactor(cfg);
 
-        List<MessageParam> messages = new ArrayList<>();
+        List<LlmMessage> messages = new ArrayList<>();
         messages.add(userText("head"));
         messages.add(userText("mid-A"));
         messages.add(userText("mid-B"));
@@ -465,7 +479,7 @@ class SnipCompactorTest {
         assertTrue(changed);
 
         // 占位在 idx=1(head 保留 1 条)
-        String placeholder = (String) messages.get(1).getContent();
+        String placeholder = extractText(messages.get(1));
         assertTrue(placeholder.startsWith("[snipped "), "占位应带前缀,实际:" + placeholder);
         assertTrue(placeholder.contains(", archived to "),
                 "归档成功时占位应带 archive path,实际:" + placeholder);
@@ -494,7 +508,7 @@ class SnipCompactorTest {
                 1, 1, notADir, 500);
         SnipCompactor snip = new SnipCompactor(cfg);
 
-        List<MessageParam> messages = new ArrayList<>();
+        List<LlmMessage> messages = new ArrayList<>();
         messages.add(userText("head"));
         messages.add(userText("mid"));
         messages.add(userText("mid2"));
@@ -503,7 +517,7 @@ class SnipCompactorTest {
         boolean changed = snip.apply(messages);
         assertTrue(changed, "即使归档失败也应完成裁剪 —— 归档失败不阻断压缩");
 
-        String placeholder = (String) messages.get(1).getContent();
+        String placeholder = extractText(messages.get(1));
         // 降级为不带 path 的旧格式
         assertFalse(placeholder.contains("archived to"),
                 "归档失败时占位不应含 archive path,实际:" + placeholder);

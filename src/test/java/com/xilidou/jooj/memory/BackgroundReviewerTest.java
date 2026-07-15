@@ -2,10 +2,10 @@ package com.xilidou.jooj.memory;
 
 import com.xilidou.jooj.http.MockAnthropicClient;
 import com.xilidou.jooj.http.ResponseFixtures;
-import com.xilidou.jooj.http.dto.MessageParam;
-import com.xilidou.jooj.http.dto.TextBlock;
-import com.xilidou.jooj.http.dto.ToolResultBlock;
-import com.xilidou.jooj.http.dto.ToolUseBlock;
+import com.xilidou.jooj.llm.domain.LlmMessage;
+import com.xilidou.jooj.llm.domain.LlmText;
+import com.xilidou.jooj.llm.domain.LlmToolCall;
+import com.xilidou.jooj.llm.domain.LlmToolResult;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -36,25 +36,25 @@ class BackgroundReviewerTest {
         return new MemoryStore(new MemoryConfig(dir, "MEMORY.md", 4096, 10));
     }
 
-    private static MessageParam userText(String text) {
-        return MessageParam.user(text);
+    private static LlmMessage userText(String text) {
+        return LlmMessage.userText(text);
     }
 
-    private static MessageParam assistantText(String text) {
-        return new MessageParam("assistant", List.of(new TextBlock(text)));
+    private static LlmMessage assistantText(String text) {
+        return LlmMessage.assistant(List.of(new LlmText(text)));
     }
 
-    private static MessageParam assistantToolUse(String name) {
-        return new MessageParam("assistant",
-                List.of(new ToolUseBlock("tu_x", name, JsonNodeFactory.instance.objectNode())));
+    private static LlmMessage assistantToolUse(String name) {
+        return LlmMessage.assistant(
+                List.of(new LlmToolCall("tu_x", name, JsonNodeFactory.instance.objectNode())));
     }
 
-    private static MessageParam userToolResult(String id, String content) {
-        return new MessageParam("user",
-                new ArrayList<>(List.of(ToolResultBlock.ofText(id, content))));
+    private static LlmMessage userToolResult(String id, String content) {
+        return LlmMessage.toolResults(
+                new ArrayList<>(List.of(LlmToolResult.success(id, content))));
     }
 
-    private static List<MessageParam> longishConversation() {
+    private static List<LlmMessage> longishConversation() {
         // 6 messages,够 Reviewer 看出"模式"
         return List.of(
                 userText("Use grep to find usages of foo."),
@@ -188,7 +188,7 @@ class BackgroundReviewerTest {
                 freshStore(java.nio.file.Paths.get(System.getProperty("java.io.tmpdir"), "br-test-" + System.nanoTime())),
                 null, null);
 
-        List<MessageParam> messages = List.of(
+        List<LlmMessage> messages = List.of(
                 userText("find foo"),
                 assistantToolUse("bash"),
                 userToolResult("tu_x", "very long output that should be skipped from review"),

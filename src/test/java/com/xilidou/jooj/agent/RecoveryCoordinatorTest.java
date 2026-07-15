@@ -5,10 +5,10 @@ import com.xilidou.jooj.compact.CompactPipeline;
 import com.xilidou.jooj.http.AnthropicException;
 import com.xilidou.jooj.http.MockAnthropicClient;
 import com.xilidou.jooj.http.ResponseFixtures;
-import com.xilidou.jooj.http.dto.MessageParam;
 import com.xilidou.jooj.llm.domain.LlmMessage;
 import com.xilidou.jooj.llm.domain.LlmRequest;
 import com.xilidou.jooj.llm.domain.LlmResponse;
+import com.xilidou.jooj.llm.domain.LlmRole;
 import com.xilidou.jooj.llm.domain.LlmStopReason;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -65,9 +65,9 @@ class RecoveryCoordinatorTest {
     private RecoveryCoordinator newCoordinator(MockAnthropicClient mock, boolean hasReactiveSupport) {
         CompactPipeline fakeCompact = new CompactPipeline() {
             @Override public boolean hasReactiveSupport() { return hasReactiveSupport; }
-            @Override public boolean reactiveCompact(List<MessageParam> messages) {
+            @Override public boolean reactiveCompact(List<LlmMessage> messages) {
                 if (messages.size() > 1) {
-                    MessageParam first = messages.get(0);
+                    LlmMessage first = messages.get(0);
                     messages.clear();
                     messages.add(first);
                 }
@@ -231,8 +231,8 @@ class RecoveryCoordinatorTest {
         state.hasEscalated = true;
         state.currentMaxTokens = 64000;
 
-        List<MessageParam> messages = new ArrayList<>();
-        messages.add(MessageParam.user("original query"));
+        List<LlmMessage> messages = new ArrayList<>();
+        messages.add(LlmMessage.userText("original query"));
 
         LlmResponse r = coordinator.call(buildSimpleRequest(), messages, state);
 
@@ -243,8 +243,8 @@ class RecoveryCoordinatorTest {
         // Recovery 内部 append 2 条:截断的 assistant + continuation prompt user
         assertEquals(3, messages.size(),
                 "original + truncated assistant + continuation user = 3 条");
-        assertEquals("assistant", messages.get(1).getRole());
-        assertEquals("user", messages.get(2).getRole());
+        assertEquals(LlmRole.ASSISTANT, messages.get(1).getRole());
+        assertEquals(LlmRole.USER, messages.get(2).getRole());
     }
 
     @Test
@@ -282,10 +282,10 @@ class RecoveryCoordinatorTest {
         var coordinator = newCoordinator(mock, true);  // hasReactiveSupport
 
         var state = new RecoveryState("m1", 8000);
-        List<MessageParam> messages = new ArrayList<>();
-        messages.add(MessageParam.user("first"));
-        messages.add(MessageParam.user("second"));
-        messages.add(MessageParam.user("third"));
+        List<LlmMessage> messages = new ArrayList<>();
+        messages.add(LlmMessage.userText("first"));
+        messages.add(LlmMessage.userText("second"));
+        messages.add(LlmMessage.userText("third"));
 
         LlmResponse r = coordinator.call(buildSimpleRequest(), messages, state);
 

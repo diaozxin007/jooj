@@ -2,10 +2,13 @@ package com.xilidou.jooj.compact;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
-import com.xilidou.jooj.http.dto.MessageParam;
-import com.xilidou.jooj.http.dto.TextBlock;
-import com.xilidou.jooj.http.dto.ToolResultBlock;
-import com.xilidou.jooj.http.dto.ToolUseBlock;
+import com.xilidou.jooj.llm.domain.LlmContent;
+import com.xilidou.jooj.llm.domain.LlmMessage;
+import com.xilidou.jooj.llm.domain.LlmRole;
+import com.xilidou.jooj.llm.domain.LlmText;
+import com.xilidou.jooj.llm.domain.LlmToolCall;
+import com.xilidou.jooj.llm.domain.LlmToolResult;
+import com.xilidou.jooj.llm.domain.LlmUsage;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -28,36 +31,53 @@ import static org.junit.jupiter.api.Assertions.*;
  *   <li>L3 + L1 + L2 三层叠加 — 巨型历史的最大压缩力度</li>
  * </ol>
  *
- * <p>切片 C 之后:这些是真正的"单元"测试 —— 直接 new CompactPipeline 跑,
- * 不涉及 Spring 容器,不需要 AgentLoopHarness。Loop 与 Compact 集成由
- * {@code JoojSpringIntegrationTest} 保障。
+ * <p>P2 Step G:fixture 迁到 canonical {@link LlmMessage} 及其 sealed content。
+ * "user 里放 tool_result" 的老 wire 语义换成 TOOL 一等 role。usage 换成 {@link LlmUsage}。
  */
 class CompactPipelineTest {
 
     private static final JsonNodeFactory JSON = JsonNodeFactory.instance;
 
-    private static MessageParam userText(String text) {
-        return MessageParam.user(text);
+    private static LlmMessage userText(String text) {
+        return LlmMessage.userText(text);
     }
 
-    private static MessageParam assistantText(String text) {
-        return new MessageParam("assistant", List.of(new TextBlock(text)));
+    private static LlmMessage assistantText(String text) {
+        return LlmMessage.assistant(List.of(new LlmText(text)));
     }
 
     @SuppressWarnings("unused")
-    private static MessageParam assistantToolUse(String id) {
+    private static LlmMessage assistantToolUse(String id) {
         JsonNode input = JSON.objectNode();
-        return new MessageParam("assistant", List.of(new ToolUseBlock(id, "test_tool", input)));
+        return LlmMessage.assistant(List.of(new LlmToolCall(id, "test_tool", input)));
     }
 
-    private static MessageParam userToolResult(String id, String content) {
-        return new MessageParam("user", new ArrayList<>(List.of(ToolResultBlock.ofText(id, content))));
+    private static LlmMessage userToolResult(String id, String content) {
+        return LlmMessage.toolResults(new ArrayList<>(List.of(LlmToolResult.success(id, content))));
     }
 
     private static String longContent(int len) {
         StringBuilder sb = new StringBuilder();
         while (sb.length() < len) sb.append("xxxx ");
         return sb.toString();
+    }
+
+    /** 首个 LlmText 的 text —— placeholder 消息用来锁定字面前缀。 */
+    private static String firstTextOf(LlmMessage m) {
+        for (LlmContent c : m.getContent()) {
+            if (c instanceof LlmText t) return t.getText();
+        }
+        return null;
+    }
+
+    /** canonical Usage builder,方便老 4 参 wire ctor 就地迁移。 */
+    private static LlmUsage usage(int in, int out, Integer cacheCreate, Integer cacheRead) {
+        return LlmUsage.builder()
+                .inputTokens(in)
+                .outputTokens(out)
+                .cacheCreationInputTokens(cacheCreate)
+                .cacheReadInputTokens(cacheRead)
+                .build();
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -68,10 +88,10 @@ class CompactPipelineTest {
     @DisplayName("pipeline should trigger both L1 snip and L2 micro on long history")
     void pipeline_should_apply_both_layers() {
         CompactPipeline pipeline = new CompactPipeline(new CompactConfig(8, 2, 2, 50));
-        List<MessageParam> messages = new ArrayList<>();
+        List<LlmMessage> messages = new ArrayList<>();
         messages.add(userText("query"));
         messages.add(assistantText("ok"));
-        // s21 Demo 25:fixture 改成成对 (tool_use, tool_result),让 boundary walk
+        // s21 Demo 25:fixture 改成成对 (tool_call, tool_result),让 boundary walk
         // 不会因孤儿 tool_result 触发 "不裁" 兜底。
         for (int i = 0; i < 12; i++) {
             messages.add(assistantToolUse("tu_" + i));
@@ -85,23 +105,21 @@ class CompactPipelineTest {
         // snipped=18, result = head 2 + placeholder + tail 6 = 9
         assertEquals(9, messages.size(), "L1 snip 后总 9 条");
 
-        assertEquals("user", messages.get(2).getRole());
-        // SnipCompactor 归档成功会带 archive path,失败降级为不带 path 的旧格式,只锁定前缀 + 计数
-        Object placeholder = messages.get(2).getContent();
-        assertTrue(placeholder instanceof String);
-        assertTrue(((String) placeholder).startsWith("[snipped 18 messages"),
+        // Placeholder 消息是 LlmMessage.userText 生成的 USER role
+        assertEquals(LlmRole.USER, messages.get(2).getRole());
+        String placeholder = firstTextOf(messages.get(2));
+        assertNotNull(placeholder);
+        assertTrue(placeholder.startsWith("[snipped 18 messages"),
                 "占位应以 [snipped 18 messages 开头,实际:" + placeholder);
 
-        // tail 6 条 = 3 对 (tu_9_use, tu_9_result, tu_10_use, tu_10_result, tu_11_use, tu_11_result)
+        // tail 6 条 = 3 对 (tu_9_call, tu_9_result, tu_10_call, tu_10_result, tu_11_call, tu_11_result)
         // 含 3 个 tool_result, keepRecent=2 → L2 替换 1 个
         int placeholderCount = 0;
-        for (MessageParam m : messages) {
-            if (m.getContent() instanceof List<?> blocks) {
-                for (Object b : blocks) {
-                    if (b instanceof ToolResultBlock trb &&
-                            MicroCompactor.PLACEHOLDER.equals(trb.getContent())) {
-                        placeholderCount++;
-                    }
+        for (LlmMessage m : messages) {
+            for (LlmContent c : m.getContent()) {
+                if (c instanceof LlmToolResult tr &&
+                        MicroCompactor.PLACEHOLDER.equals(tr.getOutput())) {
+                    placeholderCount++;
                 }
             }
         }
@@ -116,7 +134,7 @@ class CompactPipelineTest {
     @DisplayName("snip should run before micro: micro sees fewer tool_results after snip")
     void pipeline_order_snip_before_micro() {
         CompactPipeline pipeline = new CompactPipeline(new CompactConfig(6, 1, 2, 50));
-        List<MessageParam> messages = new ArrayList<>();
+        List<LlmMessage> messages = new ArrayList<>();
         messages.add(userText("query"));
         // s21 Demo 25:成对 fixture
         for (int i = 0; i < 8; i++) {
@@ -127,23 +145,23 @@ class CompactPipelineTest {
         pipeline.apply(messages);
 
         // total=1+16=17, max=6, headKeep=1 → tailStart=12.
-        // tail [12..17)=5 条 (tu_5_result, tu_6_use, tu_6_result, tu_7_use, tu_7_result),
-        // openResults={5,6,7},tu_use 6,7 配对,tu_5 unmatched → 退到 11.
+        // tail [12..17)=5 条 (tu_5_result, tu_6_call, tu_6_result, tu_7_call, tu_7_result),
+        // openResults={5,6,7},tu_call 6,7 配对,tu_5 unmatched → 退到 11.
         // tail [11..17) 6 条 = 3 对配对 → 停。snipped=11-1=10
         // result = head 1 + placeholder + tail 6 = 8
         assertEquals(8, messages.size());
-        Object ph = messages.get(1).getContent();
-        assertTrue(ph instanceof String);
-        assertTrue(((String) ph).startsWith("[snipped 10 messages"),
+        String ph = firstTextOf(messages.get(1));
+        assertNotNull(ph);
+        assertTrue(ph.startsWith("[snipped 10 messages"),
                 "占位应以 [snipped 10 messages 开头,实际:" + ph);
 
         // tail 6 条 = 3 对 → 3 个 tool_result, keepRecent=2 → replace 1
         int placeholderCount = 0;
         for (int i = 2; i < messages.size(); i++) {
-            if (messages.get(i).getContent() instanceof List<?> blocks
-                    && !blocks.isEmpty()
-                    && blocks.get(0) instanceof ToolResultBlock trb
-                    && MicroCompactor.PLACEHOLDER.equals(trb.getContent())) {
+            LlmMessage m = messages.get(i);
+            if (m.getContent() != null && !m.getContent().isEmpty()
+                    && m.getContent().get(0) instanceof LlmToolResult tr
+                    && MicroCompactor.PLACEHOLDER.equals(tr.getOutput())) {
                 placeholderCount++;
             }
         }
@@ -160,7 +178,7 @@ class CompactPipelineTest {
         CompactConfig config = new CompactConfig(8, 2, 2, 50, 100, tempDir);
         CompactPipeline pipeline = new CompactPipeline(config);
 
-        List<MessageParam> messages = new ArrayList<>();
+        List<LlmMessage> messages = new ArrayList<>();
         messages.add(userText("query"));
         messages.add(assistantText("ok"));
         for (int i = 0; i < 6; i++) {
@@ -176,14 +194,12 @@ class CompactPipelineTest {
                     "L3 应在 L1 删之前先落盘 tu_" + i);
         }
 
-        for (MessageParam m : messages) {
-            if (m.getContent() instanceof List<?> blocks) {
-                for (Object b : blocks) {
-                    if (b instanceof ToolResultBlock trb) {
-                        String s = String.valueOf(trb.getContent());
-                        assertNotEquals(MicroCompactor.PLACEHOLDER, s,
-                                "L3 stub 不应被 L2 替换为 PLACEHOLDER (前缀检查失效?)");
-                    }
+        for (LlmMessage m : messages) {
+            for (LlmContent c : m.getContent()) {
+                if (c instanceof LlmToolResult tr) {
+                    String s = tr.getOutput() != null ? tr.getOutput() : "";
+                    assertNotEquals(MicroCompactor.PLACEHOLDER, s,
+                            "L3 stub 不应被 L2 替换为 PLACEHOLDER (前缀检查失效?)");
                 }
             }
         }
@@ -199,10 +215,10 @@ class CompactPipelineTest {
         CompactConfig config = new CompactConfig(10, 2, 2, 50, 200, tempDir);
         CompactPipeline pipeline = new CompactPipeline(config);
 
-        List<MessageParam> messages = new ArrayList<>();
+        List<LlmMessage> messages = new ArrayList<>();
         messages.add(userText("query"));
         messages.add(assistantText("ok"));
-        // s21 Demo 25:成对 fixture(每个 result 都有对应的 use)
+        // s21 Demo 25:成对 fixture(每个 result 都有对应的 call)
         for (int i = 0; i < 20; i++) {
             messages.add(assistantToolUse("tu_" + i));
             messages.add(userToolResult("tu_" + i, longContent(500)));
@@ -223,17 +239,18 @@ class CompactPipelineTest {
                 "L1 应裁到 ≤ 12 条(maxMessages=10 + 边界保护),实际=" + messages.size());
 
         boolean sawSnippedPlaceholder = messages.stream()
-                .anyMatch(m -> m.getContent() instanceof String s && s.startsWith("[snipped "));
+                .anyMatch(m -> {
+                    String t = firstTextOf(m);
+                    return t != null && t.startsWith("[snipped ");
+                });
         assertTrue(sawSnippedPlaceholder, "L1 应留下 [snipped ...] 占位");
 
-        for (MessageParam m : messages) {
-            if (m.getContent() instanceof List<?> blocks) {
-                for (Object b : blocks) {
-                    if (b instanceof ToolResultBlock trb) {
-                        String s = String.valueOf(trb.getContent());
-                        assertTrue(s.startsWith(BudgetCompactor.STUB_PREFIX),
-                                "保留下来的 tool_result 应该是 L3 stub,实际: " + s);
-                    }
+        for (LlmMessage m : messages) {
+            for (LlmContent c : m.getContent()) {
+                if (c instanceof LlmToolResult tr) {
+                    String s = tr.getOutput() != null ? tr.getOutput() : "";
+                    assertTrue(s.startsWith(BudgetCompactor.STUB_PREFIX),
+                            "保留下来的 tool_result 应该是 L3 stub,实际: " + s);
                 }
             }
         }
@@ -251,8 +268,8 @@ class CompactPipelineTest {
         assertFalse(pipeline.shouldCompress(), "禁用时 shouldCompress 恒 false");
 
         // 即使塞 usage 也不改变
-        var usage = new com.xilidou.jooj.http.dto.Usage(999_999, 0, 0, 0);
-        pipeline.updateFromResponse(usage);
+        var u = usage(999_999, 0, 0, 0);
+        pipeline.updateFromResponse(u);
         assertFalse(pipeline.shouldCompress(), "禁用时无视 usage");
     }
 
@@ -267,7 +284,7 @@ class CompactPipelineTest {
         assertEquals(140_000L, pipeline.thresholdTokens());
 
         // 塞 10K input + 5K cache_read = 15K,远低于 140K
-        pipeline.updateFromResponse(new com.xilidou.jooj.http.dto.Usage(10_000, 0, 0, 5_000));
+        pipeline.updateFromResponse(usage(10_000, 0, 0, 5_000));
         assertEquals(15_000L, pipeline.lastPromptTokens());
         assertFalse(pipeline.shouldCompress(), "15K < 140K 不该触发");
     }
@@ -280,7 +297,7 @@ class CompactPipelineTest {
                 config, null, null, null, 200_000, 0.70);
 
         // 塞 100K input + 45K cache_read = 145K > 140K
-        pipeline.updateFromResponse(new com.xilidou.jooj.http.dto.Usage(100_000, 0, 0, 45_000));
+        pipeline.updateFromResponse(usage(100_000, 0, 0, 45_000));
         assertEquals(145_000L, pipeline.lastPromptTokens());
         assertTrue(pipeline.shouldCompress(), "145K > 140K 应触发");
     }
@@ -297,11 +314,11 @@ class CompactPipelineTest {
         assertEquals(0L, pipeline.lastPromptTokens());
 
         // 全 0 usage 不改
-        pipeline.updateFromResponse(new com.xilidou.jooj.http.dto.Usage(0, 0, 0, 0));
+        pipeline.updateFromResponse(usage(0, 0, 0, 0));
         assertEquals(0L, pipeline.lastPromptTokens());
 
         // 有值才更新
-        pipeline.updateFromResponse(new com.xilidou.jooj.http.dto.Usage(1000, 0, 0, 0));
+        pipeline.updateFromResponse(usage(1000, 0, 0, 0));
         assertEquals(1000L, pipeline.lastPromptTokens());
 
         // 再来个 null,值保留
@@ -342,7 +359,7 @@ class CompactPipelineTest {
                 config, null, null, null, 200_000, 0.70);
 
         // 造一段长历史(至少 20 条对话),让 L1 有削减空间
-        var messages = new ArrayList<MessageParam>();
+        var messages = new ArrayList<LlmMessage>();
         messages.add(userText("query"));
         for (int i = 0; i < 12; i++) {
             messages.add(assistantToolUse("tu_" + i));
@@ -352,19 +369,19 @@ class CompactPipelineTest {
         assertEquals(25, fullSize, "sanity: 1 + 12*2 = 25 条");
 
         // ── turn 1: pressure=15K,远低于 140K threshold ──
-        pipeline.updateFromResponse(new com.xilidou.jooj.http.dto.Usage(10_000, 0, 0, 5_000));
+        pipeline.updateFromResponse(usage(10_000, 0, 0, 5_000));
         boolean applied1 = pipeline.compressIfNeeded(messages);
         assertFalse(applied1, "turn 1 15K < 140K,不该压");
         assertEquals(fullSize, messages.size(), "turn 1 messages 数量应保留");
 
         // ── turn 2: pressure=100K,还没到 140K ──
-        pipeline.updateFromResponse(new com.xilidou.jooj.http.dto.Usage(80_000, 0, 0, 20_000));
+        pipeline.updateFromResponse(usage(80_000, 0, 0, 20_000));
         boolean applied2 = pipeline.compressIfNeeded(messages);
         assertFalse(applied2, "turn 2 100K < 140K,不该压");
         assertEquals(fullSize, messages.size(), "turn 2 messages 数量应保留");
 
         // ── turn 3: pressure=145K,超过 140K → 触发压缩 ──
-        pipeline.updateFromResponse(new com.xilidou.jooj.http.dto.Usage(100_000, 0, 0, 45_000));
+        pipeline.updateFromResponse(usage(100_000, 0, 0, 45_000));
         assertEquals(145_000L, pipeline.lastPromptTokens());
         boolean applied3 = pipeline.compressIfNeeded(messages);
         assertTrue(applied3, "turn 3 145K > 140K,应该压");
@@ -380,7 +397,7 @@ class CompactPipelineTest {
         var pipeline = new com.xilidou.jooj.compact.CompactPipeline(config);
         assertFalse(pipeline.isTokenAwareEnabled());
 
-        var messages = new ArrayList<MessageParam>();
+        var messages = new ArrayList<LlmMessage>();
         messages.add(userText("query"));
         for (int i = 0; i < 12; i++) {
             messages.add(assistantToolUse("tu_" + i));
@@ -402,7 +419,7 @@ class CompactPipelineTest {
         var pipeline = new com.xilidou.jooj.compact.CompactPipeline(
                 config, null, null, null, 200_000, 0.70);
 
-        var messages = new ArrayList<MessageParam>();
+        var messages = new ArrayList<LlmMessage>();
         messages.add(userText("query"));
         for (int i = 0; i < 12; i++) {
             messages.add(assistantToolUse("tu_" + i));
@@ -411,7 +428,7 @@ class CompactPipelineTest {
         int before = messages.size();
 
         // pressure=5K,远低于 140K → 门禁拦住,即使 messages 已远超 maxMessages
-        pipeline.updateFromResponse(new com.xilidou.jooj.http.dto.Usage(5_000, 0, 0, 0));
+        pipeline.updateFromResponse(usage(5_000, 0, 0, 0));
         boolean applied = pipeline.compressIfNeeded(messages);
         assertFalse(applied, "pressure 未过阈值,门禁应完全拦住");
         assertEquals(before, messages.size(),
