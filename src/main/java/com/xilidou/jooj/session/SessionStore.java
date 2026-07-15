@@ -3,8 +3,6 @@ package com.xilidou.jooj.session;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xilidou.jooj.http.dto.MessageParam;
-import com.xilidou.jooj.llm.adapter.AnthropicAdapter;
 import com.xilidou.jooj.llm.domain.LlmMessage;
 import lombok.extern.slf4j.Slf4j;
 
@@ -55,14 +53,12 @@ public class SessionStore {
 
     private final Path sessionsDir;
     private final ObjectMapper json;
-    private final AnthropicAdapter adapter;
 
     public SessionStore(Path sessionsDir, ObjectMapper json) {
         if (sessionsDir == null) throw new IllegalArgumentException("sessionsDir must not be null");
         if (json == null) throw new IllegalArgumentException("json must not be null");
         this.sessionsDir = sessionsDir;
         this.json = json;
-        this.adapter = new AnthropicAdapter(json);
     }
 
     public Path sessionsDir() {
@@ -163,39 +159,6 @@ public class SessionStore {
         } catch (IOException e) {
             log.warn("[Session] writeCanonicalHistory({}) failed: {}", sessionId, e.toString());
         }
-    }
-
-    // ── Legacy API(桥接期,Step G2 删)─────────────────────────
-
-    /**
-     * @deprecated Step G1 桥接层 —— 内部走 canonical,通过 {@link AnthropicAdapter#messagesToWire}
-     * 把 canonical list 桥回 wire {@link MessageParam} 返给 caller。
-     * Step G2 上游 caller 改用 {@link #readCanonicalHistory} 后本方法删除。
-     */
-    @Deprecated
-    public List<MessageParam> readHistory(String sessionId) {
-        List<LlmMessage> canonical = readCanonicalHistory(sessionId);
-        if (canonical.isEmpty()) return new ArrayList<>();
-        return new ArrayList<>(adapter.messagesToWire(canonical));
-    }
-
-    /**
-     * @deprecated Step G1 桥接层 —— 内部通过 {@link AnthropicAdapter#messageToDomain}
-     * 把 wire {@link MessageParam} 逐条桥回 canonical {@link LlmMessage} 落盘。
-     * Step G2 上游 caller 改用 {@link #writeCanonicalHistory} 后本方法删除。
-     */
-    @Deprecated
-    public void writeHistory(String sessionId, List<MessageParam> history) {
-        if (history == null || history.isEmpty()) {
-            writeCanonicalHistory(sessionId, new ArrayList<>());
-            return;
-        }
-        List<LlmMessage> canonical = new ArrayList<>(history.size());
-        for (MessageParam m : history) {
-            if (m == null) continue;
-            canonical.add(adapter.messageToDomain(m));
-        }
-        writeCanonicalHistory(sessionId, canonical);
     }
 
     /** 删 history 文件(idempotent,文件不存在不抛)。 */

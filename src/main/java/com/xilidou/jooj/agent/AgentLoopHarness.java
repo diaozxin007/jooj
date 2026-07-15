@@ -24,7 +24,6 @@ import com.xilidou.jooj.http.dto.TextBlock;
 import com.xilidou.jooj.http.dto.ToolResultBlock;
 import com.xilidou.jooj.http.dto.ToolUseBlock;
 import com.xilidou.jooj.hook.HookManager;
-import com.xilidou.jooj.llm.adapter.AnthropicShapeBridge;
 import com.xilidou.jooj.llm.domain.CacheHint;
 import com.xilidou.jooj.llm.domain.CacheTier;
 import com.xilidou.jooj.llm.domain.LlmContent;

@@ -53,7 +53,7 @@ import java.util.Map;
  *   <li>{@code toWire(LlmRequest)} → {@link CreateMessageRequest}</li>
  *   <li>{@code toDomain(CreateMessageResponse)} → {@link LlmResponse}</li>
  *   <li>{@code messageToDomain(MessageParam)} → {@link LlmMessage} (used when reading
- *       existing DTO history; enables the transitional AnthropicShapeBridge in Step B)</li>
+ *       existing DTO history; enables the transitional Step B bridge)</li>
  *   <li>{@code messageToWire(LlmMessage)} → {@link MessageParam} (outbound conversion
  *       used by {@code toWire})</li>
  * </ol>
@@ -334,7 +334,7 @@ public final class AnthropicAdapter {
                 .build();
     }
 
-    /** Legacy MessageParam → canonical LlmMessage. Used by AnthropicShapeBridge (Step B). */
+    /** Legacy MessageParam → canonical LlmMessage. Used by Step B transitional callers. */
     public LlmMessage messageToDomain(MessageParam wire) {
         String role = wire.getRole();
         Object rawContent = wire.getContent();
