@@ -143,8 +143,13 @@ public final class AnthropicAdapter {
         return blocks;
     }
 
-    /** Convert a full canonical message list into wire messages, merging TOOL runs. */
-    List<MessageParam> messagesToWire(List<LlmMessage> messages) {
+    /**
+     * Convert a full canonical message list into wire messages, merging TOOL runs.
+     *
+     * <p>Public API — used by adapters, SessionStore's Step G1 legacy bridge, and any
+     * component that needs to project a canonical history into wire shape.
+     */
+    public List<MessageParam> messagesToWire(List<LlmMessage> messages) {
         if (messages == null || messages.isEmpty()) return List.of();
 
         List<MessageParam> out = new ArrayList<>(messages.size());
