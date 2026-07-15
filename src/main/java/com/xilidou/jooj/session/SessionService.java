@@ -1,6 +1,6 @@
 package com.xilidou.jooj.session;
 
-import com.xilidou.jooj.http.dto.MessageParam;
+import com.xilidou.jooj.llm.domain.LlmMessage;
 import com.xilidou.jooj.search.SearchService;
 import com.xilidou.jooj.transcript.SessionDeleted;
 import com.xilidou.jooj.transcript.SessionHistoryCleared;
@@ -77,7 +77,7 @@ public class SessionService {
     private final ReentrantLock indexLock = new ReentrantLock();
 
     /** in-memory history 缓存:同 session 多次访问不重复读盘。 */
-    private final Map<String, List<MessageParam>> historyCache = new ConcurrentHashMap<>();
+    private final Map<String, List<LlmMessage>> historyCache = new ConcurrentHashMap<>();
 
     /**
      * s22 P4:transcript 事件发布器。可空 —— 老 ctor 场景 / 测试直接 new 时不需要。
@@ -336,7 +336,7 @@ public class SessionService {
      * 供 AgentLoopHarness 等业务路径使用;严格路径(比如未来某个"只读查询" API)
      * 直接走 3 参签名传 {@code false}。
      */
-    public List<MessageParam> loadHistory(String sessionId) {
+    public List<LlmMessage> loadHistory(String sessionId) {
         return loadHistory(sessionId, true);
     }
 
@@ -348,7 +348,7 @@ public class SessionService {
      *                        false = 严格模式,不存在则抛 {@link NoSuchElementException}
      * @throws NoSuchElementException 当 {@code createIfMissing=false} 且 session 不存在
      */
-    public List<MessageParam> loadHistory(String sessionId, boolean createIfMissing) {
+    public List<LlmMessage> loadHistory(String sessionId, boolean createIfMissing) {
         if (sessionId == null || sessionId.isBlank()) {
             throw new IllegalArgumentException("sessionId must not be blank");
         }
@@ -356,21 +356,15 @@ public class SessionService {
             if (!createIfMissing) {
                 throw new NoSuchElementException("session not found: " + sessionId);
             }
-            // 优雅注册:让 cli-default / cron-default 等没经过 web create 流程的 session
-            // 第一次访问时也能成功。
             createWithId(sessionId, sessionId);
         }
         return historyCache.computeIfAbsent(sessionId, sid -> {
-            // s21 Demo 25 副作用:磁盘上的 session JSON 可能含孤儿 tool_use / tool_result
-            // (历史 SnipCompactor 切坏 / 进程崩溃半截 / 倒入的不完整 history),
-            // Anthropic 收到立刻 400。读盘后做一次 self-consistent scrub 兜底,
-            // 把孤儿块过滤掉再塞 cache,后续 saveHistory 自然把净化结果写回 JSON。
-            List<MessageParam> raw = store.readHistory(sid);
-            // scrub 出来要是个 mutable ArrayList,因为 AgentLoopHarness 直接 add 到这个引用
-            List<MessageParam> scrubbed = HistoryScrubber.scrub(raw);
-            // scrub 可能返回原引用(无变化时),也可能返回新 ArrayList。
-            // 都包成 ArrayList 保证可变。
-            return scrubbed instanceof ArrayList<MessageParam> al ? al : new ArrayList<>(scrubbed);
+            // s21 Demo 25 副作用:磁盘上的 session JSON 可能含孤儿 tool_use / tool_result,
+            // Anthropic 收到立刻 400。读盘后做一次 self-consistent scrub 兜底。
+            // P2 Step G2:走 canonical 路径。
+            List<LlmMessage> raw = store.readCanonicalHistory(sid);
+            List<LlmMessage> scrubbed = HistoryScrubber.scrub(raw);
+            return scrubbed instanceof ArrayList<LlmMessage> al ? al : new ArrayList<>(scrubbed);
         });
     }
 
@@ -379,19 +373,15 @@ public class SessionService {
      *
      * <p>每个 turn 结束 / clear 后调用一次。
      */
-    public void saveHistory(String sessionId, List<MessageParam> history) {
+    public void saveHistory(String sessionId, List<LlmMessage> history) {
         if (sessionId == null || sessionId.isBlank()) {
             throw new IllegalArgumentException("sessionId must not be blank");
         }
-        store.writeHistory(sessionId, history);
+        store.writeCanonicalHistory(sessionId, history);
         // 更新元数据
         indexLock.lock();
         try {
             Session existing = sessions.get(sessionId);
-            // BUG 2 修复:existing==null 时不再静默 return。
-            // 原来的行为:JSON 已写盘,但 index 没更新 → 状态永久不一致。
-            // 现在:log warn 并自动注册(跟 loadHistory 的"优雅注册"同语义),
-            // 然后继续更新 index。这样 JSON 写了,index 也跟上。
             if (existing == null) {
                 log.warn("[Session] saveHistory called for unknown session {}, auto-registering",
                         sessionId);
@@ -412,21 +402,11 @@ public class SessionService {
         } finally {
             indexLock.unlock();
         }
-        // s22 架构审查(2026-07-13):cache 一致性 —— 让 historyCache 里的引用跟
-        // caller 传入的 list 保持同步。之前的隐性假设是"caller 总传 loadHistory 返的
-        // 那个引用",AgentLoopHarness 确实这么做,但 API 契约里没写。如果未来有 caller
-        // 传新 list,cache 里的旧引用永远不会更新 —— 下次 loadHistory 拿到空/过期数据。
-        //
-        // 语义:总是 put 一份 ArrayList 副本(如果 caller 传的就是 ArrayList,直接 put;
-        // 否则包一层。null 视为空 list)。这样 cache 里永远持"当前最新写入内容"的 list。
-        List<MessageParam> cached = history == null
+        // cache 一致性(见方法注释)
+        List<LlmMessage> cached = history == null
                 ? new ArrayList<>()
-                : (history instanceof ArrayList<MessageParam> al ? al : new ArrayList<>(history));
+                : (history instanceof ArrayList<LlmMessage> al ? al : new ArrayList<>(history));
         historyCache.put(sessionId, cached);
-        // s22 P3-b:SearchService 索引改为事件驱动,不再在 saveHistory 尾部整盘覆盖。
-        // 事件流(UserMessageReceived / ScheduledPromptFired / AssistantResponseCompleted)
-        // 已经在 AgentLoopHarness 发布,SearchService 作为 EventListener 直接 append。
-        // 好处:搜索只索引干净原文,不再命中 <memories>...</memories> 之类污染。
     }
 
     /**
@@ -442,7 +422,7 @@ public class SessionService {
      * 兼容:eventPublisher 可空的老装配走 searchService 直调兜底。
      */
     public void clearHistory(String sessionId) {
-        List<MessageParam> hist = loadHistory(sessionId);
+        List<LlmMessage> hist = loadHistory(sessionId);
         hist.clear();
         saveHistory(sessionId, hist);
         if (searchService != null) {

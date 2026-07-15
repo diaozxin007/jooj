@@ -3,14 +3,14 @@ package com.xilidou.jooj.memory;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xilidou.jooj.config.JsonMappers;
-import com.xilidou.jooj.http.dto.MessageParam;
-import com.xilidou.jooj.http.dto.TextBlock;
-import com.xilidou.jooj.http.dto.ToolResultBlock;
-import com.xilidou.jooj.http.dto.ToolUseBlock;
 import com.xilidou.jooj.llm.LlmClient;
+import com.xilidou.jooj.llm.domain.LlmContent;
 import com.xilidou.jooj.llm.domain.LlmMessage;
 import com.xilidou.jooj.llm.domain.LlmRequest;
 import com.xilidou.jooj.llm.domain.LlmResponse;
+import com.xilidou.jooj.llm.domain.LlmRole;
+import com.xilidou.jooj.llm.domain.LlmText;
+import com.xilidou.jooj.llm.domain.LlmToolCall;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.List;
@@ -129,7 +129,7 @@ public class BackgroundReviewer {
      * @param messages 完整对话历史(read-only)
      * @return 实际写入的 lesson 数量(0 = 没新模式 / 调用失败 / Reviewer 禁用)
      */
-    public int review(List<MessageParam> messages) {
+    public int review(List<LlmMessage> messages) {
         if (client == null) return 0; // Reviewer 禁用
         if (messages == null || messages.size() < 4) {
             // 太短的对话谈不上模式,跳过避免无意义的 LLM 调用
@@ -191,14 +191,19 @@ public class BackgroundReviewer {
     // ─────────────────────────────────────────────────────────────
 
     /** 取最近 N 条消息的文本部分。跟 MemoryExtractor 同款,但窗口大一倍。 */
-    String renderRecentDialogue(List<MessageParam> messages) {
+    String renderRecentDialogue(List<LlmMessage> messages) {
         int from = Math.max(0, messages.size() - RECENT_MESSAGE_LIMIT);
         StringBuilder sb = new StringBuilder();
         for (int i = from; i < messages.size(); i++) {
-            MessageParam m = messages.get(i);
+            LlmMessage m = messages.get(i);
             String text = extractTextContent(m);
             if (text.isBlank()) continue;
-            sb.append(m.getRole()).append(": ").append(text).append('\n');
+            String roleStr = switch (m.getRole()) {
+                case USER -> "user";
+                case ASSISTANT -> "assistant";
+                case TOOL -> "tool";
+            };
+            sb.append(roleStr).append(": ").append(text).append('\n');
         }
         String out = sb.toString();
         if (out.length() > DIALOGUE_MAX_CHARS) {
@@ -207,31 +212,28 @@ public class BackgroundReviewer {
         return out.strip();
     }
 
-    private static String extractTextContent(MessageParam m) {
-        Object c = m.getContent();
-        if (c instanceof String s) return s;
-        if (c instanceof List<?> blocks) {
-            // 全 tool_result 的 message 跳过(它们是工具输出,不是模式来源 ——
-            // 模式藏在用户的 text 跟 assistant 的 tool_use 选择里)
-            boolean allToolResults = !blocks.isEmpty()
-                    && blocks.stream().allMatch(b -> b instanceof ToolResultBlock);
-            if (allToolResults) return "";
-
-            StringBuilder sb = new StringBuilder();
-            for (Object b : blocks) {
-                if (b instanceof TextBlock tb && tb.getText() != null) {
-                    if (sb.length() > 0) sb.append(' ');
-                    sb.append(tb.getText());
-                } else if (b instanceof ToolUseBlock tu) {
-                    // tool_use name 保留 —— Reviewer 关心"用 grep 还是 ripgrep"这类工作流模式
-                    if (sb.length() > 0) sb.append(' ');
-                    sb.append("[used tool: ").append(tu.getName()).append("]");
-                }
-                // ToolResultBlock 在混合 message 里也跳过(过长 + 不是模式来源)
+    /**
+     * 从消息里抽文本:
+     * <ul>
+     *   <li>TOOL role → 空(工具输出不是模式来源)</li>
+     *   <li>LlmText → 拼</li>
+     *   <li>LlmToolCall → 保留 "[used tool: name]" 帮 Reviewer 识别工作流模式</li>
+     * </ul>
+     */
+    private static String extractTextContent(LlmMessage m) {
+        if (m.getRole() == LlmRole.TOOL) return "";
+        if (m.getContent() == null) return "";
+        StringBuilder sb = new StringBuilder();
+        for (LlmContent c : m.getContent()) {
+            if (c instanceof LlmText t && t.getText() != null) {
+                if (sb.length() > 0) sb.append(' ');
+                sb.append(t.getText());
+            } else if (c instanceof LlmToolCall tc) {
+                if (sb.length() > 0) sb.append(' ');
+                sb.append("[used tool: ").append(tc.getName()).append("]");
             }
-            return sb.toString();
         }
-        return "";
+        return sb.toString();
     }
 
     /** 列已有 memory 让 LLM 不重复提案。 */

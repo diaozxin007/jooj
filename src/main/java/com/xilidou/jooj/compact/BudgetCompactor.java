@@ -1,10 +1,11 @@
 package com.xilidou.jooj.compact;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import com.xilidou.jooj.http.dto.ContentBlock;
-import com.xilidou.jooj.http.dto.MessageParam;
-import com.xilidou.jooj.http.dto.ToolResultBlock;
-import com.xilidou.jooj.http.dto.ToolUseBlock;
+import com.xilidou.jooj.llm.domain.LlmContent;
+import com.xilidou.jooj.llm.domain.LlmMessage;
+import com.xilidou.jooj.llm.domain.LlmRole;
+import com.xilidou.jooj.llm.domain.LlmToolCall;
+import com.xilidou.jooj.llm.domain.LlmToolResult;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
@@ -20,47 +21,12 @@ import java.util.Map;
 /**
  * L3 tool_result_budget:大 tool_result 落盘 + 替换为 stub。
  *
- * <p>策略:
- * <ol>
- *   <li>遍历 messages 里所有 tool_result block</li>
- *   <li>content 字符数 > {@link CompactConfig#maxToolResultBytes()} → 写到磁盘
- *       {@code <taskOutputDir>/<tool_use_id>.txt}</li>
- *   <li>content 替换为 stub:{@code [Output too large (12.3KB). Full output saved to:
- *       /abs/path. Read the file to see full content.]}</li>
- * </ol>
- *
- * <p>为什么这种 stub 模型能懂:格式跟 RTK 的 {@code <persisted-output>} 一致,
- * Claude/GPT-4 在训练数据里见过大量"输出落盘+路径"的模式,会自然推断:
- * 需要原文时调 {@code read_file} 读那个文件。
- *
- * <p>幂等性:stub 以 {@link #STUB_PREFIX} 开头,L3 自己再次 apply 时检查前缀跳过。
- *
- * <p>与 L1/L2 的协调:
- * <ul>
- *   <li>{@link CompactPipeline} 跑 L3 → L1 → L2 顺序:L3 先把大块换成短 stub,
- *       L1 看到的 messages 已经"瘦身",更容易判断要不要裁,L2 最后把旧的中等
- *       大小的内容占位</li>
- *   <li>L3 stub 通常 < 120 字符(默认 minPlaceholderLen),所以 L2 自然不动它;
- *       但 {@link MicroCompactor} 也加了"L3 stub 前缀"检查,双重保险</li>
- * </ul>
- *
- * <p>磁盘错误处理:写盘失败(磁盘满 / 权限问题 / 路径不存在)只 warn 日志,
- * 不抛异常。原 content 保留不动——压缩失败比 agent 崩溃更可接受。
- *
- * <p>不做的事(留给后续 session):
- * <ul>
- *   <li>不做"已落盘 → 模型 read_file → 再压缩同一个文件" 的去重(L4 范畴)</li>
- *   <li>不做基于 token 估算的精确裁剪(教学版用字符数,生产用可上 tiktoken/anthropic-tokenizer)</li>
- *   <li>不做磁盘配额管理(.task_outputs 永远累积,需要外部清理)</li>
- * </ul>
+ * <p>P2 Step G:canonical 类型 —— tool_result 在 {@link LlmRole#TOOL} 消息,
+ * tool_call 在 {@link LlmRole#ASSISTANT} 消息,遍历简单。
  */
 @Slf4j
 public class BudgetCompactor {
 
-    /**
-     * Stub 前缀。所有 L3 写出的占位都以这个开头,用于幂等性检查
-     * 和与 L2 PLACEHOLDER 区分。
-     */
     static final String STUB_PREFIX = "[Output too large";
 
     private final CompactConfig config;
@@ -70,46 +36,35 @@ public class BudgetCompactor {
     }
 
     /**
-     * 在 {@code messages} 上原地修改 ToolResultBlock.content。返回 true 表示
-     * 至少落盘了一个。
+     * 在 {@code messages} 上原地修改 LlmToolResult.output。返回 true 表示至少落盘了一个。
      *
-     * <p><b>Ping-pong 防御</b>:当一个 tool_result 是 {@code read_file}
-     * (或 bash {@code cat}/{@code head}/{@code tail}) 读{@link CompactConfig#taskOutputDir()}
-     * 下的 stub 文件返回的内容时——即便超过阈值也**跳过**再次落盘。
-     * 不跳过的话会形成:LLM 读 stub → 内容仍 > 阈值 → L3 换新 tool_use_id 落新
-     * stub → LLM 又读新 stub → 无限循环(第一次实测消耗百 KB 磁盘 + 数十 API 调用)。
-     * 跳过后 stub 原文会完整送给 LLM,自然中止循环。
-     *
-     * @param messages 对话历史(可能 mutate 内部 ToolResultBlock.content)
-     * @return 是否实际落盘过
+     * <p><b>Ping-pong 防御</b>:tool_result 是 {@code read_file} 读 taskOutputDir 下
+     * stub 文件返回时——即便超过阈值也**跳过**。
      */
-    public boolean apply(List<MessageParam> messages) {
-        Map<String, ToolUseBlock> uses = collectToolUses(messages);
-        List<ToolResultBlock> all = collectToolResults(messages);
+    public boolean apply(List<LlmMessage> messages) {
+        Map<String, LlmToolCall> uses = collectToolCalls(messages);
+        List<LlmToolResult> all = collectToolResults(messages);
         if (all.isEmpty()) return false;
 
         int persisted = 0;
         int skipped = 0;
-        for (ToolResultBlock b : all) {
-            String s = String.valueOf(b.getContent());
-            // 长度门槛 + 幂等性检查
+        for (LlmToolResult b : all) {
+            String s = b.getOutput() != null ? b.getOutput() : "";
             if (s.length() <= config.maxToolResultBytes()) continue;
             if (s.startsWith(STUB_PREFIX)) continue;
-            // 读回自身:跳过,不再拆
-            if (isSelfReadback(uses.get(b.getToolUseId()))) {
+            if (isSelfReadback(uses.get(b.getToolCallId()))) {
                 skipped++;
                 continue;
             }
 
-            String stub = persistAndStub(b.getToolUseId(), s);
+            String stub = persistAndStub(b.getToolCallId(), s);
             if (stub != null) {
-                b.setContent(stub);
+                b.setOutput(stub);
                 persisted++;
             }
         }
         if (skipped > 0) {
-            log.warn("[Compact L3] skipped {} self-readback tool_results (read_file/cat/head/tail on {}); " +
-                            "sending raw content to break the ping-pong loop",
+            log.warn("[Compact L3] skipped {} self-readback tool_results (read_file/cat/head/tail on {})",
                     skipped, config.taskOutputDir());
         }
         if (persisted > 0) {
@@ -120,16 +75,7 @@ public class BudgetCompactor {
         return false;
     }
 
-    /**
-     * 判断这个 tool_use 是否是"读回 L3 stub 落盘的文件"。
-     *
-     * <p>覆盖两种调用形态:
-     * <ul>
-     *   <li>{@code read_file(path=".task_outputs/tool-results/xxx.txt")} —— 大部分 LLM 走这条</li>
-     *   <li>{@code bash(command="cat .task_outputs/tool-results/xxx.txt")} —— 有些模型偏爱 shell</li>
-     * </ul>
-     */
-    private boolean isSelfReadback(ToolUseBlock use) {
+    private boolean isSelfReadback(LlmToolCall use) {
         if (use == null || use.getName() == null) return false;
         JsonNode input = use.getInput();
         if (input == null || !input.isObject()) return false;
@@ -145,39 +91,26 @@ public class BudgetCompactor {
             JsonNode cmd = input.get("command");
             if (cmd == null || !cmd.isTextual()) return false;
             String c = cmd.asText();
-            // cat/head/tail/less 之类读文件 —— 命令里出现 taskOutputDir 的绝对路径或相对片段
             return c.contains(taskOutputAbs) || c.contains(".task_outputs/tool-results/");
         }
         return false;
     }
 
-    /**
-     * 判断用户传的 path(相对或绝对)是否落在 taskOutputDir 内。
-     * 走字符串前缀而不是 Path.startsWith,是因为路径参数可能是相对形式,
-     * 而我们无法确定 cwd(agent 可能在 worktree 里跑)。字符串包含比对足够精确
-     * ——taskOutputDir 是相对独特的路径片段。
-     */
     private boolean pathInsideTaskOutputDir(String userPath, String taskOutputAbs) {
         if (userPath == null) return false;
         try {
             Path p = Path.of(userPath).toAbsolutePath().normalize();
             if (p.toString().startsWith(taskOutputAbs)) return true;
-        } catch (Exception ignored) {
-            // 落到字符串匹配
-        }
+        } catch (Exception ignored) {}
         return userPath.contains(taskOutputAbs) || userPath.contains(".task_outputs/tool-results/");
     }
 
-    /**
-     * 落盘 + 生成 stub。失败返回 null(调用方保留原 content)。
-     */
-    private String persistAndStub(String toolUseId, String content) {
+    private String persistAndStub(String toolCallId, String content) {
         try {
             Path dir = config.taskOutputDir();
             Files.createDirectories(dir);
-            // 文件名用 tool_use_id;为空时降级为时间戳
-            String filename = (toolUseId != null && !toolUseId.isBlank())
-                    ? sanitize(toolUseId) + ".txt"
+            String filename = (toolCallId != null && !toolCallId.isBlank())
+                    ? sanitize(toolCallId) + ".txt"
                     : "tool_result_" + System.identityHashCode(content) + ".txt";
             Path file = dir.resolve(filename);
             Files.writeString(file, content, StandardCharsets.UTF_8);
@@ -188,42 +121,33 @@ public class BudgetCompactor {
                     STUB_PREFIX, kb, file.toAbsolutePath());
         } catch (IOException e) {
             log.warn("[Compact L3] failed to persist tool result for id={}: {}",
-                    toolUseId, e.toString());
+                    toolCallId, e.toString());
             return null;
         }
     }
 
-    /**
-     * 文件名清洗:tool_use_id 一般是 toolu_01XYZ 这种安全字符,
-     * 但为了防御反斜杠 / 路径穿越,这里去掉所有非 [A-Za-z0-9_-] 字符。
-     */
     private static String sanitize(String s) {
         return s.replaceAll("[^A-Za-z0-9_-]", "_");
     }
 
-    private static List<ToolResultBlock> collectToolResults(List<MessageParam> msgs) {
-        List<ToolResultBlock> out = new ArrayList<>();
-        for (MessageParam m : msgs) {
-            if (!"user".equals(m.getRole())) continue;
-            if (!(m.getContent() instanceof List<?> blocks)) continue;
-            for (Object b : blocks) {
-                if (b instanceof ToolResultBlock trb) {
-                    out.add(trb);
-                }
+    private static List<LlmToolResult> collectToolResults(List<LlmMessage> msgs) {
+        List<LlmToolResult> out = new ArrayList<>();
+        for (LlmMessage m : msgs) {
+            if (m == null || m.getRole() != LlmRole.TOOL || m.getContent() == null) continue;
+            for (LlmContent c : m.getContent()) {
+                if (c instanceof LlmToolResult tr) out.add(tr);
             }
         }
         return out;
     }
 
-    /** 建 id → ToolUseBlock 映射,供 apply 判断 tool_result 是否是某个 read_file 的返回。 */
-    private static Map<String, ToolUseBlock> collectToolUses(List<MessageParam> msgs) {
-        Map<String, ToolUseBlock> out = new HashMap<>();
-        for (MessageParam m : msgs) {
-            if (!"assistant".equals(m.getRole())) continue;
-            if (!(m.getContent() instanceof List<?> blocks)) continue;
-            for (Object b : blocks) {
-                if (b instanceof ToolUseBlock tu && tu.getId() != null) {
-                    out.put(tu.getId(), tu);
+    private static Map<String, LlmToolCall> collectToolCalls(List<LlmMessage> msgs) {
+        Map<String, LlmToolCall> out = new HashMap<>();
+        for (LlmMessage m : msgs) {
+            if (m == null || m.getRole() != LlmRole.ASSISTANT || m.getContent() == null) continue;
+            for (LlmContent c : m.getContent()) {
+                if (c instanceof LlmToolCall tc && tc.getId() != null) {
+                    out.put(tc.getId(), tc);
                 }
             }
         }

@@ -1,7 +1,7 @@
 package com.xilidou.jooj.memory;
 
-import com.xilidou.jooj.http.dto.MessageParam;
 import com.xilidou.jooj.llm.LlmClient;
+import com.xilidou.jooj.llm.domain.LlmMessage;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.ArrayList;
@@ -87,7 +87,7 @@ public class MemoryService {
      *
      * <p>返回空字符串表示无相关 memory(SYSTEM 不需要追加额外内容)。
      */
-    public String loadRelevant(List<MessageParam> messages) {
+    public String loadRelevant(List<LlmMessage> messages) {
         return loadRelevant(messages, null);
     }
 
@@ -100,7 +100,7 @@ public class MemoryService {
      *
      * <p>cleanQuery 为 null / blank 时降级到旧行为(倒扫 history 最近 N 条 user 文本)。
      */
-    public String loadRelevant(List<MessageParam> messages, String cleanQuery) {
+    public String loadRelevant(List<LlmMessage> messages, String cleanQuery) {
         try {
             return selector.load(messages, cleanQuery);
         } catch (Exception e) {
@@ -123,7 +123,7 @@ public class MemoryService {
      *   <li>Reviewer —— 找跨 turn 模式("用户两次纠正我用 ripgrep 不要用 grep")</li>
      * </ul>
      */
-    public void onTurnEnd(List<MessageParam> messages) {
+    public void onTurnEnd(List<LlmMessage> messages) {
         // s22 架构审查:extractor + consolidator 之前同步跑,让每个 turn 多花 ~4 秒
         // (extract LLM 调用) + 可能的 consolidate LLM 调用。挪到 BgExecutor 异步。
         //
@@ -138,7 +138,7 @@ public class MemoryService {
         if (reviewExecutor != null && messages != null && !messages.isEmpty()) {
             // 异步路径:extract + consolidate + review 都进 BgExecutor
             // 拷 snapshot:主线程后续可能 mutate messages
-            final List<MessageParam> snapshot = List.copyOf(messages);
+            final List<LlmMessage> snapshot = List.copyOf(messages);
             try {
                 reviewExecutor.execute(() -> runExtractConsolidateReview(snapshot));
             } catch (java.util.concurrent.RejectedExecutionException e) {
@@ -155,7 +155,7 @@ public class MemoryService {
      * s22 架构审查:提取 extract → consolidate → review 三段逻辑,让 onTurnEnd 可选
      * "同步 vs 异步"包装,不重复分支。
      */
-    private void runExtractConsolidateReview(List<MessageParam> messages) {
+    private void runExtractConsolidateReview(List<LlmMessage> messages) {
         try {
             extractor.extract(messages);
         } catch (Exception e) {
@@ -189,7 +189,7 @@ public class MemoryService {
      *
      * <p>对应 ByteRover memory provider 的"automatic pre-compression extraction" 设计。
      */
-    public void preCompressionExtract(List<MessageParam> messages) {
+    public void preCompressionExtract(List<LlmMessage> messages) {
         try {
             extractor.extract(messages);
         } catch (Exception e) {

@@ -31,9 +31,11 @@ import com.xilidou.jooj.llm.domain.LlmContent;
 import com.xilidou.jooj.llm.domain.LlmMessage;
 import com.xilidou.jooj.llm.domain.LlmRequest;
 import com.xilidou.jooj.llm.domain.LlmResponse;
+import com.xilidou.jooj.llm.domain.LlmRole;
 import com.xilidou.jooj.llm.domain.LlmText;
 import com.xilidou.jooj.llm.domain.LlmToolCall;
 import com.xilidou.jooj.llm.domain.LlmToolDef;
+import com.xilidou.jooj.llm.domain.LlmToolResult;
 import com.xilidou.jooj.memory.MemoryService;
 import com.xilidou.jooj.prompt.SystemPromptAssembler;
 import com.xilidou.jooj.todo.TodoStore;
@@ -277,7 +279,7 @@ public class AgentLoopHarness {
 
     // ── 核心 Agent Loop ─────────────────────────────────────────
 
-    public void agentLoop(List<MessageParam> messages) {
+    public void agentLoop(List<LlmMessage> messages) {
         agentLoop(messages, ExecutionContext.lead());
     }
 
@@ -285,7 +287,7 @@ public class AgentLoopHarness {
      * 老入口:只带 sessionId,自动包装成 {@link ExecutionContext#leadInSession}。
      * Demo 20 之前的调用方走这条;Demo 20 起新调用方应走带 ctx 的重载,带上 deliveryHint 等。
      */
-    public void agentLoop(List<MessageParam> messages, String sessionId) {
+    public void agentLoop(List<LlmMessage> messages, String sessionId) {
         ExecutionContext ctx = sessionId != null
                 ? ExecutionContext.leadInSession(sessionId)
                 : ExecutionContext.lead();
@@ -300,7 +302,7 @@ public class AgentLoopHarness {
      * @param ctx      execution context;{@link ExecutionContext#sessionId} 决定 per-session 状态
      *                 路由,{@link ExecutionContext#deliveryHint} 决定 cron job 等的 freeze 信息
      */
-    public void agentLoop(List<MessageParam> messages, ExecutionContext ctx) {
+    public void agentLoop(List<LlmMessage> messages, ExecutionContext ctx) {
         // 提取 sessionId 给 todoStore / bgManager 等 per-session 状态服务用。
         String sessionId = ctx != null ? ctx.sessionId() : null;
         List<LlmToolDef> tools = buildTools();
@@ -309,12 +311,11 @@ public class AgentLoopHarness {
         // s14: 进入 agent_loop 顶部 drain cron queue,把 fired job 转成 user message。
         List<CronJob> firedAtTop = cronService.drainQueue();
         for (CronJob job : firedAtTop) {
-            messages.add(MessageParam.user("[Scheduled] " + job.getPrompt()));
+            messages.add(LlmMessage.userText("[Scheduled] " + job.getPrompt()));
             log.info("[Cron] injected fired job {} prompt into agent_loop top", job.getId());
         }
 
         // s11: per-loop 错误恢复状态机。跨 agentLoop 调用不污染。
-        // s22 架构审查:默认 model / max_tokens 现在由 RecoveryCoordinator 内部拿,harness 不管
         var recoveryState = recoveryCoordinator.newState();
 
         while (true) {
@@ -338,8 +339,8 @@ public class AgentLoopHarness {
             // s22 D:token-aware 触发门禁。
             compactPipeline.compressIfNeeded(messages);
 
-            // Scrub orphan tool_use / tool_result;下沉不变量。
-            List<MessageParam> scrubbed = HistoryScrubber.scrub(messages);
+            // Scrub orphan tool_call / tool_result;下沉不变量。
+            List<LlmMessage> scrubbed = HistoryScrubber.scrub(messages);
             if (scrubbed != messages) {
                 messages.clear();
                 messages.addAll(scrubbed);
@@ -361,10 +362,7 @@ public class AgentLoopHarness {
             }
 
             // s22 架构审查(B2):recovery 内部消化 escalate / continuation,只暴露成功 / fatal 二元。
-            //
-            // P2(2026-07-14):harness 现在构造 canonical LlmRequest,不再直接持有 wire CreateMessageRequest。
-            // messages 参数(List<MessageParam>)仍是 wire 类型 —— Step G 会连同 SessionStore 一并迁到
-            // List<LlmMessage>。目前 recovery 内部通过 bridgeMessages 桥接。
+            // P2 Step G2:messages 已是 canonical List<LlmMessage>,不再需要 bridgeMessagesToCanonical。
             LlmResponse response;
             try {
                 response = recoveryCoordinator.call(
@@ -372,7 +370,7 @@ public class AgentLoopHarness {
                                 .model(state.getCurrentModel())
                                 .system(canonicalSystem)
                                 .systemCacheHints(systemCacheHints)
-                                .messages(bridgeMessagesToCanonical(messages))
+                                .messages(messages)
                                 .tools(tools)
                                 .maxTokens(state.getCurrentMaxTokens())
                                 .build(),
@@ -380,20 +378,18 @@ public class AgentLoopHarness {
                         recoveryState
                 );
             } catch (FatalRecoveryException e) {
-                // ChatHistoryMapper 认 "[Error] " 前缀翻成 SYSTEM_NOTICE(ERROR),前端渲染错误气泡
-                messages.add(MessageParam.assistant(List.of(
-                        new TextBlock("[Error] " + e.getReason()))));
+                // ChatHistoryMapper 认 "[Error] " 前缀翻成 SYSTEM_NOTICE(ERROR)
+                messages.add(LlmMessage.assistant(List.of(new LlmText("[Error] " + e.getReason()))));
                 return;
             }
 
-            // 把 canonical response.content 桥接回 wire ContentBlock 塞进 MessageParam.assistant(...)
-            messages.add(MessageParam.assistant(
-                    AnthropicShapeBridge.contentToWire(response.getContent())));
+            // 直接 append canonical response.content(不再桥接回 wire)
+            messages.add(LlmMessage.assistant(response.getContent()));
 
             if (!response.needsToolExecution()) {
                 Optional<String> forceContinue = hooks.triggerStop(messages);
                 if (forceContinue.isPresent()) {
-                    messages.add(MessageParam.user(forceContinue.get()));
+                    messages.add(LlmMessage.userText(forceContinue.get()));
                     continue;
                 }
                 return;
@@ -401,7 +397,7 @@ public class AgentLoopHarness {
 
             roundsSinceTodo++;
 
-            List<ToolResultBlock> toolResults = new ArrayList<>();
+            List<LlmToolResult> toolResults = new ArrayList<>();
             for (LlmToolCall toolCall : response.toolCalls()) {
                 // s22 D-8/D-10:每个 tool 之间也检查一次。
                 if (agentControl.consumeInterrupt(sessionId)) {
@@ -409,6 +405,7 @@ public class AgentLoopHarness {
                 }
 
                 // 桥接 canonical LlmToolCall → wire ToolUseBlock 供 harness 内部 helper 使用
+                // (hooks / registry / TurnEventStream 等还消费 wire 类型,Step G 之后有 follow-up)
                 ToolUseBlock toolUse = new ToolUseBlock(
                         toolCall.getId(), toolCall.getName(), toolCall.getInput());
 
@@ -421,7 +418,7 @@ public class AgentLoopHarness {
                 Optional<String> blocked = hooks.triggerPreToolUse(toolUse);
                 if (blocked.isPresent()) {
                     System.out.println("\033[31m⛔ " + blocked.get() + "\033[0m");
-                    toolResults.add(ToolResultBlock.ofText(toolUse.getId(), blocked.get()));
+                    toolResults.add(LlmToolResult.success(toolUse.getId(), blocked.get()));
                     continue;
                 }
 
@@ -434,12 +431,12 @@ public class AgentLoopHarness {
                     String placeholder = "[Background task " + bgId + " started] " +
                             "Result will be available when complete.";
                     System.out.println("\033[35m" + placeholder + "\033[0m");
-                    toolResults.add(ToolResultBlock.ofText(toolUse.getId(), placeholder));
+                    toolResults.add(LlmToolResult.success(toolUse.getId(), placeholder));
                     continue;
                 }
 
-                ToolResultBlock result = executeOneTool(toolUse, args, ctx);
-                hooks.triggerPostToolUse(toolUse, result.getContent().toString());
+                LlmToolResult result = executeOneTool(toolUse, args, ctx);
+                hooks.triggerPostToolUse(toolUse, result.getOutput());
 
                 if (TODO_TOOL_NAME.equals(toolUse.getName())) {
                     roundsSinceTodo = 0;
@@ -454,48 +451,44 @@ public class AgentLoopHarness {
                 log.info("[BG] session={} injected {} task_notification(s) into next turn",
                         sessionId, notifications.size());
             }
-            messages.add(MessageParam.toolResultsWithNotifications(toolResults, notifications));
+            // 合并 tool results + bg notifications 成一条 TOOL 消息 + 可选的 USER text
+            // (canonical shape:notifications 是纯 text notifications,放 USER 更清晰)
+            List<LlmContent> toolBlocks = new ArrayList<>(toolResults.size());
+            toolBlocks.addAll(toolResults);
+            messages.add(new LlmMessage(LlmRole.TOOL, toolBlocks));
+            if (!notifications.isEmpty()) {
+                StringBuilder sb = new StringBuilder();
+                for (TextBlock tb : notifications) {
+                    if (sb.length() > 0) sb.append('\n');
+                    sb.append(tb.getText());
+                }
+                messages.add(LlmMessage.userText(sb.toString()));
+            }
         }
     }
 
-    /**
-     * 桥接旧 {@code List<MessageParam>} → canonical {@code List<LlmMessage>},
-     * 用于每轮 turn 出站构建 {@link LlmRequest}。
-     *
-     * <p>Step G 完成后本方法可删 —— 那时 messages 本身就是 canonical list。
-     */
-    private List<LlmMessage> bridgeMessagesToCanonical(List<MessageParam> messages) {
-        var adapter = new com.xilidou.jooj.llm.adapter.AnthropicAdapter(json);
-        List<LlmMessage> out = new ArrayList<>(messages.size());
-        for (MessageParam m : messages) {
-            out.add(adapter.messageToDomain(m));
-        }
-        return out;
-    }
-
-    @SuppressWarnings("unchecked")
-    private void appendNagToLastUserMessage(List<MessageParam> messages, String nag) {
+    /** 追加 nag reminder 到最后一条 user message(或新建一条)。 */
+    private void appendNagToLastUserMessage(List<LlmMessage> messages, String nag) {
         int lastIdx = messages.size() - 1;
-        MessageParam last = messages.get(lastIdx);
+        LlmMessage last = messages.get(lastIdx);
 
-        if (!"user".equals(last.getRole())) {
-            messages.add(MessageParam.user(nag));
+        if (last.getRole() != LlmRole.USER) {
+            messages.add(LlmMessage.userText(nag));
             return;
         }
 
-        Object content = last.getContent();
-        MessageParam merged;
-        if (content instanceof String oldText) {
-            merged = MessageParam.user(oldText + "\n\n" + nag);
-        } else if (content instanceof List<?> blocks) {
-            List<ContentBlock> newBlocks = new ArrayList<>((List<ContentBlock>) blocks);
-            newBlocks.add(new TextBlock(nag));
-            merged = new MessageParam("user", newBlocks);
-        } else {
-            messages.add(MessageParam.user(nag));
-            return;
+        // Append 到最后一个 LlmText;若没 text 则整条新加
+        List<LlmContent> merged = new ArrayList<>(last.getContent());
+        // 找最后一个 LlmText 追加
+        for (int i = merged.size() - 1; i >= 0; i--) {
+            if (merged.get(i) instanceof LlmText t) {
+                merged.set(i, new LlmText(t.getText() + "\n\n" + nag));
+                messages.set(lastIdx, new LlmMessage(LlmRole.USER, merged, last.getCacheHints()));
+                return;
+            }
         }
-        messages.set(lastIdx, merged);
+        merged.add(new LlmText(nag));
+        messages.set(lastIdx, new LlmMessage(LlmRole.USER, merged, last.getCacheHints()));
     }
 
     private List<LlmToolDef> buildTools() {
@@ -529,7 +522,7 @@ public class AgentLoopHarness {
     }
 
     /** 拿到指定 session 的 history(可变 list 引用)。 */
-    public List<MessageParam> getHistory(String sessionId) {
+    public List<LlmMessage> getHistory(String sessionId) {
         return sessionService.loadHistory(sessionId);
     }
 
@@ -600,7 +593,7 @@ public class AgentLoopHarness {
         eventPublisher.publishEvent(new UserMessageReceived(
                 UUID.randomUUID(), sessionId, eventContent, Instant.now(), source));
 
-        List<MessageParam> history = sessionService.loadHistory(sessionId);
+        List<LlmMessage> history = sessionService.loadHistory(sessionId);
         String enriched = query;
         // s22 P3-a:传 cleanQuery 优先做召回,避免倒扫 history 时吃到上轮的 memory prefix 污染。
         // Memory 全局共享(Demo 13:1-user 假设下 user 长期事实跨会话可见)
@@ -609,7 +602,7 @@ public class AgentLoopHarness {
             enriched = injection + "\n\n" + query;
             log.info("[Memory] injected {} chars of relevant memories", injection.length());
         }
-        history.add(MessageParam.user(enriched));
+        history.add(LlmMessage.userText(enriched));
         int historyBefore = history.size();
 
         // s21 Demo 20: 构造完整 ctx(sessionId + deliveryHint),透传到 agent loop
@@ -636,7 +629,7 @@ public class AgentLoopHarness {
                 // 正常的 memoryService.onTurnEnd / drainLeadInbox / AssistantResponseCompleted 流程。
                 // messages 保留 partial(可能包含最后一次 assistant response),LLM 下一轮能看到"上轮被打断"上下文。
                 interrupted = true;
-                history.add(MessageParam.user("[Interrupted by user]"));
+                history.add(LlmMessage.userText("[Interrupted by user]"));
                 log.info("[Interrupt] turn interrupted sid={} history_size={}", sessionId, history.size());
             }
         } finally {
@@ -701,28 +694,23 @@ public class AgentLoopHarness {
      * 跳过 tool_use / thinking,只回纯文本。
      * 跟 InboundDispatcher.lastAssistantText 一致语义,这里独立放在 harness 包不需要跨包依赖。
      */
-    private String lastAssistantTextSince(List<MessageParam> history, int sinceIndex) {
-        // s22 P6 修复:sinceIndex 可能被压缩过程摧毁 —— agentLoop 内部若触发
+    private String lastAssistantTextSince(List<LlmMessage> history, int sinceIndex) {
+        // s22 P6:sinceIndex 可能被压缩过程摧毁 —— agentLoop 内部若触发
         // CompactPipeline 会削掉 history 中段,原本记录的 sinceIndex(压缩前的 size)
         // 会大于新的 history.size(),导致 for 循环从来不进入,event 丢失。
-        // clamp 到 [0, history.size()-1],配合"最新那条 assistant 就是本轮 reply"
-        // 的普适假设 —— 即使 sinceIndex 变无效,拿到的最新 assistant 也是正确的。
+        // clamp 到 [0, history.size()-1]。
         int from = Math.max(0, Math.min(sinceIndex, history.size() - 1));
         for (int i = history.size() - 1; i >= from; i--) {
-            MessageParam m = history.get(i);
-            if (!"assistant".equals(m.getRole())) continue;
-            Object c = m.getContent();
-            if (c instanceof String s && !s.isBlank()) return s;
-            if (c instanceof List<?> blocks) {
-                StringBuilder sb = new StringBuilder();
-                for (Object b : blocks) {
-                    if (b instanceof TextBlock tb && tb.getText() != null) {
-                        if (sb.length() > 0) sb.append('\n');
-                        sb.append(tb.getText());
-                    }
+            LlmMessage m = history.get(i);
+            if (m.getRole() != LlmRole.ASSISTANT || m.getContent() == null) continue;
+            StringBuilder sb = new StringBuilder();
+            for (LlmContent c : m.getContent()) {
+                if (c instanceof LlmText t && t.getText() != null) {
+                    if (sb.length() > 0) sb.append('\n');
+                    sb.append(t.getText());
                 }
-                if (sb.length() > 0) return sb.toString();
             }
+            if (sb.length() > 0) return sb.toString();
         }
         return null;
     }
@@ -755,7 +743,7 @@ public class AgentLoopHarness {
         }
     }
 
-    private ToolResultBlock executeOneTool(ToolUseBlock toolUse, Map<String, Object> args, ExecutionContext ctx) {
+    private LlmToolResult executeOneTool(ToolUseBlock toolUse, Map<String, Object> args, ExecutionContext ctx) {
         if (ctx == null) ctx = ExecutionContext.lead();
         ToolResult result = registry.execute(new ToolCall(toolUse.getName(), args), ctx);
         String output = result.getOutput();
@@ -764,7 +752,7 @@ public class AgentLoopHarness {
                 ? output.substring(0, CONSOLE_PREVIEW_LIMIT) + "..."
                 : output);
 
-        return ToolResultBlock.ofText(toolUse.getId(), output);
+        return LlmToolResult.success(toolUse.getId(), output);
     }
 
     private Map<String, Object> parseToolInput(ToolUseBlock toolUse) {
@@ -850,7 +838,7 @@ public class AgentLoopHarness {
     /**
      * s15: drain lead 的 inbox,把队友消息揉成一条 user message 加到 history。
      */
-    private void drainLeadInbox(List<MessageParam> history) {
+    private void drainLeadInbox(List<LlmMessage> history) {
         List<Message> inbox = messageBus.readInbox("lead");
         if (inbox.isEmpty()) return;
 
@@ -883,25 +871,19 @@ public class AgentLoopHarness {
             if (!reqId.isBlank()) sb.append(" req:").append(reqId);
             sb.append("): ").append(m.getContent()).append('\n');
         }
-        history.add(MessageParam.user(sb.toString()));
+        history.add(LlmMessage.userText(sb.toString()));
         log.info("[Team] drained {} non-protocol message(s) from lead inbox into history",
                 nonProtocol.size());
     }
 
-    private void printLastAssistantText(List<MessageParam> history) {
+    private void printLastAssistantText(List<LlmMessage> history) {
         if (history.isEmpty()) return;
-        MessageParam last = history.get(history.size() - 1);
-        if (!"assistant".equals(last.getRole())) return;
-
-        Object content = last.getContent();
-        if (content instanceof List<?> blocks) {
-            for (Object block : blocks) {
-                if (block instanceof TextBlock t) {
-                    System.out.println(t.getText());
-                }
+        LlmMessage last = history.get(history.size() - 1);
+        if (last.getRole() != LlmRole.ASSISTANT || last.getContent() == null) return;
+        for (LlmContent c : last.getContent()) {
+            if (c instanceof LlmText t && t.getText() != null) {
+                System.out.println(t.getText());
             }
-        } else if (content instanceof String s) {
-            System.out.println(s);
         }
     }
 }

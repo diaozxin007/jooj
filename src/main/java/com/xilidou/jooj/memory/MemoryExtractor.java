@@ -103,7 +103,7 @@ public class MemoryExtractor {
      * @param messages 对话历史(只读最近 {@link #RECENT_MESSAGE_LIMIT} 条)
      * @return 实际写入的 memory 数量(0 = 没新 fact 或调用失败)
      */
-    public int extract(List<MessageParam> messages) {
+    public int extract(List<LlmMessage> messages) {
         if (client == null) {
             return 0; // Extractor 禁用
         }
@@ -163,49 +163,45 @@ public class MemoryExtractor {
 
     /**
      * 取最近 N 条消息,渲染成 {@code role: content} 文本。
-     * 跳过 tool_use / tool_result(那是模型自己的工具调用,不是事实来源)。
+     * 跳过 tool_call / tool_result(那是模型自己的工具调用,不是事实来源)。
+     *
+     * <p>P2 Step G:canonical role dispatch + LlmContent sealed switch。
      */
-    String renderRecentDialogue(List<MessageParam> messages) {
+    String renderRecentDialogue(List<LlmMessage> messages) {
         int from = Math.max(0, messages.size() - RECENT_MESSAGE_LIMIT);
         StringBuilder sb = new StringBuilder();
         for (int i = from; i < messages.size(); i++) {
-            MessageParam m = messages.get(i);
+            LlmMessage m = messages.get(i);
             String text = extractTextContent(m);
             if (text.isBlank()) continue;
-            sb.append(m.getRole()).append(": ").append(text).append('\n');
+            String roleStr = switch (m.getRole()) {
+                case USER -> "user";
+                case ASSISTANT -> "assistant";
+                case TOOL -> "tool";
+            };
+            sb.append(roleStr).append(": ").append(text).append('\n');
         }
         String out = sb.toString();
         if (out.length() > DIALOGUE_MAX_CHARS) {
-            // 从尾部保留(最近的优先)
             out = out.substring(out.length() - DIALOGUE_MAX_CHARS);
         }
         return out.strip();
     }
 
     /**
-     * 从消息里抽取文本部分。
-     * String content → 直接返回
-     * List<ContentBlock> → 拼所有 TextBlock 的 text;全是 tool_result 时返回空
+     * 从消息里抽取文本部分。TOOL role 或全 tool_result 时返空;LlmText 拼接返回。
      */
-    private static String extractTextContent(MessageParam m) {
-        Object c = m.getContent();
-        if (c instanceof String s) return s;
-        if (c instanceof List<?> blocks) {
-            // 全 tool_result 跳过
-            boolean allToolResults = !blocks.isEmpty()
-                    && blocks.stream().allMatch(b -> b instanceof ToolResultBlock);
-            if (allToolResults) return "";
-
-            StringBuilder sb = new StringBuilder();
-            for (Object b : blocks) {
-                if (b instanceof TextBlock tb) {
-                    if (sb.length() > 0) sb.append(' ');
-                    sb.append(tb.getText() == null ? "" : tb.getText());
-                }
+    private static String extractTextContent(LlmMessage m) {
+        if (m.getRole() == com.xilidou.jooj.llm.domain.LlmRole.TOOL) return "";
+        if (m.getContent() == null || m.getContent().isEmpty()) return "";
+        StringBuilder sb = new StringBuilder();
+        for (com.xilidou.jooj.llm.domain.LlmContent c : m.getContent()) {
+            if (c instanceof com.xilidou.jooj.llm.domain.LlmText t && t.getText() != null) {
+                if (sb.length() > 0) sb.append(' ');
+                sb.append(t.getText());
             }
-            return sb.toString();
         }
-        return "";
+        return sb.toString();
     }
 
     /** 列已有 memory 的 catalog,让 LLM 不重复写。空时返回 "(none)"。*/

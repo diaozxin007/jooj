@@ -6,9 +6,11 @@ import com.xilidou.jooj.agent.control.ChoiceAnswer;
 import com.xilidou.jooj.agent.control.ClarifyQuestion;
 import com.xilidou.jooj.agent.control.PendingQuestion;
 import com.xilidou.jooj.hook.HookManager;
-import com.xilidou.jooj.http.dto.MessageParam;
-import com.xilidou.jooj.http.dto.TextBlock;
-import com.xilidou.jooj.http.dto.ToolUseBlock;
+import com.xilidou.jooj.llm.domain.LlmContent;
+import com.xilidou.jooj.llm.domain.LlmMessage;
+import com.xilidou.jooj.llm.domain.LlmRole;
+import com.xilidou.jooj.llm.domain.LlmText;
+import com.xilidou.jooj.llm.domain.LlmToolCall;
 import com.xilidou.jooj.session.AgentLockProvider;
 import com.xilidou.jooj.session.Session;
 import com.xilidou.jooj.session.SessionService;
@@ -221,7 +223,7 @@ public class InboundDispatcher implements ChannelDeliverer {
                         "Agent failed: " + e.getClass().getSimpleName() + ": " + e.getMessage());
             }
 
-            List<MessageParam> history = harness.getHistory(sessionId);
+            List<LlmMessage> history = harness.getHistory(sessionId);
             String reply = lastAssistantText(history, historyBefore);
             List<String> toolCalls = collectToolCallsSince(history, historyBefore);
             return new DispatchResult(Status.OK, reply, null, history.size(), toolCalls);
@@ -279,7 +281,7 @@ public class InboundDispatcher implements ChannelDeliverer {
     // ─────────────────────────────────────────────────────────────
 
     /** 读取指定 session 的对话历史(null/空 → DEFAULT_ID 兜底)。 */
-    public List<MessageParam> history(String sessionId) {
+    public List<LlmMessage> history(String sessionId) {
         return harness.getHistory(resolveSessionId(sessionId));
     }
 
@@ -419,37 +421,32 @@ public class InboundDispatcher implements ChannelDeliverer {
         return sessionId.trim();
     }
 
-    /** 从 sinceIndex 之后的 history 里找最后一条 assistant 文本。跳过 tool_use / thinking。 */
-    private static String lastAssistantText(List<MessageParam> history, int sinceIndex) {
+    /** 从 sinceIndex 之后的 history 里找最后一条 assistant 文本。跳过 tool_call / thinking。 */
+    private static String lastAssistantText(List<LlmMessage> history, int sinceIndex) {
         for (int i = history.size() - 1; i >= Math.max(0, sinceIndex); i--) {
-            MessageParam m = history.get(i);
-            if (!"assistant".equals(m.getRole())) continue;
-            Object c = m.getContent();
-            if (c instanceof String s && !s.isBlank()) return s;
-            if (c instanceof List<?> blocks) {
-                StringBuilder sb = new StringBuilder();
-                for (Object b : blocks) {
-                    if (b instanceof TextBlock tb && tb.getText() != null) {
-                        if (sb.length() > 0) sb.append("\n");
-                        sb.append(tb.getText());
-                    }
+            LlmMessage m = history.get(i);
+            if (m.getRole() != LlmRole.ASSISTANT || m.getContent() == null) continue;
+            StringBuilder sb = new StringBuilder();
+            for (LlmContent c : m.getContent()) {
+                if (c instanceof LlmText t && t.getText() != null) {
+                    if (sb.length() > 0) sb.append("\n");
+                    sb.append(t.getText());
                 }
-                if (sb.length() > 0) return sb.toString();
             }
+            if (sb.length() > 0) return sb.toString();
         }
         return "";
     }
 
     /** 收集本次 turn 在 history 增量里出现的工具名(去重保序)。 */
-    private static List<String> collectToolCallsSince(List<MessageParam> history, int sinceIdx) {
+    private static List<String> collectToolCallsSince(List<LlmMessage> history, int sinceIdx) {
         List<String> out = new ArrayList<>();
         for (int i = Math.max(0, sinceIdx); i < history.size(); i++) {
-            MessageParam m = history.get(i);
-            if (!"assistant".equals(m.getRole())) continue;
-            if (!(m.getContent() instanceof List<?> blocks)) continue;
-            for (Object b : blocks) {
-                if (b instanceof ToolUseBlock tu && !out.contains(tu.getName())) {
-                    out.add(tu.getName());
+            LlmMessage m = history.get(i);
+            if (m.getRole() != LlmRole.ASSISTANT || m.getContent() == null) continue;
+            for (LlmContent c : m.getContent()) {
+                if (c instanceof LlmToolCall tc && !out.contains(tc.getName())) {
+                    out.add(tc.getName());
                 }
             }
         }

@@ -2,11 +2,10 @@ package com.xilidou.jooj.agent;
 
 import com.xilidou.jooj.compact.CompactPipeline;
 import com.xilidou.jooj.http.AnthropicProperties;
-import com.xilidou.jooj.http.dto.MessageParam;
 import com.xilidou.jooj.llm.LlmClient;
-import com.xilidou.jooj.llm.adapter.AnthropicShapeBridge;
 import com.xilidou.jooj.llm.domain.LlmErrorKind;
 import com.xilidou.jooj.llm.domain.LlmException;
+import com.xilidou.jooj.llm.domain.LlmMessage;
 import com.xilidou.jooj.llm.domain.LlmRequest;
 import com.xilidou.jooj.llm.domain.LlmResponse;
 import com.xilidou.jooj.llm.domain.LlmStopReason;
@@ -44,9 +43,9 @@ import java.util.function.Function;
  *   <li>stop_reason 用 {@link LlmStopReason} 枚举,不再是 String</li>
  * </ul>
  *
- * <p>messages 参数仍是 {@code List<MessageParam>} —— Step G 会连同 SessionStore
- * 序列化格式一并迁到 {@code List<LlmMessage>}。Path 1 continuation 里用
- * {@link AnthropicShapeBridge} 把 canonical 响应桥接回 MessageParam,过渡期用。
+ * <p>P2 Step G2:messages 已迁到 canonical {@code List<LlmMessage>}(与 SessionStore
+ * 序列化格式同步)。continuation prompt append / reactive compact 的原地修改语义
+ * 保持不变。
  */
 @Component
 @Slf4j
@@ -86,7 +85,7 @@ public class RecoveryCoordinator {
      */
     public LlmResponse call(
             Function<RecoveryState, LlmRequest> requestBuilder,
-            List<MessageParam> messages,
+            List<LlmMessage> messages,
             RecoveryState state) throws FatalRecoveryException {
 
         while (true) {
@@ -128,11 +127,9 @@ public class RecoveryCoordinator {
                     state.recoveryCount++;
                     log.info("[Recovery] continuation {}/{}",
                             state.recoveryCount, cfg.getMaxRecoveryRetries());
-                    // 桥接 canonical LlmResponse.content → wire ContentBlock list,
-                    // 塞进 MessageParam.assistant(...);Step G 迁完 SessionStore 后可删。
-                    messages.add(MessageParam.assistant(
-                            AnthropicShapeBridge.contentToWire(response.getContent())));
-                    messages.add(MessageParam.user(cfg.getContinuationPrompt()));
+                    // P2 Step G2:messages 已是 canonical,直接 append。
+                    messages.add(LlmMessage.assistant(response.getContent()));
+                    messages.add(LlmMessage.userText(cfg.getContinuationPrompt()));
                     continue;
                 }
                 log.error("[Recovery] max_tokens recovery limit reached");
@@ -142,19 +139,10 @@ public class RecoveryCoordinator {
 
             // 成功:usage 推给 CompactPipeline
             if (response.getUsage() != null) {
-                compactPipeline.updateFromResponse(bridgeUsage(response.getUsage()));
+                compactPipeline.updateFromResponse(response.getUsage());
             }
             return response;
         }
-    }
-
-    /** 桥接 canonical LlmUsage → wire Usage,供 CompactPipeline 消费(Step D 迁完可删)。 */
-    private static com.xilidou.jooj.http.dto.Usage bridgeUsage(com.xilidou.jooj.llm.domain.LlmUsage u) {
-        return new com.xilidou.jooj.http.dto.Usage(
-                u.getInputTokens(),
-                u.getOutputTokens(),
-                u.getCacheCreationInputTokens(),
-                u.getCacheReadInputTokens());
     }
 
     /**

@@ -1,7 +1,7 @@
 package com.xilidou.jooj.hook;
 
-import com.xilidou.jooj.http.dto.MessageParam;
 import com.xilidou.jooj.http.dto.ToolUseBlock;
+import com.xilidou.jooj.llm.domain.LlmMessage;
 
 import java.util.List;
 import java.util.Optional;
@@ -68,6 +68,6 @@ public class Hook {
      */
     @FunctionalInterface
     public interface OnStop {
-        Optional<String> handle(List<MessageParam> messages);
+        Optional<String> handle(List<LlmMessage> messages);
     }
 }

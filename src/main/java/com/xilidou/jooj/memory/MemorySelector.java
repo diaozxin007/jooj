@@ -2,14 +2,13 @@ package com.xilidou.jooj.memory;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xilidou.jooj.config.JsonMappers;
-import com.xilidou.jooj.http.dto.ContentBlock;
-import com.xilidou.jooj.http.dto.MessageParam;
-import com.xilidou.jooj.http.dto.TextBlock;
-import com.xilidou.jooj.http.dto.ToolResultBlock;
 import com.xilidou.jooj.llm.LlmClient;
+import com.xilidou.jooj.llm.domain.LlmContent;
 import com.xilidou.jooj.llm.domain.LlmMessage;
 import com.xilidou.jooj.llm.domain.LlmRequest;
 import com.xilidou.jooj.llm.domain.LlmResponse;
+import com.xilidou.jooj.llm.domain.LlmRole;
+import com.xilidou.jooj.llm.domain.LlmText;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.ArrayList;
@@ -116,7 +115,7 @@ public class MemorySelector {
      * @param messages 对话历史(只读最近的 user 文本)
      * @return 选中的文件名(空列表 = 无相关或无 memory)
      */
-    public List<String> select(List<MessageParam> messages) {
+    public List<String> select(List<LlmMessage> messages) {
         return select(messages, null);
     }
 
@@ -136,7 +135,7 @@ public class MemorySelector {
      * @param messages   对话历史(第一轮为空 → 直接返 empty,不触发 selection)
      * @param cleanQuery 当前 turn 的干净用户原文;null / blank 时降级到扫 history
      */
-    public List<String> select(List<MessageParam> messages, String cleanQuery) {
+    public List<String> select(List<LlmMessage> messages, String cleanQuery) {
         List<MemoryFile> files = store.list();
         if (files.isEmpty()) return List.of();
 
@@ -168,14 +167,14 @@ public class MemorySelector {
      *
      * @return 拼好的字符串(无相关 memory 时返回空字符串)
      */
-    public String load(List<MessageParam> messages) {
+    public String load(List<LlmMessage> messages) {
         return load(messages, null);
     }
 
     /**
      * s22 P3-a:cleanQuery 版本 —— 见 {@link #select(List, String)}。
      */
-    public String load(List<MessageParam> messages, String cleanQuery) {
+    public String load(List<LlmMessage> messages, String cleanQuery) {
         List<String> selected = select(messages, cleanQuery);
         if (selected.isEmpty()) return "";
 
@@ -202,20 +201,19 @@ public class MemorySelector {
      *
      * <p>跳过 tool_result(那是模型自己拿到的数据,不是用户表达的诉求)。
      */
-    private String collectRecentUserText(List<MessageParam> messages) {
+    private String collectRecentUserText(List<LlmMessage> messages) {
         if (messages == null || messages.isEmpty()) return "";
 
         List<String> recentTexts = new ArrayList<>();
-        // 倒序遍历,只看 user role,跳过 tool_result
+        // 倒序遍历,只看 USER role
         for (int i = messages.size() - 1; i >= 0 && recentTexts.size() < RECENT_USER_LIMIT; i--) {
-            MessageParam m = messages.get(i);
-            if (!"user".equals(m.getRole())) continue;
+            LlmMessage m = messages.get(i);
+            if (m.getRole() != LlmRole.USER) continue;
             String text = extractUserText(m);
             if (!text.isBlank()) {
                 recentTexts.add(text);
             }
         }
-        // 倒回正序
         Collections.reverse(recentTexts);
         String joined = String.join(" ", recentTexts);
         if (joined.length() > RECENT_TEXT_MAX_CHARS) {
@@ -224,26 +222,17 @@ public class MemorySelector {
         return joined;
     }
 
-    /** 从 user 消息里抽文本(纯字符串 / TextBlock 列表)。tool_result 的 content 不算用户输入。*/
-    private static String extractUserText(MessageParam m) {
-        Object c = m.getContent();
-        if (c instanceof String s) return s;
-        if (c instanceof List<?> blocks) {
-            // 全是 tool_result 的 user 消息跳过(空字符串)
-            boolean allToolResults = !blocks.isEmpty()
-                    && blocks.stream().allMatch(b -> b instanceof ToolResultBlock);
-            if (allToolResults) return "";
-            // 取所有 TextBlock 的 text 拼起来
-            StringBuilder sb = new StringBuilder();
-            for (Object b : blocks) {
-                if (b instanceof TextBlock tb) {
-                    if (sb.length() > 0) sb.append(' ');
-                    sb.append(tb.getText() == null ? "" : tb.getText());
-                }
+    /** 从 USER 消息里抽文本(拼所有 LlmText.text)。 */
+    private static String extractUserText(LlmMessage m) {
+        if (m.getContent() == null) return "";
+        StringBuilder sb = new StringBuilder();
+        for (LlmContent c : m.getContent()) {
+            if (c instanceof LlmText t && t.getText() != null) {
+                if (sb.length() > 0) sb.append(' ');
+                sb.append(t.getText());
             }
-            return sb.toString();
         }
-        return "";
+        return sb.toString();
     }
 
     /**

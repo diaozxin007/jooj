@@ -1,6 +1,6 @@
 package com.xilidou.jooj.hook;
 
-import com.xilidou.jooj.http.dto.MessageParam;
+import com.xilidou.jooj.llm.domain.LlmMessage;
 import com.xilidou.jooj.http.dto.ToolUseBlock;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -143,7 +143,7 @@ public class HookManager {
     /**
      * 触发 Stop 事件。返回非空意味着"loop 再来一轮"——见 {@link Hook.OnStop}。
      */
-    public Optional<String> triggerStop(List<MessageParam> messages) {
+    public Optional<String> triggerStop(List<LlmMessage> messages) {
         for (Object h : hooks.get(HookEvent.STOP)) {
             Optional<String> result = ((Hook.OnStop) h).handle(messages);
             if (result.isPresent()) return result;

@@ -1,8 +1,8 @@
 package com.xilidou.jooj.compact;
 
-import com.xilidou.jooj.http.dto.MessageParam;
-import com.xilidou.jooj.http.dto.Usage;
 import com.xilidou.jooj.llm.LlmClient;
+import com.xilidou.jooj.llm.domain.LlmMessage;
+import com.xilidou.jooj.llm.domain.LlmUsage;
 import com.xilidou.jooj.memory.MemoryService;
 import lombok.extern.slf4j.Slf4j;
 
@@ -151,7 +151,7 @@ public class CompactPipeline {
      * @param messages 对话历史(可能被原地修改)
      * @return 是否至少触发了一层压缩
      */
-    public boolean apply(List<MessageParam> messages) {
+    public boolean apply(List<LlmMessage> messages) {
         boolean changed = false;
         changed |= budget.apply(messages);
         changed |= snip.apply(messages);
@@ -176,7 +176,7 @@ public class CompactPipeline {
      * @param messages 对话历史(可能被原地修改)
      * @return 是否实际 apply 并触发了至少一层压缩
      */
-    public boolean compressIfNeeded(List<MessageParam> messages) {
+    public boolean compressIfNeeded(List<LlmMessage> messages) {
         int sizeBefore = messages.size();
         boolean tokenAware = isTokenAwareEnabled();
         long pressure = lastPromptTokens;
@@ -231,7 +231,7 @@ public class CompactPipeline {
      * @param messages 对话历史
      * @return 是否成功摘要
      */
-    public boolean reactiveCompact(List<MessageParam> messages) {
+    public boolean reactiveCompact(List<LlmMessage> messages) {
         if (history == null) {
             return false;
         }
@@ -274,7 +274,7 @@ public class CompactPipeline {
      *
      * @param usage API response 的 usage 字段
      */
-    public void updateFromResponse(Usage usage) {
+    public void updateFromResponse(LlmUsage usage) {
         if (usage == null) return;
         // cacheReadInputTokens 是 Integer(nullable) —— null 表示"没用 prompt cache",视为 0
         Integer cacheRead = usage.getCacheReadInputTokens();

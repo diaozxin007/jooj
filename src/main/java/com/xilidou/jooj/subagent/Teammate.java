@@ -853,9 +853,8 @@ public class Teammate {
 
     @SuppressWarnings("unused")
     private static String extractLastText(List<? extends com.xilidou.jooj.http.dto.ContentBlock> content) {
-        // P2 Step F:主路径改用 response.firstText() 直接从 LlmResponse 拿;
-        // 本 helper 现无内部 caller,保留供 IDE-driven 外部工具引用一段过渡期,
-        // Step G 完全 flip 后可删。
+        // P2 Step G:dead code —— canonical 主路径改用 response.firstText() 直接从
+        // LlmResponse 拿。TODO G2 完全 flip 后删。
         if (content == null || content.isEmpty()) return "";
         StringBuilder sb = new StringBuilder();
         for (com.xilidou.jooj.http.dto.ContentBlock b : content) {
