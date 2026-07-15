@@ -10,14 +10,17 @@ import com.xilidou.jooj.tool.ToolCall;
 import com.xilidou.jooj.tool.ToolDefinition;
 import com.xilidou.jooj.tool.ToolResult;
 import com.xilidou.jooj.hook.HookManager;
-import com.xilidou.jooj.http.AnthropicClient;
-import com.xilidou.jooj.http.dto.CreateMessageRequest;
-import com.xilidou.jooj.http.dto.CreateMessageResponse;
 import com.xilidou.jooj.http.dto.MessageParam;
 import com.xilidou.jooj.http.dto.TextBlock;
-import com.xilidou.jooj.http.dto.ToolDef;
 import com.xilidou.jooj.http.dto.ToolResultBlock;
 import com.xilidou.jooj.http.dto.ToolUseBlock;
+import com.xilidou.jooj.llm.LlmClient;
+import com.xilidou.jooj.llm.adapter.AnthropicShapeBridge;
+import com.xilidou.jooj.llm.domain.LlmMessage;
+import com.xilidou.jooj.llm.domain.LlmRequest;
+import com.xilidou.jooj.llm.domain.LlmResponse;
+import com.xilidou.jooj.llm.domain.LlmToolCall;
+import com.xilidou.jooj.llm.domain.LlmToolDef;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
@@ -108,7 +111,7 @@ public class Subagent {
     private static final String RESET = "\033[0m";
 
     // ── 依赖(全部 final,Spring 构造器注入)──────────────────────
-    private final AnthropicClient client;
+    private final LlmClient client;
     private final String model;
     private final ToolRegistry registry;
     private final ObjectMapper json;
@@ -134,7 +137,7 @@ public class Subagent {
      * {@link com.xilidou.jooj.tool.impl.TaskTool} 端用 @Lazy 打破,
      * Subagent 这边不需要任何 lazy 装配技巧。
      */
-    public Subagent(AnthropicClient client,
+    public Subagent(LlmClient client,
                     ToolRegistry registry,
                     @Qualifier("joojObjectMapper") ObjectMapper json,
                     HookManager hooks,
@@ -179,22 +182,32 @@ public class Subagent {
         List<MessageParam> messages = new ArrayList<>();
         messages.add(MessageParam.user(description));    // fresh context
 
-        List<ToolDef> tools = buildSubTools();
+        List<LlmToolDef> tools = buildSubTools();
 
         for (int turn = 0; turn < MAX_TURNS; turn++) {
             // s22 D-9:每轮 turn 顶部检查 interrupt(只读,不消费)
             checkInterrupt();
 
-            CreateMessageRequest request = CreateMessageRequest.builder()
+            // P2 Step F:出站构造 canonical LlmRequest。messages(List<MessageParam>)
+            // 通过 AnthropicAdapter.messageToDomain 桥回 List<LlmMessage>,response.content
+            // 再通过 AnthropicShapeBridge.contentToWire 桥回塞进 MessageParam.assistant(...)
+            // —— 与 AgentLoopHarness 主循环同一 pattern。Step G flip messages 类型后
+            // 这两条桥接都可删。
+            var adapter = new com.xilidou.jooj.llm.adapter.AnthropicAdapter(json);
+            List<LlmMessage> canonicalMessages = new ArrayList<>(messages.size());
+            for (MessageParam m : messages) {
+                canonicalMessages.add(adapter.messageToDomain(m));
+            }
+            LlmRequest request = LlmRequest.builderWithSystemText(SUB_SYSTEM_PROMPT)
                     .model(model)
-                    .system(SUB_SYSTEM_PROMPT)
-                    .messages(messages)
+                    .messages(canonicalMessages)
                     .tools(tools)
                     .maxTokens(MAX_TOKENS)
                     .build();
 
-            CreateMessageResponse response = client.createMessage(request);
-            messages.add(MessageParam.assistant(response.getContent()));
+            LlmResponse response = client.createMessage(request);
+            messages.add(MessageParam.assistant(
+                    AnthropicShapeBridge.contentToWire(response.getContent())));
 
             if (!response.needsToolExecution()) {
                 String result = extractText(messages);
@@ -203,10 +216,14 @@ public class Subagent {
             }
 
             List<ToolResultBlock> toolResults = new ArrayList<>();
-            for (ToolUseBlock toolUse : response.toolUses()) {
+            for (LlmToolCall toolCall : response.toolCalls()) {
                 // s22 D-9:每个 tool 之间也检查 —— 用户点 stop 后已跑完的 tool 结果不进 messages,
                 // subagent 直接抛出。跟 lead 的检查点粒度对齐。
                 checkInterrupt();
+
+                // 桥接 canonical LlmToolCall → wire ToolUseBlock 供 hooks / registry 复用
+                ToolUseBlock toolUse = new ToolUseBlock(
+                        toolCall.getId(), toolCall.getName(), toolCall.getInput());
 
                 Map<String, Object> args = parseToolInput(toolUse);
 
@@ -283,13 +300,17 @@ public class Subagent {
         }
     }
 
-    private List<ToolDef> buildSubTools() {
-        List<ToolDef> tools = new ArrayList<>();
+    private List<LlmToolDef> buildSubTools() {
+        List<LlmToolDef> tools = new ArrayList<>();
         for (ToolDefinition def : registry.getAllTools()) {
             // **白名单过滤**(s12 Stage 3):只暴露 includedTools 里的工具,
             // 默认安全 —— 加新工具不进白名单就拿不到子 Agent 的访问权。
             if (!includedTools.contains(def.getName())) continue;
-            tools.add(new ToolDef(def.getName(), def.getDescription(), def.getInputSchema()));
+            // canonical LlmToolDef.schema 是 JsonNode;InputSchema 通过 mapper 转
+            tools.add(new LlmToolDef(
+                    def.getName(),
+                    def.getDescription(),
+                    json.valueToTree(def.getInputSchema())));
         }
         return tools;
     }

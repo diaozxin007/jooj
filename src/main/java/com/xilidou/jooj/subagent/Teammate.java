@@ -8,16 +8,18 @@ import com.xilidou.jooj.agent.AgentInterruptedException;
 import com.xilidou.jooj.agent.SessionContext;
 import com.xilidou.jooj.config.JoojExecutors;
 import com.xilidou.jooj.hook.HookManager;
-import com.xilidou.jooj.http.AnthropicClient;
 import com.xilidou.jooj.http.dto.ContentBlock;
-import com.xilidou.jooj.http.dto.CreateMessageRequest;
-import com.xilidou.jooj.http.dto.CreateMessageResponse;
-import com.xilidou.jooj.http.dto.InputSchema;
 import com.xilidou.jooj.http.dto.MessageParam;
 import com.xilidou.jooj.http.dto.TextBlock;
-import com.xilidou.jooj.http.dto.ToolDef;
 import com.xilidou.jooj.http.dto.ToolResultBlock;
 import com.xilidou.jooj.http.dto.ToolUseBlock;
+import com.xilidou.jooj.llm.LlmClient;
+import com.xilidou.jooj.llm.adapter.AnthropicShapeBridge;
+import com.xilidou.jooj.llm.domain.LlmMessage;
+import com.xilidou.jooj.llm.domain.LlmRequest;
+import com.xilidou.jooj.llm.domain.LlmResponse;
+import com.xilidou.jooj.llm.domain.LlmToolCall;
+import com.xilidou.jooj.llm.domain.LlmToolDef;
 import com.xilidou.jooj.tasks.TaskRecord;
 import com.xilidou.jooj.team.AutonomousIdle;
 import com.xilidou.jooj.team.Message;
@@ -161,7 +163,7 @@ public class Teammate {
     /** 注册表防重名;同名 spawn 第二次会被拒绝。{@code true} = 活着,移除 = 退出。 */
     private final Map<String, Boolean> activeTeammates = new ConcurrentHashMap<>();
 
-    private final AnthropicClient client;
+    private final LlmClient client;
     private final String model;
     private final ToolRegistry registry;
     private final ObjectMapper json;
@@ -188,7 +190,7 @@ public class Teammate {
     /** s22 D-11:tool 执行前 push 摘要给前端 loading 气泡看。 */
     private final com.xilidou.jooj.agent.TurnEventStream turnEventStream;
 
-    public Teammate(AnthropicClient client,
+    public Teammate(LlmClient client,
                     ToolRegistry registry,
                     @Qualifier("joojObjectMapper") ObjectMapper json,
                     HookManager hooks,
@@ -319,7 +321,7 @@ public class Teammate {
         AtomicReference<Path> currentCwd = new AtomicReference<>(null);
         AtomicReference<String> currentWorktreeName = new AtomicReference<>(null);
 
-        List<ToolDef> tools = buildTeammateTools();
+        List<LlmToolDef> tools = buildTeammateTools();
         String lastText = "";
         boolean shutdownRequested = false;
         int activeTurnTotal = 0;
@@ -361,17 +363,21 @@ public class Teammate {
                     break outer;
                 }
 
-                // 调 LLM
+                // 调 LLM(canonical)
                 List<MessageParam> window = trimWindow(messages);
-                CreateMessageRequest request = CreateMessageRequest.builder()
+                // 桥接 List<MessageParam> → List<LlmMessage>(Step G 完成后可删)
+                var adapter = new com.xilidou.jooj.llm.adapter.AnthropicAdapter(json);
+                List<LlmMessage> canonicalWindow = new ArrayList<>(window.size());
+                for (MessageParam m : window) canonicalWindow.add(adapter.messageToDomain(m));
+
+                LlmRequest request = LlmRequest.builderWithSystemText(system)
                         .model(model)
-                        .system(system)
-                        .messages(window)
+                        .messages(canonicalWindow)
                         .tools(tools)
                         .maxTokens(MAX_TOKENS)
                         .build();
 
-                CreateMessageResponse response;
+                LlmResponse response;
                 try {
                     response = client.createMessage(request);
                 } catch (Exception e) {
@@ -381,17 +387,19 @@ public class Teammate {
                     break outer;
                 }
                 // 守卫:LLM 偶尔返回 content == null 或空 list(thinking-only 被 strip 等场景)。
-                // 直接 append 会让下一轮 API 报 `messages.X.content: Input should be a valid list`。
-                // 跳过空响应,let 下条 user message(tool_result / auto-claim 注入)接在前一条 user 后,
-                // Anthropic 允许 user→user 连续。
-                List<ContentBlock> content = response.getContent();
-                if (content != null && !content.isEmpty()) {
-                    messages.add(MessageParam.assistant(content));
+                // P2 之前会让下一轮 Anthropic API 报 `messages.X.content: Input should be a valid list`,
+                // 现在 adapter 层已经把 content 规范成 List(不会是 null),但空 content 仍是"上一轮
+                // 没实际输出"的信号 —— 跳过 append 让下条 user message 接在前一条 user 后即可
+                // (Anthropic 允许 user→user 连续)。
+                List<com.xilidou.jooj.llm.domain.LlmContent> canonicalContent = response.getContent();
+                if (canonicalContent != null && !canonicalContent.isEmpty()) {
+                    messages.add(MessageParam.assistant(
+                            AnthropicShapeBridge.contentToWire(canonicalContent)));
                 } else {
                     log.debug("[Teammate {}] LLM returned empty content at turn {}, skipping history append",
                             name, activeTurnTotal);
                 }
-                lastText = extractLastText(content);
+                lastText = response.firstText();
 
                 if (!response.needsToolExecution()) {
                     reachedEndTurn = true;
@@ -444,12 +452,15 @@ public class Teammate {
      *   <li>complete_task 成功后清 cwdRef 回 null(下次 claim 重设)</li>
      * </ul>
      */
-    private void executeToolsInResponse(String name, CreateMessageResponse response,
+    private void executeToolsInResponse(String name, LlmResponse response,
                                          List<MessageParam> messages,
                                          AtomicReference<Path> currentCwd,
                                          AtomicReference<String> currentWorktreeName) {
         List<ToolResultBlock> results = new ArrayList<>();
-        for (ToolUseBlock tu : response.toolUses()) {
+        for (LlmToolCall toolCall : response.toolCalls()) {
+            // 桥接 canonical LlmToolCall → wire ToolUseBlock 供 hooks / registry 复用
+            ToolUseBlock tu = new ToolUseBlock(
+                    toolCall.getId(), toolCall.getName(), toolCall.getInput());
             Map<String, Object> args = parseToolInput(tu);
             System.out.println(CYAN + "  [" + name + " · " + tu.getName() + "] " + args + RESET);
 
@@ -707,40 +718,50 @@ public class Teammate {
     private record IdleResult(boolean shutdown, boolean timeout) {}
 
     /** 工具白名单 = Subagent 现有 + send_message + submit_plan(s16) + task 三件套(s17)。 */
-    private List<ToolDef> buildTeammateTools() {
-        List<ToolDef> out = new ArrayList<>();
+    private List<LlmToolDef> buildTeammateTools() {
+        List<LlmToolDef> out = new ArrayList<>();
         for (ToolDefinition def : registry.getAllTools()) {
             // s06 文件 / bash 系
             if (Subagent.DEFAULT_INCLUDED_TOOLS.contains(def.getName())) {
-                out.add(new ToolDef(def.getName(), def.getDescription(), def.getInputSchema()));
+                out.add(new LlmToolDef(def.getName(), def.getDescription(),
+                        json.valueToTree(def.getInputSchema())));
                 continue;
             }
             // s17:开放 list_tasks / claim_task / complete_task 给队友自组织
             if (TEAMMATE_TASK_TOOLS.contains(def.getName())) {
-                out.add(new ToolDef(def.getName(), def.getDescription(), def.getInputSchema()));
+                out.add(new LlmToolDef(def.getName(), def.getDescription(),
+                        json.valueToTree(def.getInputSchema())));
             }
         }
         // 加 send_message 内置工具
-        Map<String, Object> sendSchema = Map.of(
-                "to", Map.of("type", "string",
-                        "description", "Recipient agent name (e.g. 'lead' or another teammate's name)"),
-                "content", Map.of("type", "string",
-                        "description", "Message content text")
+        Map<String, Object> sendSchemaBody = Map.of(
+                "type", "object",
+                "properties", Map.of(
+                    "to", Map.of("type", "string",
+                            "description", "Recipient agent name (e.g. 'lead' or another teammate's name)"),
+                    "content", Map.of("type", "string",
+                            "description", "Message content text")
+                ),
+                "required", List.of("to", "content")
         );
-        out.add(new ToolDef(SEND_MESSAGE_TOOL,
+        out.add(new LlmToolDef(SEND_MESSAGE_TOOL,
                 "Send a message to another agent (lead or teammate) via the MessageBus.",
-                InputSchema.object(sendSchema, "to", "content")));
+                json.valueToTree(sendSchemaBody)));
 
         // s16: 加 submit_plan 内置工具
-        Map<String, Object> planSchema = Map.of(
-                "plan", Map.of("type", "string",
-                        "description",
-                        "Plan text to submit to lead for approval. " +
-                                "Wait for [Plan approved] / [Plan rejected] response before acting.")
+        Map<String, Object> planSchemaBody = Map.of(
+                "type", "object",
+                "properties", Map.of(
+                    "plan", Map.of("type", "string",
+                            "description",
+                            "Plan text to submit to lead for approval. " +
+                                    "Wait for [Plan approved] / [Plan rejected] response before acting.")
+                ),
+                "required", List.of("plan")
         );
-        out.add(new ToolDef(SUBMIT_PLAN_TOOL,
+        out.add(new LlmToolDef(SUBMIT_PLAN_TOOL,
                 "Submit a plan to lead for approval. Waits for response before continuing risky work.",
-                InputSchema.object(planSchema, "plan")));
+                json.valueToTree(planSchemaBody)));
         return out;
     }
 
@@ -830,7 +851,11 @@ public class Teammate {
         return true;   // null / 其他形态:容忍,不阻断
     }
 
+    @SuppressWarnings("unused")
     private static String extractLastText(List<? extends com.xilidou.jooj.http.dto.ContentBlock> content) {
+        // P2 Step F:主路径改用 response.firstText() 直接从 LlmResponse 拿;
+        // 本 helper 现无内部 caller,保留供 IDE-driven 外部工具引用一段过渡期,
+        // Step G 完全 flip 后可删。
         if (content == null || content.isEmpty()) return "";
         StringBuilder sb = new StringBuilder();
         for (com.xilidou.jooj.http.dto.ContentBlock b : content) {
