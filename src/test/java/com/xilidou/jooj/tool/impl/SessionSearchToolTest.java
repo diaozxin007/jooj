@@ -1,6 +1,6 @@
 package com.xilidou.jooj.tool.impl;
 
-import com.xilidou.jooj.http.dto.MessageParam;
+import com.xilidou.jooj.llm.domain.LlmMessage;
 import com.xilidou.jooj.search.SearchConfig;
 import com.xilidou.jooj.search.SearchService;
 import com.xilidou.jooj.search.SearchStore;
@@ -80,7 +80,7 @@ class SessionSearchToolTest {
     void formatted_output_for_hits() {
         // 写一些 history 进 search index
         service.onSaveHistory("session_abc",
-                List.of(MessageParam.user("we discussed weixin integration last week")));
+                List.of(LlmMessage.userText("we discussed weixin integration last week")));
 
         ToolResult r = call(Map.of("query", "weixin"));
         assertTrue(r.isSuccess());
@@ -111,7 +111,7 @@ class SessionSearchToolTest {
     @Test
     @DisplayName("limit 参数解析:数字字符串与 Number 都接受;非数字给 error")
     void limit_arg_parsing() {
-        service.onSaveHistory("s1", List.of(MessageParam.user("alpha bravo charlie")));
+        service.onSaveHistory("s1", List.of(LlmMessage.userText("alpha bravo charlie")));
 
         // 整数
         assertTrue(call(Map.of("query", "alpha", "limit", 5)).isSuccess());
@@ -126,8 +126,8 @@ class SessionSearchToolTest {
     @Test
     @DisplayName("session_id filter 锁定一条 session")
     void session_id_filter() {
-        service.onSaveHistory("s1", List.of(MessageParam.user("apple in s1")));
-        service.onSaveHistory("s2", List.of(MessageParam.user("apple in s2")));
+        service.onSaveHistory("s1", List.of(LlmMessage.userText("apple in s1")));
+        service.onSaveHistory("s2", List.of(LlmMessage.userText("apple in s2")));
 
         ToolResult r = call(Map.of("query", "apple", "session_id", "s1"));
         assertTrue(r.isSuccess());

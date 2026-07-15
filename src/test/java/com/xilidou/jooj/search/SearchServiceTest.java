@@ -1,6 +1,6 @@
 package com.xilidou.jooj.search;
 
-import com.xilidou.jooj.http.dto.MessageParam;
+import com.xilidou.jooj.llm.domain.LlmMessage;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -54,7 +54,7 @@ class SearchServiceTest {
 
         // 不应抛任何异常
         assertDoesNotThrow(() -> service.onSaveHistory("s1",
-                List.of(MessageParam.user("hello"))));
+                List.of(LlmMessage.userText("hello"))));
         assertDoesNotThrow(() -> service.onDeleteSession("s1"));
         assertDoesNotThrow(() -> service.onClearHistory("s1"));
     }
@@ -63,9 +63,9 @@ class SearchServiceTest {
     @DisplayName("search 把 limit clamp 到 maxLimit")
     void search_clamps_limit() {
         // 写 60 行
-        var msgs = new java.util.ArrayList<MessageParam>();
+        var msgs = new java.util.ArrayList<LlmMessage>();
         for (int i = 0; i < 60; i++) {
-            msgs.add(MessageParam.user("token" + " match" + i));
+            msgs.add(LlmMessage.userText("token" + " match" + i));
         }
         service.onSaveHistory("s1", msgs);
 
@@ -79,7 +79,7 @@ class SearchServiceTest {
     @DisplayName("onClearHistory 后搜不到内容")
     void on_clear_history_removes_rows() {
         service.onSaveHistory("s1",
-                List.of(MessageParam.user("ghost content here")));
+                List.of(LlmMessage.userText("ghost content here")));
         assertEquals(1, service.search(SearchQuery.of("ghost", 5)).size());
 
         service.onClearHistory("s1");

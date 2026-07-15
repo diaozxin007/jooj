@@ -1,6 +1,9 @@
 package com.xilidou.jooj.search;
 
-import com.xilidou.jooj.http.dto.MessageParam;
+import com.xilidou.jooj.llm.domain.LlmContent;
+import com.xilidou.jooj.llm.domain.LlmMessage;
+import com.xilidou.jooj.llm.domain.LlmText;
+import com.xilidou.jooj.llm.domain.LlmToolResult;
 import com.xilidou.jooj.session.Session;
 import com.xilidou.jooj.session.SessionService;
 import com.xilidou.jooj.session.SessionStore;
@@ -80,23 +83,18 @@ public class SearchStartupRunner implements ApplicationListener<ApplicationReady
      */
     private int countIndexableInJson(String sessionId) {
         try {
-            List<MessageParam> hist = sessionStore.readHistory(sessionId);
+            List<LlmMessage> hist = sessionStore.readCanonicalHistory(sessionId);
             int count = 0;
-            for (MessageParam m : hist) {
-                if (m == null) continue;
-                Object content = m.getContent();
-                if (content instanceof String s) {
-                    if (!s.isEmpty()) count++;
-                } else if (content instanceof List<?> blocks) {
-                    for (Object b : blocks) {
-                        if (b instanceof com.xilidou.jooj.http.dto.TextBlock tb
-                                && tb.getText() != null && !tb.getText().isEmpty()) {
-                            count++;
-                        } else if (b instanceof com.xilidou.jooj.http.dto.ToolResultBlock tr
-                                && tr.getContent() instanceof String s2 && !s2.isEmpty()) {
-                            count++;
-                        }
+            for (LlmMessage m : hist) {
+                if (m == null || m.getContent() == null) continue;
+                for (LlmContent c : m.getContent()) {
+                    if (c instanceof LlmText t && t.getText() != null && !t.getText().isEmpty()) {
+                        count++;
+                    } else if (c instanceof LlmToolResult tr
+                            && tr.getOutput() != null && !tr.getOutput().isEmpty()) {
+                        count++;
                     }
+                    // LlmToolCall / LlmThinking / LlmOpaque 不索引
                 }
             }
             return count;

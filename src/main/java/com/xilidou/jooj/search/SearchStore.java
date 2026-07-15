@@ -1,9 +1,11 @@
 package com.xilidou.jooj.search;
 
-import com.xilidou.jooj.http.dto.MessageParam;
-import com.xilidou.jooj.http.dto.TextBlock;
-import com.xilidou.jooj.http.dto.ToolResultBlock;
-import com.xilidou.jooj.http.dto.ToolUseBlock;
+import com.xilidou.jooj.llm.domain.LlmContent;
+import com.xilidou.jooj.llm.domain.LlmMessage;
+import com.xilidou.jooj.llm.domain.LlmRole;
+import com.xilidou.jooj.llm.domain.LlmText;
+import com.xilidou.jooj.llm.domain.LlmToolCall;
+import com.xilidou.jooj.llm.domain.LlmToolResult;
 import com.xilidou.jooj.session.SessionStore;
 import lombok.extern.slf4j.Slf4j;
 
@@ -172,7 +174,7 @@ public class SearchStore implements AutoCloseable {
      *
      * <p>原子性:用一个 transaction 包住,失败回滚。
      */
-    public void replaceSession(String sessionId, List<MessageParam> history, Instant savedAt) {
+    public void replaceSession(String sessionId, List<LlmMessage> history, Instant savedAt) {
         if (sessionId == null || sessionId.isBlank()) {
             throw new IllegalArgumentException("sessionId must not be blank");
         }
@@ -244,11 +246,11 @@ public class SearchStore implements AutoCloseable {
         }
     }
 
-    private void insertHistory(String sessionId, List<MessageParam> history, long savedAtMillis)
+    private void insertHistory(String sessionId, List<LlmMessage> history, long savedAtMillis)
             throws SQLException {
-        // toolUseId → toolName 反查表(跨 message 累计):assistant 一条 message 里的 ToolUseBlock
-        // 把 (id → name) 登记;下一条 user message 里 ToolResultBlock 用 tool_use_id 反查 tool_name
-        Map<String, String> toolUseIdToName = new HashMap<>();
+        // toolCallId → toolName 反查表(跨 message 累计):assistant 一条 message 里的 LlmToolCall
+        // 把 (id → name) 登记;下一条 TOOL message 里 LlmToolResult 用 toolCallId 反查 toolName
+        Map<String, String> toolCallIdToName = new HashMap<>();
         String sql = """
                 INSERT INTO fts(content, session_id, msg_index, block_index,
                                 role, kind, tool_name, tool_use_id, saved_at)
@@ -256,74 +258,57 @@ public class SearchStore implements AutoCloseable {
                 """;
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             for (int msgIdx = 0; msgIdx < history.size(); msgIdx++) {
-                MessageParam m = history.get(msgIdx);
+                LlmMessage m = history.get(msgIdx);
                 if (m == null) continue;
-                String role = m.getRole();
-                Object content = m.getContent();
-                if (content instanceof String s) {
-                    if (s.isEmpty()) continue;
-                    ps.setString(1, tokenizeForIndex(s));
-                    ps.setString(2, sessionId);
-                    ps.setInt(3, msgIdx);
-                    ps.setInt(4, 0);
-                    ps.setString(5, role);
-                    ps.setString(6, "text");
-                    ps.setNull(7, java.sql.Types.VARCHAR);
-                    ps.setNull(8, java.sql.Types.VARCHAR);
-                    ps.setLong(9, savedAtMillis);
-                    ps.executeUpdate();
-                } else if (content instanceof List<?> blocks) {
-                    int blockIdx = 0;
-                    for (Object raw : blocks) {
-                        if (raw instanceof TextBlock tb) {
-                            String text = tb.getText();
-                            if (text != null && !text.isEmpty()) {
-                                ps.setString(1, tokenizeForIndex(text));
-                                ps.setString(2, sessionId);
-                                ps.setInt(3, msgIdx);
-                                ps.setInt(4, blockIdx);
-                                ps.setString(5, role);
-                                ps.setString(6, "text");
-                                ps.setNull(7, java.sql.Types.VARCHAR);
-                                ps.setNull(8, java.sql.Types.VARCHAR);
-                                ps.setLong(9, savedAtMillis);
-                                ps.executeUpdate();
-                            }
-                        } else if (raw instanceof ToolUseBlock tu) {
-                            // 不索引,但登记 id → name 给后续 tool_result 反查
-                            if (tu.getId() != null && tu.getName() != null) {
-                                toolUseIdToName.put(tu.getId(), tu.getName());
-                            }
-                        } else if (raw instanceof ToolResultBlock tr) {
-                            Object trc = tr.getContent();
-                            String text = null;
-                            if (trc instanceof String s) {
-                                text = s;
-                            }
-                            // 嵌套图片 / List<ContentBlock> 跳过(不展开,不索引)
-                            if (text != null && !text.isEmpty()) {
-                                String toolName = tr.getToolUseId() != null
-                                        ? toolUseIdToName.get(tr.getToolUseId())
-                                        : null;
-                                ps.setString(1, tokenizeForIndex(text));
-                                ps.setString(2, sessionId);
-                                ps.setInt(3, msgIdx);
-                                ps.setInt(4, blockIdx);
-                                ps.setString(5, role);
-                                ps.setString(6, "tool_result");
-                                if (toolName != null) ps.setString(7, toolName);
-                                else ps.setNull(7, java.sql.Types.VARCHAR);
-                                if (tr.getToolUseId() != null) ps.setString(8, tr.getToolUseId());
-                                else ps.setNull(8, java.sql.Types.VARCHAR);
-                                ps.setLong(9, savedAtMillis);
-                                ps.executeUpdate();
-                            }
+                // canonical role serialized 是 uppercase("USER"/"ASSISTANT"/"TOOL");为保 FTS 表
+                // 兼容(前端 / 老索引数据是 lowercase),这里 lowercase 存
+                String role = m.getRole() == null ? null : m.getRole().name().toLowerCase();
+                List<LlmContent> content = m.getContent();
+                if (content == null || content.isEmpty()) continue;
+                int blockIdx = 0;
+                for (LlmContent c : content) {
+                    if (c instanceof LlmText t) {
+                        String text = t.getText();
+                        if (text != null && !text.isEmpty()) {
+                            ps.setString(1, tokenizeForIndex(text));
+                            ps.setString(2, sessionId);
+                            ps.setInt(3, msgIdx);
+                            ps.setInt(4, blockIdx);
+                            ps.setString(5, role);
+                            ps.setString(6, "text");
+                            ps.setNull(7, java.sql.Types.VARCHAR);
+                            ps.setNull(8, java.sql.Types.VARCHAR);
+                            ps.setLong(9, savedAtMillis);
+                            ps.executeUpdate();
                         }
-                        // ThinkingBlock / UnknownBlock / 其他 ContentBlock 都跳过
-                        blockIdx++;
+                    } else if (c instanceof LlmToolCall tc) {
+                        // 不索引,但登记 id → name 给后续 tool_result 反查
+                        if (tc.getId() != null && tc.getName() != null) {
+                            toolCallIdToName.put(tc.getId(), tc.getName());
+                        }
+                    } else if (c instanceof LlmToolResult tr) {
+                        String text = tr.getOutput();
+                        if (text != null && !text.isEmpty()) {
+                            String toolName = tr.getToolCallId() != null
+                                    ? toolCallIdToName.get(tr.getToolCallId())
+                                    : null;
+                            ps.setString(1, tokenizeForIndex(text));
+                            ps.setString(2, sessionId);
+                            ps.setInt(3, msgIdx);
+                            ps.setInt(4, blockIdx);
+                            ps.setString(5, role);
+                            ps.setString(6, "tool_result");
+                            if (toolName != null) ps.setString(7, toolName);
+                            else ps.setNull(7, java.sql.Types.VARCHAR);
+                            if (tr.getToolCallId() != null) ps.setString(8, tr.getToolCallId());
+                            else ps.setNull(8, java.sql.Types.VARCHAR);
+                            ps.setLong(9, savedAtMillis);
+                            ps.executeUpdate();
+                        }
                     }
+                    // LlmThinking / LlmOpaque 都跳过
+                    blockIdx++;
                 }
-                // 其它 content 类型(null / Map / 陌生)跳过不抛
             }
         }
     }
@@ -488,7 +473,7 @@ public class SearchStore implements AutoCloseable {
         long savedAtMillis = Instant.now().toEpochMilli();
         for (String sid : sessionIds) {
             try {
-                List<MessageParam> hist = store.readHistory(sid);
+                List<LlmMessage> hist = store.readCanonicalHistory(sid);
                 replaceSession(sid, hist, Instant.ofEpochMilli(savedAtMillis));
             } catch (Exception e) {
                 log.warn("[Search] rebuild({}) failed: {}", sid, e.toString());

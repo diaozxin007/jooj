@@ -1,10 +1,11 @@
 package com.xilidou.jooj.search;
 
-import com.xilidou.jooj.http.dto.MessageParam;
-import com.xilidou.jooj.http.dto.TextBlock;
-import com.xilidou.jooj.http.dto.ThinkingBlock;
-import com.xilidou.jooj.http.dto.ToolResultBlock;
-import com.xilidou.jooj.http.dto.ToolUseBlock;
+import com.xilidou.jooj.llm.domain.LlmContent;
+import com.xilidou.jooj.llm.domain.LlmMessage;
+import com.xilidou.jooj.llm.domain.LlmText;
+import com.xilidou.jooj.llm.domain.LlmThinking;
+import com.xilidou.jooj.llm.domain.LlmToolCall;
+import com.xilidou.jooj.llm.domain.LlmToolResult;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -56,22 +57,22 @@ class SearchStoreTest {
 
     // ── 工具:构造 history ──
 
-    private static MessageParam userText(String text) {
-        return MessageParam.user(text);
+    private static LlmMessage userText(String text) {
+        return LlmMessage.userText(text);
     }
 
-    private static MessageParam assistantBlocks(Object... blocks) {
-        return MessageParam.assistant(java.util.Arrays.stream(blocks)
-                .map(b -> (com.xilidou.jooj.http.dto.ContentBlock) b)
+    private static LlmMessage assistantBlocks(Object... blocks) {
+        return LlmMessage.assistant(java.util.Arrays.stream(blocks)
+                .map(b -> (LlmContent) b)
                 .toList());
     }
 
     @Test
     @DisplayName("TextBlock 进 token 列,replaceSession 后能搜到")
     void index_text_block() {
-        List<MessageParam> hist = List.of(
+        List<LlmMessage> hist = List.of(
                 userText("hello world"),
-                assistantBlocks(new TextBlock("I will help with weixin integration"))
+                assistantBlocks(new LlmText("I will help with weixin integration"))
         );
         store.replaceSession("s1", hist, Instant.now());
 
@@ -90,12 +91,12 @@ class SearchStoreTest {
     @DisplayName("ToolResultBlock 索引为 kind=tool_result + 关联 tool_use_id")
     void index_tool_result_block() {
         // 先 assistant 调 tool_use,再 user 给 tool_result
-        ToolUseBlock tu = new ToolUseBlock("toolu_001", "bash", null);
-        ToolResultBlock tr = ToolResultBlock.ofText("toolu_001", "ls -la output here");
+        LlmToolCall tu = new LlmToolCall("toolu_001", "bash", null);
+        LlmToolResult tr = LlmToolResult.success("toolu_001", "ls -la output here");
 
-        List<MessageParam> hist = List.of(
-                assistantBlocks(new TextBlock("running ls"), tu),
-                MessageParam.toolResults(List.of(tr))
+        List<LlmMessage> hist = List.of(
+                assistantBlocks(new LlmText("running ls"), tu),
+                LlmMessage.toolResults(List.of(tr))
         );
         store.replaceSession("s1", hist, Instant.now());
 
@@ -107,7 +108,8 @@ class SearchStoreTest {
                 .filter(h -> "tool_result".equals(h.kind()))
                 .findFirst()
                 .orElseThrow();
-        assertEquals("user", toolResultHit.role());
+        assertEquals("tool", toolResultHit.role(),
+                "canonical: tool_result 在 TOOL role 消息里(不再是 pre-P2 的 role=user)");
         assertEquals("toolu_001", toolResultHit.toolUseId());
         assertEquals("bash", toolResultHit.toolName(), "tool_name 应跨 message 关联到 ToolUseBlock.name");
     }
@@ -115,9 +117,9 @@ class SearchStoreTest {
     @Test
     @DisplayName("ToolUseBlock 不进 token 列,搜 tool_use 的 input 找不到")
     void tool_use_not_indexed() {
-        ToolUseBlock tu = new ToolUseBlock("toolu_002", "bash", null);
-        // ToolUseBlock.input 是 JsonNode,不会进 FTS5;name 也不进 token 列(只进 tool_name UNINDEXED)
-        List<MessageParam> hist = List.of(assistantBlocks(tu));
+        LlmToolCall tu = new LlmToolCall("toolu_002", "bash", null);
+        // LlmToolCall.input 是 JsonNode,不会进 FTS5;name 也不进 token 列(只进 tool_name UNINDEXED)
+        List<LlmMessage> hist = List.of(assistantBlocks(tu));
         store.replaceSession("s1", hist, Instant.now());
 
         // FTS 表里这条 session 应该 0 行(ToolUseBlock 跳过,没 TextBlock)
@@ -157,13 +159,13 @@ class SearchStoreTest {
     @Test
     @DisplayName("role / kind filter 组合都 work")
     void filter_role_and_kind() {
-        ToolUseBlock tu = new ToolUseBlock("toolu_003", "bash", null);
-        ToolResultBlock tr = ToolResultBlock.ofText("toolu_003", "shared keyword here");
+        LlmToolCall tu = new LlmToolCall("toolu_003", "bash", null);
+        LlmToolResult tr = LlmToolResult.success("toolu_003", "shared keyword here");
 
-        List<MessageParam> hist = List.of(
+        List<LlmMessage> hist = List.of(
                 userText("shared keyword from user"),
-                assistantBlocks(new TextBlock("shared keyword from assistant"), tu),
-                MessageParam.toolResults(List.of(tr))
+                assistantBlocks(new LlmText("shared keyword from assistant"), tu),
+                LlmMessage.toolResults(List.of(tr))
         );
         store.replaceSession("s1", hist, Instant.now());
 
@@ -214,16 +216,16 @@ class SearchStoreTest {
         // 第二 message: user + ToolResult
         // 第三 message: assistant + ToolUse(name=read_file)
         // 第四 message: user + ToolResult
-        ToolUseBlock tuBash = new ToolUseBlock("u1", "bash", null);
-        ToolResultBlock trBash = ToolResultBlock.ofText("u1", "result from bash");
-        ToolUseBlock tuRead = new ToolUseBlock("u2", "read_file", null);
-        ToolResultBlock trRead = ToolResultBlock.ofText("u2", "result from read_file");
+        LlmToolCall tuBash = new LlmToolCall("u1", "bash", null);
+        LlmToolResult trBash = LlmToolResult.success("u1", "result from bash");
+        LlmToolCall tuRead = new LlmToolCall("u2", "read_file", null);
+        LlmToolResult trRead = LlmToolResult.success("u2", "result from read_file");
 
-        List<MessageParam> hist = List.of(
+        List<LlmMessage> hist = List.of(
                 assistantBlocks(tuBash),
-                MessageParam.toolResults(List.of(trBash)),
+                LlmMessage.toolResults(List.of(trBash)),
                 assistantBlocks(tuRead),
-                MessageParam.toolResults(List.of(trRead))
+                LlmMessage.toolResults(List.of(trRead))
         );
         store.replaceSession("s1", hist, Instant.now());
 
@@ -239,21 +241,21 @@ class SearchStoreTest {
     }
 
     @Test
-    @DisplayName("ThinkingBlock / 嵌套图片 / 陌生类型都跳过不抛")
+    @DisplayName("LlmThinking / LlmOpaque 都跳过不抛")
     void thinking_and_unknown_blocks_skipped() {
-        // 注意:ThinkingBlock 和奇怪 content 都不该抛
-        List<MessageParam> hist = List.of(
+        // 注意:LlmThinking 和 LlmOpaque(未知类型)都不该抛
+        List<LlmMessage> hist = List.of(
                 assistantBlocks(
-                        new ThinkingBlock("internal reasoning", "sig_xxx"),
-                        new TextBlock("after thinking, here's text")
+                        new LlmThinking("internal reasoning", "sig_xxx", "anthropic"),
+                        new LlmText("after thinking, here's text")
                 ),
-                // content 是 List<ContentBlock> 的 ToolResult(嵌套图片场景),跳过
-                new MessageParam("user", List.of(
-                        new ToolResultBlock("u_unknown", List.of(new TextBlock("nested"))) ))
+                // canonical 里 tool_result output 是 String;这里空字符串 → 跳过
+                LlmMessage.toolResults(List.of(
+                        LlmToolResult.success("u_unknown", "")))
         );
         assertDoesNotThrow(() -> store.replaceSession("s1", hist, Instant.now()));
 
-        // 只有 1 条 TextBlock 命中(thinking + nested-list 都被跳过)
+        // 只有 1 条 LlmText 命中(thinking + empty tool_result 都被跳过)
         assertEquals(1, store.countSession("s1"));
         List<SearchHit> hits = store.search(SearchQuery.of("thinking", 5));
         assertEquals(1, hits.size());
@@ -273,14 +275,17 @@ class SearchStoreTest {
     }
 
     @Test
-    @DisplayName("MessageParam.content 是陌生类型不抛(防御性跳过)")
+    @DisplayName("陌生 content shape 不抛(防御性跳过)")
     void weird_content_type_skipped() {
-        List<MessageParam> hist = List.of(
-                new MessageParam("user", java.util.Map.of("not", "expected")),
-                new MessageParam("user", "valid text")
+        // canonical 里 LlmMessage.content 一定是 List<LlmContent>,没有 String/Map 分支;
+        // 陌生 content 只能通过 LlmOpaque 出现,SearchStore 应跳过不抛
+        List<LlmMessage> hist = List.of(
+                LlmMessage.assistant(List.of(new com.xilidou.jooj.llm.domain.LlmOpaque(
+                        "weird", "type", java.util.Map.of("k", "v")))),
+                LlmMessage.userText("valid text")
         );
         assertDoesNotThrow(() -> store.replaceSession("s1", hist, Instant.now()));
-        // 只 1 条索引(陌生 Map 跳过,String 索引)
+        // 只 1 条索引(陌生 Opaque 跳过,LlmText 索引)
         assertEquals(1, store.countSession("s1"));
     }
 }

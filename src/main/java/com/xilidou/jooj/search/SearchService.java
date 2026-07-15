@@ -1,6 +1,6 @@
 package com.xilidou.jooj.search;
 
-import com.xilidou.jooj.http.dto.MessageParam;
+import com.xilidou.jooj.llm.domain.LlmMessage;
 import com.xilidou.jooj.session.Session;
 import com.xilidou.jooj.session.SessionService;
 import com.xilidou.jooj.session.SessionStore;
@@ -152,7 +152,7 @@ public class SearchService {
      *     SessionService.saveHistory 不再调本方法。
      */
     @Deprecated
-    public void onSaveHistory(String sessionId, List<MessageParam> history) {
+    public void onSaveHistory(String sessionId, List<LlmMessage> history) {
         try {
             store.replaceSession(sessionId, history, Instant.now());
         } catch (Throwable t) {
