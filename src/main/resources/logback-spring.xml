@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Logback 全局配置(s23 P8.2 修改)
+
+  <h3>为什么全部日志走文件而不是 stderr</h3>
+
+  <p>老配置(P8 之前)让 CONSOLE 走 stdout,后续改成 stderr。但发现:
+  <ul>
+    <li>TUI 场景下 JLine 独占 stdout,即使 stderr 也会破坏 status bar 显示</li>
+    <li>Spring Boot 4.1 的 &lt;springProfile&gt; 在 bean init 阶段还未激活,那时的
+        大量装配日志已经打到 stderr 了 —— <code>-Dlogging.config</code> 是能修但
+        mvn spring-boot:run 传参路径不可靠</li>
+    <li>Spring Shell 官方 issue #1008(2024-02 至今 open)也遇到同样问题,没有 built-in
+        解决方案</li>
+  </ul>
+
+  <p>选择:**全局默认走文件** {@code ~/.jooj/app.log},不管 profile。
+  <ul>
+    <li>好处:zero timing risk;TUI 完全干净;legacy CLI 交互输出也不再被日志打断</li>
+    <li>代价:CLI / web / TUI 用户看日志需要 <code>tail -f ~/.jooj/app.log</code></li>
+    <li>补偿:启动错误(bean 装配 fail)会被 JVM 直接 stderr,logback 抓不到,用户
+        还是看得到关键 error</li>
+  </ul>
+
+  <p>如果排错需要 stderr 日志,启动时:
+  <code>-Djooj.log.mode=console mvn spring-boot:run ...</code>(见下方 CONSOLE_ONLY_HINT)。
+-->
+<configuration>
+
+    <!-- 关掉 logback 自身启动的 status 输出,不污染 stderr -->
+    <statusListener class="ch.qos.logback.core.status.NopStatusListener" />
+
+    <property name="LOG_FILE" value="${jooj.log.file:-${user.home}/.jooj/app.log}" />
+
+    <appender name="FILE" class="ch.qos.logback.core.FileAppender">
+        <file>${LOG_FILE}</file>
+        <append>true</append>
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} %-5level [%thread] [%logger{0}] %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <root level="WARN">
+        <appender-ref ref="FILE"/>
+    </root>
+    <logger name="com.xilidou.jooj" level="INFO"/>
+    <logger name="cn.langchat.openclaw" level="INFO"/>
+    <logger name="com.xilidou.jooj.http" level="${jooj.log.http:-INFO}"/>
+    <logger name="okhttp3.logging.HttpLoggingInterceptor" level="${jooj.log.okhttp:-WARN}"/>
+
+</configuration>

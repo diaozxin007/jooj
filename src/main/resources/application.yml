@@ -1,6 +1,10 @@
 spring:
   application:
     name: jooj
+  main:
+    # s23 P8.1:关掉 Spring Boot banner。banner 直接 println 到 stdout,不走 logback,
+    # tui 模式下会破坏 JLine 布局(banner 5 行 + 空行)。CLI / web 场景也没实际价值。
+    banner-mode: off
   # 加载 ~/.jooj/.env (用户级 secret 文件,跟 hermes 的 ~/.hermes/.env 一个套路)。
   # JoojEnvBootstrap (EnvironmentPostProcessor) 会在这一步之前确保:
   #   1) ~/.jooj/ 目录存在(POSIX 0700)

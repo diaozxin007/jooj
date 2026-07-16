@@ -176,6 +176,13 @@
                             <artifactId>lombok</artifactId>
                         </exclude>
                     </excludes>
+                    <!--
+                      s23 P8.1: enable-native-access=ALL-UNNAMED 消除 sqlite-jdbc / okhttp
+                      的 "Restricted method has been called" JVM warning(JDK 22+ 严格),
+                      否则会污染 TUI 的 stderr。
+                      Banner 通过 spring.main.banner-mode=off 在 application.yml 里关。
+                    -->
+                    <jvmArguments>--enable-native-access=ALL-UNNAMED</jvmArguments>
                 </configuration>
             </plugin>
             <!-- Surefire: JOOJ_HOME 指向项目内 .jooj-test/,

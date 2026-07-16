@@ -89,7 +89,10 @@ public final class PidfileGuard {
 
         writePid(pidFile, myPid);
         registerReleaseOnShutdown(pidFile, myPid);
-        log.info("[Bootstrap] pidfile acquired: {} (pid={})", pidFile, myPid);
+        // s23 P8.3:降到 debug —— PidfileGuard 在 SpringApplication.run 之前调用,
+        // 此时 logback-spring.xml 尚未加载,Spring Boot 默认 CONSOLE appender 会把 info
+        // 泄漏到 stdout/stderr 污染 TUI 界面。成功场景静默;失败/覆盖分支上面 log.warn 已覆盖。
+        log.debug("[Bootstrap] pidfile acquired: {} (pid={})", pidFile, myPid);
     }
 
     // ── 内部工具 ──────────────────────────────────────────────

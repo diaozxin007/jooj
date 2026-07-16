@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# jooj-tui —— 启动 jooj TUI 模式(s23 P8.3)
+#
+# 用法:
+#   ./bin/jooj-tui              首次或代码改后自动 package,然后 java -jar 启动
+#   ./bin/jooj-tui --force      强制重新 package(不管缓存)
+#   ./bin/jooj-tui --help       显示用法
+#   (其他参数原样传给 java -jar,如 --debug)
+#
+# 为什么不用 mvn spring-boot:run:
+#   - mvn 自身会打大量 [INFO] 前缀日志,污染 stdout,破坏 TUI 界面
+#   - mvn plugin 传参路径不稳定
+#   - java -jar 启动更快(~1s vs mvn ~7s)
+#
+# 前提:JAVA_HOME 指向 JDK 17+;~/.jooj/.env 配 API_KEY
+
+set -euo pipefail
+
+print_help() {
+    cat <<'EOF'
+Usage: jooj-tui [--force] [--help] [extra-java-args...]
+
+  --force, -f    force mvn package even if jar is up-to-date
+  --help,  -h    show this help
+  <other>        passed through to the java process
+
+Environment:
+  JAVA_HOME      JDK 17+ required
+  ~/.jooj/.env   ANTHROPIC_API_KEY / OPENAI_API_KEY
+EOF
+}
+
+# 定位项目根
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$PROJECT_ROOT"
+
+# 分离本 wrapper 的选项 vs 传给 jooj 的参数
+FORCE=0
+PASSTHROUGH=()
+for arg in "$@"; do
+    case "$arg" in
+        --force|-f) FORCE=1 ;;
+        --help|-h)  print_help; exit 0 ;;
+        *)          PASSTHROUGH+=("$arg") ;;
+    esac
+done
+
+# 找 jar(排除 spring-boot 生成的 *.original)
+JAR="$(/usr/bin/find target -maxdepth 1 -name 'jooj-*-SNAPSHOT.jar' -not -name '*.original' 2>/dev/null | /usr/bin/head -1)"
+
+# 判断需不需要 rebuild
+NEED_BUILD=0
+if [ "$FORCE" = "1" ] || [ -z "$JAR" ] || [ ! -f "$JAR" ]; then
+    NEED_BUILD=1
+else
+    # src/main 里有比 jar 新的文件 → 需要 rebuild
+    NEWER="$(/usr/bin/find src/main -type f -newer "$JAR" -print -quit 2>/dev/null)"
+    if [ -n "$NEWER" ]; then
+        NEED_BUILD=1
+    fi
+fi
+
+if [ "$NEED_BUILD" = "1" ]; then
+    echo "→ Building jooj (mvn package -q -DskipTests)..." >&2
+    mvn package -q -DskipTests
+    JAR="$(/usr/bin/find target -maxdepth 1 -name 'jooj-*-SNAPSHOT.jar' -not -name '*.original' 2>/dev/null | /usr/bin/head -1)"
+    if [ -z "$JAR" ] || [ ! -f "$JAR" ]; then
+        echo "✗ Build produced no jar under target/" >&2
+        exit 1
+    fi
+    echo "✓ Built $(/usr/bin/basename "$JAR")" >&2
+fi
+
+# 启动:java -jar + tui profile + 消除 SQLite JNI 警告
+# ${PASSTHROUGH[@]+"${PASSTHROUGH[@]}"} 保护空数组不触发 set -u (macOS bash 3.2 兼容)
+exec java --enable-native-access=ALL-UNNAMED \
+    -jar "$JAR" \
+    --spring.profiles.active=tui \
+    ${PASSTHROUGH[@]+"${PASSTHROUGH[@]}"}
