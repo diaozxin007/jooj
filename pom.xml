@@ -236,4 +236,29 @@
         </plugins>
     </build>
 
+    <!--
+      s24 native image profile。激活方式:mvn -Pnative package。
+      Spring Boot 4.1 内建 AOT 引擎会自动为 @Configuration / @Bean / @EventListener /
+      @Scheduled / @JsonTypeInfo 生成 reachability hint,不需要手写大部分 spring beans。
+    -->
+    <profiles>
+        <profile>
+            <id>native</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.graalvm.buildtools</groupId>
+                        <artifactId>native-maven-plugin</artifactId>
+                        <configuration>
+                            <buildArgs>
+                                <buildArg>-H:+ReportExceptionStackTraces</buildArg>
+                                <buildArg>--no-fallback</buildArg>
+                            </buildArgs>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+
 </project>
