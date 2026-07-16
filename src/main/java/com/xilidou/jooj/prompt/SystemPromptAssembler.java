@@ -7,6 +7,11 @@ import com.xilidou.jooj.tool.ToolRegistry;
 import com.xilidou.jooj.tool.ToolDefinition;
 import com.xilidou.jooj.http.dto.CacheControl;
 import com.xilidou.jooj.http.dto.SystemTextBlock;
+import com.xilidou.jooj.llm.domain.CacheHint;
+import com.xilidou.jooj.llm.domain.CacheTier;
+import com.xilidou.jooj.llm.domain.CanonicalSystem;
+import com.xilidou.jooj.llm.domain.LlmContent;
+import com.xilidou.jooj.llm.domain.LlmText;
 import com.xilidou.jooj.memory.MemoryService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -198,6 +203,34 @@ public class SystemPromptAssembler {
 
         log.debug("[Prompt] assembled 2 blocks (stable + memory)");
         return List.of(stableBlock, memoryBlock);
+    }
+
+    /**
+     * Canonical shape (P2 vendor-neutral):返 {@link CanonicalSystem} —— system 内容
+     * ({@link LlmContent} list) 与 cache hint 分离,由具体 LLM adapter 决定要不要用 hint。
+     *
+     * <p>取代 {@link #assembleBlocks(PromptContext)} + harness 手工桥接的路径。内部沿用
+     * {@code assembleBlocks} 逻辑,一次转换,避免重复算 identity/tools/workspace/skills/memory 段。
+     *
+     * @param ctx 与 {@code assembleBlocks} 同语义
+     * @return content = 1 或 2 个 {@link LlmText};hints = 稳定段 index=0 5m cache,
+     *         memory 段无 hint(默认变化频繁,不缓存)
+     */
+    public CanonicalSystem assembleCanonical(PromptContext ctx) {
+        List<SystemTextBlock> wireBlocks = assembleBlocks(ctx);
+        List<LlmContent> content = new ArrayList<>(wireBlocks.size());
+        List<CacheHint> hints = new ArrayList<>();
+        for (int i = 0; i < wireBlocks.size(); i++) {
+            SystemTextBlock stb = wireBlocks.get(i);
+            content.add(new LlmText(stb.getText()));
+            if (stb.getCacheControl() != null) {
+                CacheTier tier = "1h".equals(stb.getCacheControl().getTtl())
+                        ? CacheTier.EPHEMERAL_1H
+                        : CacheTier.EPHEMERAL_5M;
+                hints.add(new CacheHint(i, tier));
+            }
+        }
+        return new CanonicalSystem(content, hints);
     }
 
     /** 把一段 section 内容追加到 StringBuilder,中间补分隔符。 */

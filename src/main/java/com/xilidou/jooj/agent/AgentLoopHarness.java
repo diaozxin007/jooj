@@ -19,13 +19,10 @@ import com.xilidou.jooj.tool.ToolDefinition;
 import com.xilidou.jooj.tool.ToolResult;
 import com.xilidou.jooj.http.dto.ContentBlock;
 import com.xilidou.jooj.http.dto.MessageParam;
-import com.xilidou.jooj.http.dto.SystemTextBlock;
 import com.xilidou.jooj.http.dto.TextBlock;
 import com.xilidou.jooj.http.dto.ToolResultBlock;
 import com.xilidou.jooj.http.dto.ToolUseBlock;
 import com.xilidou.jooj.hook.HookManager;
-import com.xilidou.jooj.llm.domain.CacheHint;
-import com.xilidou.jooj.llm.domain.CacheTier;
 import com.xilidou.jooj.llm.domain.LlmContent;
 import com.xilidou.jooj.llm.domain.LlmMessage;
 import com.xilidou.jooj.llm.domain.LlmRequest;
@@ -339,20 +336,9 @@ public class AgentLoopHarness {
                 messages.addAll(scrubbed);
             }
 
-            // memory catalog 全局共享
-            var systemBlocks = promptAssembler.assembleBlocks(promptAssembler.currentContext());
-            // 桥接 wire SystemTextBlock list → canonical LlmText list + CacheHint list
-            List<LlmContent> canonicalSystem = new ArrayList<>(systemBlocks.size());
-            List<CacheHint> systemCacheHints = new ArrayList<>();
-            for (int i = 0; i < systemBlocks.size(); i++) {
-                SystemTextBlock stb = systemBlocks.get(i);
-                canonicalSystem.add(new LlmText(stb.getText()));
-                if (stb.getCacheControl() != null) {
-                    CacheTier tier = "1h".equals(stb.getCacheControl().getTtl())
-                            ? CacheTier.EPHEMERAL_1H : CacheTier.EPHEMERAL_5M;
-                    systemCacheHints.add(new CacheHint(i, tier));
-                }
-            }
+            // memory catalog 全局共享;s24 refactor: 走 canonical 一步到位,
+            // 不再手工桥接 wire SystemTextBlock → LlmText + CacheHint
+            var canonical = promptAssembler.assembleCanonical(promptAssembler.currentContext());
 
             // s22 架构审查(B2):recovery 内部消化 escalate / continuation,只暴露成功 / fatal 二元。
             // P2 Step G2:messages 已是 canonical List<LlmMessage>,不再需要 bridgeMessagesToCanonical。
@@ -361,8 +347,8 @@ public class AgentLoopHarness {
                 response = recoveryCoordinator.call(
                         state -> LlmRequest.builder()
                                 .model(state.getCurrentModel())
-                                .system(canonicalSystem)
-                                .systemCacheHints(systemCacheHints)
+                                .system(canonical.content())
+                                .systemCacheHints(canonical.hints())
                                 .messages(messages)
                                 .tools(tools)
                                 .maxTokens(state.getCurrentMaxTokens())
