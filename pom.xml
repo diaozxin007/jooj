@@ -152,6 +152,16 @@
             <artifactId>sqlite-jdbc</artifactId>
             <version>3.47.2.0</version>
         </dependency>
+
+        <!-- s23 P2:JLine 3 —— TUI channel 底层。
+             org.jline:jline 是聚合 jar,内含 terminal / reader / builtins / style / console。
+             3.30.15 是 3.x 系列 latest(2026-07),security-maintained;与 tui4j / TamboUI
+             的 jline3-backend 生态对齐。仅在 @Profile("tui") 生效时用,legacy CLI 不受影响。 -->
+        <dependency>
+            <groupId>org.jline</groupId>
+            <artifactId>jline</artifactId>
+            <version>3.30.15</version>
+        </dependency>
     </dependencies>
 
     <build>
