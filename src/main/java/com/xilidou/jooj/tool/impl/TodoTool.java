@@ -204,7 +204,9 @@ public class TodoTool implements Tool {
         }
 
         store.replace(sid, todos);
-        printTodos(todos);
+        // s23 P1c(2026-07-16):删除 printTodos console 表格。todo 表格通过前端 UI(web /
+        // TUI)读 TodoStore.list(sid) 独立渲染;tool_result 返 "Updated N tasks" 给 LLM。
+        // legacy CLI 静默(accepted regression)。
         log.info("[Todo] session={} updated {} tasks ({} pending, {} in_progress, {} completed)",
                 sid == null ? TodoStore.DEFAULT_SESSION : sid,
                 todos.size(),
@@ -213,22 +215,5 @@ public class TodoTool implements Tool {
                 store.countByStatus(sid, TodoStatus.COMPLETED));
 
         return new ToolResult(true, "Updated " + todos.size() + " tasks");
-    }
-
-    /**
-     * 在屏幕上打印 todo list（对应 Python 的彩色 ## Current Tasks 输出）。
-     */
-    private void printTodos(List<TodoItem> todos) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("\n").append(YELLOW).append("## Current Tasks").append(RESET).append("\n");
-        for (TodoItem t : todos) {
-            String icon = switch (t.getStatus()) {
-                case PENDING -> " ";
-                case IN_PROGRESS -> CYAN + "▸" + RESET;
-                case COMPLETED -> GREEN + "✓" + RESET;
-            };
-            sb.append("  [").append(icon).append("] ").append(t.getContent()).append("\n");
-        }
-        System.out.print(sb);
     }
 }

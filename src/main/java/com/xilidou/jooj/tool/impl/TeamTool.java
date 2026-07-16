@@ -213,7 +213,7 @@ public class TeamTool implements Tool {
         String result = teammate.spawn(name.toString(), role.toString(), prompt.toString(), parentSid);
         boolean success = result.startsWith("Spawned ");
         if (success) {
-            System.out.println("  " + CYAN + "[team] " + result + RESET);
+            log.info("[TeamTool] {}", result);
         }
         return new ToolResult(success, result);
     }
@@ -292,7 +292,7 @@ public class TeamTool implements Tool {
         bus.send(LEAD_NAME, name, "Please shut down gracefully.",
                 "shutdown_request", meta);
         String msg = "Shutdown request sent to " + name + " (req: " + reqId + ")";
-        System.out.println("  " + CYAN + "[team] " + msg + RESET);
+        log.info("[TeamTool] {}", msg);
         return new ToolResult(true, msg);
     }
 
@@ -345,7 +345,7 @@ public class TeamTool implements Tool {
         bus.send(LEAD_NAME, state.getSender(), content,
                 "plan_approval_response", meta);
         String result = "Plan " + (approve ? "approved" : "rejected") + " (" + reqId + ")";
-        System.out.println("  " + CYAN + "[team] " + result + RESET);
+        log.info("[TeamTool] {}", result);
         return new ToolResult(true, result);
     }
 }

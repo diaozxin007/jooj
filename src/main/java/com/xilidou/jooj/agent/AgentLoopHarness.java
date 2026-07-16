@@ -46,15 +46,12 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
 
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Scanner;
 import java.util.UUID;
-import java.util.concurrent.locks.ReentrantLock;
 import java.time.Instant;
 
 /**
@@ -125,9 +122,6 @@ public class AgentLoopHarness {
 
     /** todo 工具名(注入 reminder 时识别用)。 */
     private static final String TODO_TOOL_NAME = "todo_write";
-
-    /** 工具结果输出在屏幕上的截断长度。 */
-    private static final int CONSOLE_PREVIEW_LIMIT = 200;
 
     // ── 依赖(全部 final,Spring 构造器注入)──────────────────────
     private final ToolRegistry registry;
@@ -410,13 +404,13 @@ public class AgentLoopHarness {
 
                 Map<String, Object> args = parseToolInput(toolUse);
 
-                printToolHeader(toolUse, args);
-
                 pushToolEvent(sessionId, toolUse, args);
 
                 Optional<String> blocked = hooks.triggerPreToolUse(toolUse);
                 if (blocked.isPresent()) {
-                    System.out.println("\033[31m⛔ " + blocked.get() + "\033[0m");
+                    // s23 P1b:删掉 println,permission block 信息通过 tool_result 回给 LLM,
+                    // TUI 通过 TurnEventPushed 显式呈现,legacy CLI 静默(accepted regression)。
+                    log.info("[Permission] blocked tool={} reason={}", toolUse.getName(), blocked.get());
                     toolResults.add(LlmToolResult.success(toolUse.getId(), blocked.get()));
                     continue;
                 }
@@ -429,7 +423,10 @@ public class AgentLoopHarness {
                             () -> registry.execute(new ToolCall(toolUse.getName(), args), bgCtx));
                     String placeholder = "[Background task " + bgId + " started] " +
                             "Result will be available when complete.";
-                    System.out.println("\033[35m" + placeholder + "\033[0m");
+                    // s23 P1b:删掉 println,placeholder 已经进 tool_result 给 LLM;
+                    // 前端通过 TurnEventPushed / SSE 独立看到 bg 任务启动。
+                    log.info("[BgTask] started id={} sid={} tool={} cmd={}", bgId, sessionId,
+                            toolUse.getName(), command);
                     toolResults.add(LlmToolResult.success(toolUse.getId(), placeholder));
                     continue;
                 }
@@ -723,12 +720,6 @@ public class AgentLoopHarness {
         return null;
     }
 
-    private void printToolHeader(ToolUseBlock toolUse, Map<String, Object> args) {
-        Object cmd = args.get("command");
-        String display = cmd != null ? cmd.toString() : args.toString();
-        System.out.println("\033[33m$ " + display + "\033[0m");
-    }
-
     /**
      * s22 D-11:tool 执行前把摘要 push 到 {@link TurnEventStream},前端 poll /events
      * 拿到并实时更新 loading 气泡("正在: $ mvn test")。
@@ -755,11 +746,8 @@ public class AgentLoopHarness {
         if (ctx == null) ctx = ExecutionContext.lead();
         ToolResult result = registry.execute(new ToolCall(toolUse.getName(), args), ctx);
         String output = result.getOutput();
-
-        System.out.println(output.length() > CONSOLE_PREVIEW_LIMIT
-                ? output.substring(0, CONSOLE_PREVIEW_LIMIT) + "..."
-                : output);
-
+        // s23 P1b:删掉 console preview println。tool output 已经作为 LlmToolResult 返给 LLM,
+        // TUI channel 通过 TurnEventPushed(tool_use_result 事件)独立呈现;legacy CLI 静默。
         return LlmToolResult.success(toolUse.getId(), output);
     }
 
@@ -775,73 +763,6 @@ public class AgentLoopHarness {
     }
 
     // ── 交互式 REPL ──────────────────────────────────────────────
-
-    /**
-     * 老签名:不带 slash 命令支持的 REPL。保留给老调用方 / 测试。
-     * 新 CLI 走 {@link #repl(com.xilidou.jooj.slashcmd.SlashCommandRegistry)}。
-     */
-    public void repl() {
-        repl(null);
-    }
-
-    /**
-     * 带 slash 命令路由的 REPL。
-     *
-     * <p>{@code slashCommands == null} 时退化成老行为(query 全走 LLM)。
-     * 注入了 registry 时:query 以 / 开头 → 走 registry.dispatch,**不进 LLM、不进 history**。
-     */
-    public void repl(com.xilidou.jooj.slashcmd.SlashCommandRegistry slashCommands) {
-        System.out.println("s01: Agent Loop (Java)");
-        System.out.println("输入问题,回车发送。/help 查看命令,q 退出。\n");
-
-        // CLI REPL 走固定 cli-default session,跨进程重启历史保留。
-        final String sessionId = Session.CLI_DEFAULT_ID;
-        ReentrantLock lock = lockProvider.lockFor(sessionId);
-
-        try (Scanner scanner = new Scanner(System.in, StandardCharsets.UTF_8)) {
-            while (true) {
-                System.out.print("\033[36ms01 >> \033[0m");
-                if (!scanner.hasNextLine()) break;
-
-                String query = scanner.nextLine().strip();
-                if (query.equalsIgnoreCase("q")
-                        || query.equalsIgnoreCase("exit")
-                        || query.isEmpty()) break;
-
-                // Slash 命令 —— 走 registry,跳过 hooks / lock / processOneQuery。
-                // 这些都是纯客户端动作,不进 LLM、不算并发请求。
-                if (slashCommands != null && slashCommands.isCommand(query)) {
-                    System.out.println(slashCommands.dispatch(query, sessionId));
-                    System.out.println();
-                    continue;
-                }
-
-                Optional<String> blocked = hooks.triggerUserPrompt(query);
-                if (blocked.isPresent()) {
-                    System.out.println("\033[31m⛔ Prompt blocked: " + blocked.get() + "\033[0m");
-                    continue;
-                }
-
-                if (!lock.tryLock()) {
-                    System.out.println("\033[33m⏳ Agent busy, please retry.\033[0m");
-                    continue;
-                }
-                try {
-                    // s22 架构审查(2026-07-13):删除 fireOnNewSession(sessionId) 调用。
-                    // 该动作旧语义每轮 CLI query 都清 cli-default 分区的 todo —— 会误伤
-                    // 用户 in-progress 的 todo。todo 生命周期现由 SessionHistoryCleared /
-                    // SessionDeleted 事件驱动 (TodoStore 直接 listen),更精确、更符合
-                    // per-session 化(Demo 12)之后的语义。
-                    processOneQuery(sessionId, query);
-                } finally {
-                    lock.unlock();
-                }
-
-                printLastAssistantText(sessionService.loadHistory(sessionId));
-                System.out.println();
-            }
-        }
-    }
 
     /**
      * s15: drain lead 的 inbox,把队友消息揉成一条 user message 加到 history。
@@ -882,16 +803,5 @@ public class AgentLoopHarness {
         history.add(LlmMessage.userText(sb.toString()));
         log.info("[Team] drained {} non-protocol message(s) from lead inbox into history",
                 nonProtocol.size());
-    }
-
-    private void printLastAssistantText(List<LlmMessage> history) {
-        if (history.isEmpty()) return;
-        LlmMessage last = history.get(history.size() - 1);
-        if (last.getRole() != LlmRole.ASSISTANT || last.getContent() == null) return;
-        for (LlmContent c : last.getContent()) {
-            if (c instanceof LlmText t && t.getText() != null) {
-                System.out.println(t.getText());
-            }
-        }
     }
 }

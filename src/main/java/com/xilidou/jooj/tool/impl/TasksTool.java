@@ -170,7 +170,8 @@ public class TasksTool implements Tool {
         String depsSuffix = blockedBy.isEmpty()
                 ? ""
                 : " (blockedBy: " + String.join(", ", blockedBy) + ")";
-        System.out.println("  " + BLUE + "[create] " + subject + depsSuffix + RESET);
+        // s23 P1c: println → log。tool_result 已经带 "Created ..." 全部信息回给 LLM。
+        log.info("[TasksTool] create id={} subject={}{}", id, subject, depsSuffix);
         return new ToolResult(true,
                 "Created " + id + ": " + subject + depsSuffix);
     }
@@ -234,9 +235,7 @@ public class TasksTool implements Tool {
         String result = service.claim(id, TaskService.DEFAULT_OWNER);
         boolean success = result.startsWith("Claimed ");
         if (success) {
-            // 看 service 返回的字符串里有 task subject,直接打印彩色一行
-            // 格式:Claimed <id> (<subject>)
-            System.out.println("  " + CYAN + "[claim] " + result + RESET);
+            log.info("[TasksTool] {}", result);
         }
         return new ToolResult(success, result);
     }
@@ -251,12 +250,12 @@ public class TasksTool implements Tool {
         String result = service.complete(id);
         boolean success = result.startsWith("Completed ");
         if (success) {
-            // 把 Completed 行用绿色,Unblocked 行用黄色(跟上游色一致)
+            // s23 P1c: 每行 unblocked / complete 走 log,不再打 console 彩色。
             for (String line : result.split("\n", -1)) {
                 if (line.startsWith("Unblocked: ")) {
-                    System.out.println("  " + YELLOW + "[unblocked] " + line.substring(11) + RESET);
+                    log.info("[TasksTool] unblocked: {}", line.substring(11));
                 } else {
-                    System.out.println("  " + GREEN + "[complete] " + line + RESET);
+                    log.info("[TasksTool] complete: {}", line);
                 }
             }
         }

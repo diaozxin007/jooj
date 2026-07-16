@@ -296,8 +296,9 @@ public class Teammate {
     // ─────────────────────────────────────────────────────────────
 
     private void runLoop(String name, String role, String prompt, String parentSessionId) {
-        System.out.println();
-        System.out.println(PURPLE + "[Teammate " + name + " spawned as " + role + "]" + RESET);
+        // s23 P1c(2026-07-16):spawn / done / phase / inbox / protocol 生命周期 println → log.
+        // teammate 是 daemon 进程,前端通过 team dashboard 或 log 观察其活动,不需要占用 console。
+        log.info("[Teammate] {} spawned as {}", name, role);
 
         String system = "You are '" + name + "', a " + role + ". " +
                 "Use tools to complete tasks. " +
@@ -409,9 +410,9 @@ public class Teammate {
             if (activeTurnTotal >= MAX_ACTIVE_TURNS) break;
 
             if (reachedEndTurn) {
-                System.out.println(GRAY + "  [" + name + "] WORK done, entering IDLE..." + RESET);
+                log.info("[Teammate] {} WORK done, entering IDLE", name);
             } else {
-                System.out.println(GRAY + "  [" + name + "] WORK budget reached, entering IDLE..." + RESET);
+                log.info("[Teammate] {} WORK budget reached, entering IDLE", name);
             }
             IdleResult idle = idlePoll(name, messages, currentCwd, currentWorktreeName);
             if (idle.shutdown) {
@@ -420,7 +421,7 @@ public class Teammate {
             }
             if (idle.timeout) {
                 // 超时 = 没新活,退出
-                System.out.println(GRAY + "  [" + name + "] IDLE timeout, exiting" + RESET);
+                log.info("[Teammate] {} IDLE timeout, exiting", name);
                 break;
             }
             // idle 找到活了(inbox 或 claim 到 task),回到 outer while 继续 WORK
@@ -431,7 +432,7 @@ public class Teammate {
             lastText = "(teammate " + name + " finished without producing text)";
         }
         bus.send(name, "lead", lastText, "result");
-        System.out.println(PURPLE + "[Teammate " + name + " done, summary sent to lead]" + RESET);
+        log.info("[Teammate] {} done, summary sent to lead", name);
     }
 
     /**
@@ -454,7 +455,7 @@ public class Teammate {
             ToolUseBlock tu = new ToolUseBlock(
                     toolCall.getId(), toolCall.getName(), toolCall.getInput());
             Map<String, Object> args = parseToolInput(tu);
-            System.out.println(CYAN + "  [" + name + " · " + tu.getName() + "] " + args + RESET);
+            log.debug("[Teammate] {} · {} args={}", name, tu.getName(), args);
 
             // s22 D-11:push 摘要给前端 loading 气泡("[teammate:alice] $ mvn test")
             pushToolEvent(name, tu, args);
@@ -493,7 +494,7 @@ public class Teammate {
                     }
                 } else if ("complete_task".equals(tu.getName()) && output.startsWith("Completed ")) {
                     if (currentCwd.get() != null) {
-                        System.out.println(GRAY + "  [" + name + "] worktree cwd cleared after complete" + RESET);
+                        log.info("[Teammate] {} worktree cwd cleared after complete", name);
                     }
                     currentCwd.set(null);
                     currentWorktreeName.set(null);
@@ -539,7 +540,7 @@ public class Teammate {
         }
         currentCwd.set(wtPath);
         currentWorktreeName.set(wtName);
-        System.out.println("\033[33m  [" + name + "] cwd → " + wtPath + " (worktree:" + wtName + ")" + RESET);
+        log.info("[Teammate] {} cwd → {} (worktree:{})", name, wtPath, wtName);
     }
 
     /**
@@ -578,8 +579,7 @@ public class Teammate {
 
         if (!nonProtocol.isEmpty()) {
             messages.add(LlmMessage.userText(formatInboxAsUserText(nonProtocol)));
-            System.out.println(GRAY + "  [" + name + "] inbox " + nonProtocol.size()
-                    + " non-protocol msg(s)" + RESET);
+            log.info("[Teammate] {} inbox {} non-protocol msg(s)", name, nonProtocol.size());
         }
         return new DispatchResult(shutdown);
     }
@@ -601,8 +601,7 @@ public class Teammate {
             respMeta.put("approve", Boolean.TRUE);
             bus.send(name, "lead", "Shutting down gracefully.",
                     "shutdown_response", respMeta);
-            System.out.println(PURPLE + "  [protocol] " + name + " approved shutdown ("
-                    + reqId + ")" + RESET);
+            log.info("[Teammate] [protocol] {} approved shutdown ({})", name, reqId);
             return true;
         }
 
@@ -616,8 +615,8 @@ public class Teammate {
                 injection = "[Plan rejected] (" + reqId + ") Feedback: " + msg.getContent();
             }
             messages.add(LlmMessage.userText(injection));
-            System.out.println((approved ? "\033[32m" : "\033[31m") + "  [protocol] " + name
-                    + " plan " + (approved ? "approved" : "rejected") + " (" + reqId + ")" + RESET);
+            log.info("[Teammate] [protocol] {} plan {} ({})",
+                    name, approved ? "approved" : "rejected", reqId);
             return false;
         }
 
@@ -671,8 +670,7 @@ public class Teammate {
                         (t.getDescription() != null && !t.getDescription().isBlank()
                                 ? "\n" + t.getDescription() : "");
                 messages.add(LlmMessage.userText(injection));
-                System.out.println("\033[32m  [idle] " + name + " auto-claimed: "
-                        + t.getSubject() + RESET);
+                log.info("[Teammate] [idle] {} auto-claimed: {}", name, t.getSubject());
                 // s18:auto-claim 也要更新 cwd
                 applyClaimedTaskWorktree(t.getId(), name, currentCwd, currentWorktreeName);
                 return new IdleResult(false, false);

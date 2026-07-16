@@ -165,7 +165,7 @@ public class CronTool implements Tool {
         // service 返回的是新 id;包成完整描述给 LLM 看
         String msg = String.format("Scheduled %s: '%s' → %s",
                 result, cronArg, promptArg);
-        System.out.println("  " + CYAN + "[cron schedule] " + msg + RESET);
+        log.info("[CronTool] {}", msg);
         return new ToolResult(true, msg);
     }
 
@@ -197,7 +197,7 @@ public class CronTool implements Tool {
         String result = service.cancel(id);
         boolean success = result.startsWith("Cancelled ");
         if (success) {
-            System.out.println("  " + YELLOW + "[cron cancel] " + result + RESET);
+            log.info("[CronTool] {}", result);
         }
         return new ToolResult(success, result);
     }

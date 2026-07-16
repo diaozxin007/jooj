@@ -173,8 +173,11 @@ public class Subagent {
             return "Subagent error: empty task description";
         }
 
-        System.out.println();
-        System.out.println(PURPLE + "[Subagent spawned]" + RESET);
+        // s23 P1c(2026-07-16):spawn / done / preview 生命周期日志从 println 改 log。
+        // subagent 是 lead 内部子过程,前端不需要看它的 tick;lead 拿到 spawn 返回的 summary
+        // 即可通过 tool_result 呈现结果。
+        log.info("[Subagent] spawned desc={}",
+                description.length() > 80 ? description.substring(0, 80) + "..." : description);
 
         List<LlmMessage> messages = new ArrayList<>();
         messages.add(LlmMessage.userText(description));    // fresh context
@@ -198,7 +201,7 @@ public class Subagent {
 
             if (!response.needsToolExecution()) {
                 String result = extractText(messages);
-                System.out.println(PURPLE + "[Subagent done]" + RESET);
+                log.info("[Subagent] done turn={}", turn);
                 return result;
             }
 
@@ -219,7 +222,8 @@ public class Subagent {
 
                 Optional<String> blocked = hooks.triggerPreToolUse(toolUse);
                 if (blocked.isPresent()) {
-                    System.out.println(GRAY + "  [sub] ⛔ " + blocked.get() + RESET);
+                    log.info("[Subagent] permission blocked tool={} reason={}",
+                            toolUse.getName(), blocked.get());
                     toolResults.add(LlmToolResult.success(toolUse.getId(), blocked.get()));
                     continue;
                 }
@@ -229,8 +233,8 @@ public class Subagent {
                         com.xilidou.jooj.tool.ExecutionContext.lead());
                 String output = execResult.getOutput();
 
-                String preview = output.length() > 100 ? output.substring(0, 100) + "..." : output;
-                System.out.println(GRAY + "  [sub] " + toolUse.getName() + ": " + preview + RESET);
+                // s23 P1c:preview 从 println → log.debug;output 全量给 LLM 走 toolResults。
+                log.debug("[Subagent] tool={} output_len={}", toolUse.getName(), output.length());
 
                 hooks.triggerPostToolUse(toolUse, output);
 
@@ -245,7 +249,6 @@ public class Subagent {
         if (result.isEmpty()) {
             result = "Subagent stopped after " + MAX_TURNS + " turns without final answer.";
         }
-        System.out.println(PURPLE + "[Subagent done — max turns]" + RESET);
         return result;
     }
 

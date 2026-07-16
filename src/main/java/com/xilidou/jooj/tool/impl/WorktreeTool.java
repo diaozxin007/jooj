@@ -124,7 +124,7 @@ public class WorktreeTool implements Tool {
         String result = service.create(name, taskId);
         boolean success = result.startsWith("Worktree '");
         if (success) {
-            System.out.println("  " + YELLOW + "[worktree] " + result + RESET);
+            log.info("[WorktreeTool] {}", result);
         }
         return new ToolResult(success, result);
     }
@@ -139,7 +139,7 @@ public class WorktreeTool implements Tool {
         String result = service.remove(nameArg.toString(), discard);
         boolean success = result.endsWith("removed");
         if (success) {
-            System.out.println("  " + YELLOW + "[worktree] " + result + RESET);
+            log.info("[WorktreeTool] {}", result);
         }
         return new ToolResult(success, result);
     }
@@ -150,7 +150,7 @@ public class WorktreeTool implements Tool {
         String result = service.keep(nameArg.toString());
         boolean success = !result.startsWith("Error:");
         if (success) {
-            System.out.println("  " + CYAN + "[worktree] " + result + RESET);
+            log.info("[WorktreeTool] {}", result);
         }
         return new ToolResult(success, result);
     }

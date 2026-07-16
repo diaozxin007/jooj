@@ -122,7 +122,7 @@ public class McpProxyTool implements Tool {
         boolean success = result.startsWith("Connected to MCP server '")
                 || result.contains("already connected");
         if (success) {
-            System.out.println("  " + RED + "[mcp] " + result + RESET);
+            log.info("[McpProxyTool] {}", result);
         }
         return new ToolResult(success, result);
     }
