@@ -204,9 +204,9 @@ public class TodoTool implements Tool {
         }
 
         store.replace(sid, todos);
-        // s23 P1c(2026-07-16):删除 printTodos console 表格。todo 表格通过前端 UI(web /
-        // TUI)读 TodoStore.list(sid) 独立渲染;tool_result 返 "Updated N tasks" 给 LLM。
-        // legacy CLI 静默(accepted regression)。
+        // s23 P1c(2026-07-16):删除 printTodos console 表格。todo 表格通过前端 UI
+        // (web / Go client via SSE)读 TodoStore.list(sid) 独立渲染;tool_result 返
+        // "Updated N tasks" 给 LLM。legacy CLI 静默(accepted regression)。
         log.info("[Todo] session={} updated {} tasks ({} pending, {} in_progress, {} completed)",
                 sid == null ? TodoStore.DEFAULT_SESSION : sid,
                 todos.size(),

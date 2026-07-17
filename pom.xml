@@ -152,16 +152,6 @@
             <artifactId>sqlite-jdbc</artifactId>
             <version>3.47.2.0</version>
         </dependency>
-
-        <!-- s23 P2:JLine 3 —— TUI channel 底层。
-             org.jline:jline 是聚合 jar,内含 terminal / reader / builtins / style / console。
-             3.30.15 是 3.x 系列 latest(2026-07),security-maintained;与 tui4j / TamboUI
-             的 jline3-backend 生态对齐。仅在 @Profile("tui") 生效时用,legacy CLI 不受影响。 -->
-        <dependency>
-            <groupId>org.jline</groupId>
-            <artifactId>jline</artifactId>
-            <version>3.30.15</version>
-        </dependency>
     </dependencies>
 
     <build>
@@ -179,7 +169,7 @@
                     <!--
                       s23 P8.1: enable-native-access=ALL-UNNAMED 消除 sqlite-jdbc / okhttp
                       的 "Restricted method has been called" JVM warning(JDK 22+ 严格),
-                      否则会污染 TUI 的 stderr。
+                      否则会污染 stderr。
                       Banner 通过 spring.main.banner-mode=off 在 application.yml 里关。
                     -->
                     <jvmArguments>--enable-native-access=ALL-UNNAMED</jvmArguments>

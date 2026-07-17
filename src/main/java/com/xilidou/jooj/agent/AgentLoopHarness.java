@@ -395,7 +395,8 @@ public class AgentLoopHarness {
                 Optional<String> blocked = hooks.triggerPreToolUse(toolUse);
                 if (blocked.isPresent()) {
                     // s23 P1b:删掉 println,permission block 信息通过 tool_result 回给 LLM,
-                    // TUI 通过 TurnEventPushed 显式呈现,legacy CLI 静默(accepted regression)。
+                    // 前端 UI(web / Go client via SSE)通过 TurnEventPushed 显式呈现,
+                    // legacy CLI 静默(accepted regression)。
                     log.info("[Permission] blocked tool={} reason={}", toolUse.getName(), blocked.get());
                     toolResults.add(LlmToolResult.success(toolUse.getId(), blocked.get()));
                     continue;
@@ -733,7 +734,8 @@ public class AgentLoopHarness {
         ToolResult result = registry.execute(new ToolCall(toolUse.getName(), args), ctx);
         String output = result.getOutput();
         // s23 P1b:删掉 console preview println。tool output 已经作为 LlmToolResult 返给 LLM,
-        // TUI channel 通过 TurnEventPushed(tool_use_result 事件)独立呈现;legacy CLI 静默。
+        // 前端 UI(web / Go client via SSE)通过 TurnEventPushed(tool_use_result 事件)
+        // 独立呈现;legacy CLI 静默。
         return LlmToolResult.success(toolUse.getId(), output);
     }
 

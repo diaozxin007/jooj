@@ -2,8 +2,7 @@ spring:
   application:
     name: jooj
   main:
-    # s23 P8.1:关掉 Spring Boot banner。banner 直接 println 到 stdout,不走 logback,
-    # tui 模式下会破坏 JLine 布局(banner 5 行 + 空行)。CLI / web 场景也没实际价值。
+    # Banner 直接 println 到 stdout,不走 logback。CLI / web 场景没实际价值,关掉。
     banner-mode: off
   # 加载 ~/.jooj/.env (用户级 secret 文件,跟 hermes 的 ~/.hermes/.env 一个套路)。
   # JoojEnvBootstrap (EnvironmentPostProcessor) 会在这一步之前确保:
@@ -177,22 +176,6 @@ jooj:
     enabled: ${WEIXIN_ENABLED:true}
     bot-agent: jooj
     dispatch-pool-size: 4               # IM 多 peer 并发度;Demo 14 压测推荐 4
-
-  # s23:TUI channel 配置。仅在 spring.profiles.active 包含 "tui" 时生效
-  # (整个 tui/ 域用 @Profile("tui") 门控,legacy CLI 是默认路径不受影响)。
-  #
-  # 详见:AI Agent 实战/Week10_Skills_MCP_协议/s23_TUI_channel设计.md
-  tui:
-    # 主题:default / dark / light / none
-    #   none = 关闭全部 ANSI 色。自动降级触发条件:NO_COLOR 环境变量存在,或 stdout 非 TTY
-    theme: ${JOOJ_TUI_THEME:default}
-    # 是否显示 thinking token(agent 内部推理),默认关(量大,通常不需要)
-    show-thinking: ${JOOJ_TUI_SHOW_THINKING:false}
-    # tool 输出预览最多显示几行,超出折叠为 [+N 行]
-    max-preview-lines: ${JOOJ_TUI_MAX_PREVIEW_LINES:3}
-    # s23 P5:TUI 内部 query 队列上限。用户在 worker 忙时敲的 query 排队,超过上限
-    # 直接拒绝并提示。默认 5,只影响 TUI channel,不下沉到 InboundDispatcher。
-    queue-capacity: ${JOOJ_TUI_QUEUE_CAPACITY:5}
 
 # ─────────────────────────────────────────────────────────────
 #  Actuator / Observability

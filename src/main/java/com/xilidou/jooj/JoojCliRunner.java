@@ -26,7 +26,7 @@ import java.util.concurrent.locks.ReentrantLock;
  * <p>s23 P1a(2026-07-16):把 REPL 主循环从 {@link AgentLoopHarness#repl} 搬进本类,
  * 让 harness 只关心 "single-turn domain execution",不再持有 CLI I/O 职责。
  *
- * <p>独立成 {@code @Component} + {@code @Profile("!test & !web & !tui")} 的关键原因:
+ * <p>独立成 {@code @Component} + {@code @Profile("!test & !web")} 的关键原因:
  * <ul>
  *   <li>测试场景下 {@link org.springframework.boot.test.context.SpringBootTest @SpringBootTest}
  *       也会触发 {@link CommandLineRunner} 执行,如果 REPL 写在 {@link JoojApplication}
@@ -34,14 +34,14 @@ import java.util.concurrent.locks.ReentrantLock;
  *       排除在测试外</li>
  *   <li>Web 模式下也不该跑 CLI runner —— 否则 Tomcat 启动后 jooj 主线程会卡在
  *       {@link Scanner#nextLine} 上,日志看着像"卡死"</li>
- *   <li><b>s23 新加</b>:{@code tui} profile 启用时走 TuiChannel,legacy REPL 让位</li>
  * </ul>
  *
  * <p>测试切到 {@code @ActiveProfiles("test")} 即可禁用本类(详见 application-test.yml)。
- * Web 模式启用 {@code web} profile 同样禁用本类。TUI 模式启用 {@code tui} 禁用本类。
+ * Web 模式启用 {@code web} profile 同样禁用本类;交互式 UI 交由 Go 客户端
+ * (repo:jooj-tui,s25)通过 REST + SSE 消费,不再有 in-process TUI channel。
  */
 @Component
-@Profile("!test & !web & !tui")
+@Profile("!test & !web")
 public class JoojCliRunner implements CommandLineRunner {
 
     private final AgentLoopHarness harness;
@@ -117,7 +117,7 @@ public class JoojCliRunner implements CommandLineRunner {
      * 打印最后一条 assistant 消息的纯文本。s23 P1a 从 AgentLoopHarness 搬来。
      *
      * <p><b>注意</b>:这份打印是 legacy CLI 兼容路径。P1b 之后 harness 出门发
-     * {@code AssistantResponseCompleted} 事件,TUI channel 通过 event listener 拿到 reply;
+     * {@code AssistantResponseCompleted} 事件,web / SSE 侧通过 event listener 拿到 reply;
      * legacy CLI 因为不接事件总线,继续用这个直读 session history 的路径。
      */
     private void printLastAssistantText(List<LlmMessage> history) {

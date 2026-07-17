@@ -6,7 +6,8 @@
 
   <p>老配置(P8 之前)让 CONSOLE 走 stdout,后续改成 stderr。但发现:
   <ul>
-    <li>TUI 场景下 JLine 独占 stdout,即使 stderr 也会破坏 status bar 显示</li>
+    <li>历史遗产:s23 in-process TUI 曾用 JLine 独占 stdout,即使 stderr 也会
+        破坏 status bar 显示(该 TUI 后被 Go client 替代,见 s25)</li>
     <li>Spring Boot 4.1 的 &lt;springProfile&gt; 在 bean init 阶段还未激活,那时的
         大量装配日志已经打到 stderr 了 —— <code>-Dlogging.config</code> 是能修但
         mvn spring-boot:run 传参路径不可靠</li>
@@ -16,8 +17,9 @@
 
   <p>选择:**全局默认走文件** {@code ~/.jooj/app.log},不管 profile。
   <ul>
-    <li>好处:zero timing risk;TUI 完全干净;legacy CLI 交互输出也不再被日志打断</li>
-    <li>代价:CLI / web / TUI 用户看日志需要 <code>tail -f ~/.jooj/app.log</code></li>
+    <li>好处:zero timing risk;交互式 CLI 输出干净;Go client (jooj-tui) 通过
+        REST/SSE 拿数据也完全不受 backend 日志影响</li>
+    <li>代价:CLI / web 用户看日志需要 <code>tail -f ~/.jooj/app.log</code></li>
     <li>补偿:启动错误(bean 装配 fail)会被 JVM 直接 stderr,logback 抓不到,用户
         还是看得到关键 error</li>
   </ul>
