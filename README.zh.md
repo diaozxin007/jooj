@@ -5,7 +5,7 @@
 ![Java 17](https://img.shields.io/badge/Java-17-orange?logo=openjdk&logoColor=white)
 ![Spring Boot 4.1](https://img.shields.io/badge/Spring%20Boot-4.1-6DB33F?logo=springboot&logoColor=white)
 ![Tests](https://img.shields.io/badge/tests-1164%20passing-brightgreen)
-![License MIT](https://img.shields.io/badge/license-MIT-blue)
+![License WTFPL](https://img.shields.io/badge/license-WTFPL-black)
 
 [English README](./README.md) · [架构深读](./EVOLUTION.md)
 
@@ -376,3 +376,11 @@ jooj:
 - [Anthropic Messages API](https://docs.anthropic.com/en/api/messages) — 协议参考
 - [Model Context Protocol](https://modelcontextprotocol.io) — MCP 规范
 - [vercel-labs/skills](https://github.com/vercel-labs/skills) — Skill 包管理 CLI
+
+---
+
+## License
+
+[WTFPL](./LICENSE) —— Do What The Fuck You Want To Public License, v2。
+
+一句话:**想干啥就干啥。**

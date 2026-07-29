@@ -5,7 +5,7 @@
 ![Java 17](https://img.shields.io/badge/Java-17-orange?logo=openjdk&logoColor=white)
 ![Spring Boot 4.1](https://img.shields.io/badge/Spring%20Boot-4.1-6DB33F?logo=springboot&logoColor=white)
 ![Tests](https://img.shields.io/badge/tests-1164%20passing-brightgreen)
-![License MIT](https://img.shields.io/badge/license-MIT-blue)
+![License WTFPL](https://img.shields.io/badge/license-WTFPL-black)
 
 [中文 README](./README.zh.md) · [Architecture deep-dive](./EVOLUTION.md)
 
@@ -392,4 +392,6 @@ Give it a ⭐ if the runtime shape is useful — it helps others find it.
 
 ## License
 
-MIT
+[WTFPL](./LICENSE) — Do What The Fuck You Want To Public License, v2.
+
+TL;DR: **you just do what the fuck you want to.**
