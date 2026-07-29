@@ -2,6 +2,11 @@
 
 > 一个用 Java 实现的可扩展 AI Agent 运行时 —— Anthropic 协议直连 / Spring Boot 4 装配 / 多入口(CLI · Web · Weixin · Cron)/ 工具生态外挂(内置工具 + MCP + Skill)。
 
+![Java 17](https://img.shields.io/badge/Java-17-orange?logo=openjdk&logoColor=white)
+![Spring Boot 4.1](https://img.shields.io/badge/Spring%20Boot-4.1-6DB33F?logo=springboot&logoColor=white)
+![Tests](https://img.shields.io/badge/tests-1164%20passing-brightgreen)
+![License MIT](https://img.shields.io/badge/license-MIT-blue)
+
 [English README](./README.md) · [架构深读](./EVOLUTION.md)
 
 ---

@@ -2,6 +2,11 @@
 
 > An extensible AI agent harness written in Java. Direct Anthropic protocol over OkHttp, wired with Spring Boot 4, running across four surfaces (CLI · TUI · Web · WeChat) plus a cron scheduler. Bring your own key.
 
+![Java 17](https://img.shields.io/badge/Java-17-orange?logo=openjdk&logoColor=white)
+![Spring Boot 4.1](https://img.shields.io/badge/Spring%20Boot-4.1-6DB33F?logo=springboot&logoColor=white)
+![Tests](https://img.shields.io/badge/tests-1164%20passing-brightgreen)
+![License MIT](https://img.shields.io/badge/license-MIT-blue)
+
 [中文 README](./README.zh.md) · [Architecture deep-dive](./EVOLUTION.md)
 
 ---
