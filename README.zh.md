@@ -72,6 +72,104 @@ OS 环境变量优先级最高,也可以 `export ANTHROPIC_API_KEY=...` 直接�
 
 代码根:`com.xilidou.jooj/`,按功能域平铺(不做深层次层次结构)。
 
+25 个顶级包分 5 大功能簇 + 一条 Spring 事件总线:
+
+```mermaid
+graph TB
+    subgraph Entries["入口层 · 4 channel + cron"]
+        CLI[CLI REPL]
+        TUI[JLine TUI]
+        WEB[Web + SSE]
+        WX[微信公众号]
+        CRON["Cron @Scheduled"]
+    end
+
+    DISP[InboundDispatcher]
+
+    subgraph Core["Agent 核心"]
+        ALH["AgentLoopHarness<br/>processOneQuery"]
+        RC["RecoveryCoordinator<br/>escalate + continuation"]
+        COMPACT["CompactPipeline<br/>Snip + Micro + Budget + History"]
+        PROMPT[SystemPromptAssembler]
+        SUB["Subagent 同步<br/>Teammate 异步 daemon"]
+    end
+
+    subgraph Domains["域数据 · 8 包"]
+        SESSION["session<br/>history + lock"]
+        TRAN["transcript<br/>jsonl append-only"]
+        MEM["memory<br/>extractor + selector"]
+        SEARCH["search<br/>SQLite FTS5"]
+        TASKS["tasks / todo"]
+        TEAM["team<br/>MessageBus + worktree"]
+        CRONX["cron<br/>scheduler + store"]
+    end
+
+    subgraph Tools["工具生态"]
+        TOOL["14 个内置工具"]
+        MCP["MCP 协议客户端"]
+        SKILL["Skills 三层覆盖"]
+        HOOK["Hooks"]
+        PERM["Permission 门"]
+    end
+
+    subgraph Boundary["边界层"]
+        API["Anthropic / OpenAI HTTPS<br/>via OkHttp"]
+        FS["FileSystem + Bash"]
+        DISK["~/.jooj + .transcripts + .memory"]
+    end
+
+    EVENTS[["Spring EventBus · 7 事件类型<br/>UserMessageReceived · AssistantResponseCompleted<br/>TurnInterrupted · SessionDeleted · SessionHistoryCleared<br/>TurnEventPushed · PendingQuestionRegistered"]]
+
+    CLI --> DISP
+    TUI --> DISP
+    WEB --> DISP
+    WX --> DISP
+    CRON --> ALH
+
+    DISP --> ALH
+    ALH --> RC
+    ALH --> COMPACT
+    ALH --> PROMPT
+    ALH --> SUB
+    RC --> API
+
+    ALH -.publish.-> EVENTS
+    EVENTS -.listen.-> TRAN
+    EVENTS -.listen.-> SEARCH
+    EVENTS -.listen.-> TASKS
+
+    ALH --> TOOL
+    TOOL --> MCP
+    TOOL --> HOOK
+    HOOK --> PERM
+    ALH --> SKILL
+
+    ALH --> SESSION
+    ALH --> MEM
+    ALH --> TEAM
+    ALH --> CRONX
+
+    TOOL --> FS
+    TOOL --> API
+    MCP --> API
+    SESSION --> DISK
+    TRAN --> DISK
+    MEM --> DISK
+    SEARCH --> DISK
+
+    style ALH fill:#fce4ec,stroke:#c2185b,stroke-width:3px
+    style RC fill:#fce4ec
+    style SUB fill:#fce4ec
+    style EVENTS fill:#e1f5fe,stroke:#0277bd,stroke-width:2px
+    style TOOL fill:#e8f5e9
+    style MCP fill:#e8f5e9
+    style SKILL fill:#e8f5e9
+    style HOOK fill:#e8f5e9
+    style PERM fill:#e8f5e9
+    style API fill:#fff3e0
+    style DISK fill:#f3e5f5
+```
+
 ### 入口层(4 条 channel)
 
 | 包 | 关键类 | 作用 |

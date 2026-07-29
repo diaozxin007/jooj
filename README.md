@@ -102,20 +102,102 @@ Environment variables override the `.env` file, so `export ANTHROPIC_API_KEY=...
 
 ## Architecture at a glance
 
-25 top-level packages, flat by feature domain (no deep nesting). Grouped into five clusters:
+25 top-level packages, flat by feature domain (no deep nesting). Grouped into five clusters plus a Spring event bus:
 
-```
-Entry layer            web/    tui/    weixin/    cron/    channel/    JoojCliRunner
-                                                │
-Config layer           */Properties  →  */Configuration  →  Beans
-                                                │
-Agent core             agent/     agent/control/     subagent/     prompt/     compact/
-                                                │
-Domain data            session/   transcript/   memory/   search/   todo/   tasks/   team/   cron/
-                                                │
-Tool ecosystem         tool/     mcp/     skill/     hook/     permission/     slashcmd/
-                                                │
-Boundary layer         bootstrap/     http/     Anthropic + DeepSeek HTTPS     ~/.jooj/     Bash subprocess
+```mermaid
+graph TB
+    subgraph Entries["Entry Layer · 4 channels + cron"]
+        CLI[CLI REPL]
+        TUI[JLine TUI]
+        WEB[Web + SSE]
+        WX[WeChat]
+        CRON[Cron @Scheduled]
+    end
+
+    DISP[InboundDispatcher]
+
+    subgraph Core["Agent Core"]
+        ALH["AgentLoopHarness<br/>processOneQuery"]
+        RC["RecoveryCoordinator<br/>escalate + continuation"]
+        COMPACT["CompactPipeline<br/>Snip + Micro + Budget + History"]
+        PROMPT[SystemPromptAssembler]
+        SUB["Subagent (sync)<br/>Teammate (async daemon)"]
+    end
+
+    subgraph Domains["Domain Data · 8 packages"]
+        SESSION["session<br/>history + lock"]
+        TRAN["transcript<br/>jsonl append-only"]
+        MEM["memory<br/>extractor + selector"]
+        SEARCH["search<br/>SQLite FTS5"]
+        TASKS["tasks / todo"]
+        TEAM["team<br/>MessageBus + worktree"]
+        CRONX["cron<br/>scheduler + store"]
+    end
+
+    subgraph Tools["Tool Ecosystem"]
+        TOOL["14 built-in tools"]
+        MCP["MCP protocol client"]
+        SKILL["Skills 3-layer"]
+        HOOK["Hooks"]
+        PERM["Permission gates"]
+    end
+
+    subgraph Boundary["Boundary Layer"]
+        API["Anthropic / OpenAI HTTPS<br/>via OkHttp"]
+        FS["FileSystem + Bash"]
+        DISK["~/.jooj + .transcripts + .memory"]
+    end
+
+    EVENTS[["Spring EventBus · 7 event types<br/>UserMessageReceived · AssistantResponseCompleted<br/>TurnInterrupted · SessionDeleted · SessionHistoryCleared<br/>TurnEventPushed · PendingQuestionRegistered"]]
+
+    CLI --> DISP
+    TUI --> DISP
+    WEB --> DISP
+    WX --> DISP
+    CRON --> ALH
+
+    DISP --> ALH
+    ALH --> RC
+    ALH --> COMPACT
+    ALH --> PROMPT
+    ALH --> SUB
+    RC --> API
+
+    ALH -.publish.-> EVENTS
+    EVENTS -.listen.-> TRAN
+    EVENTS -.listen.-> SEARCH
+    EVENTS -.listen.-> TASKS
+
+    ALH --> TOOL
+    TOOL --> MCP
+    TOOL --> HOOK
+    HOOK --> PERM
+    ALH --> SKILL
+
+    ALH --> SESSION
+    ALH --> MEM
+    ALH --> TEAM
+    ALH --> CRONX
+
+    TOOL --> FS
+    TOOL --> API
+    MCP --> API
+    SESSION --> DISK
+    TRAN --> DISK
+    MEM --> DISK
+    SEARCH --> DISK
+
+    style ALH fill:#fce4ec,stroke:#c2185b,stroke-width:3px
+    style RC fill:#fce4ec
+    style SUB fill:#fce4ec
+    style EVENTS fill:#e1f5fe,stroke:#0277bd,stroke-width:2px
+    style TOOL fill:#e8f5e9
+    style MCP fill:#e8f5e9
+    style SKILL fill:#e8f5e9
+    style HOOK fill:#e8f5e9
+    style PERM fill:#e8f5e9
+    style API fill:#fff3e0
+    style DISK fill:#f3e5f5
 ```
 
 **Key runtime patterns:**
